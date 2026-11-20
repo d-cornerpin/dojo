@@ -7,6 +7,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AgentTurnState } from './v2/state.js';
 import type { PendingAttachment } from './pending-attachments.js';
+import type { AgentRequest } from './v2/owed.js';
 import { StreamingSpeechBuffer } from '../voice/text-sanitize.js';
 
 // Origin of the turn; the kind vocabulary must match migration 112.
@@ -61,7 +62,9 @@ export interface TurnContext {
   toolPhaseEndedBySpinBrake: boolean;
   spinBrakeGraceCalls: number;
   mediaWordsStepOwed: boolean;
-  jobParked: boolean;
+  // The task this turn parked its job on, and the task the turn was started from (a job item).
+  jobParked: string | null;
+  servedJob: string | null;
 
 
   ownerAffinityConversationId: string | null;
@@ -90,7 +93,6 @@ export interface TurnContext {
   engineStartAckDeliveredThisTurn: boolean;
   deferredDeliveredByAck: boolean;
 
-  startAckPromotedRowId: string | null;
   /** The queued row of an answer delivered mid-turn; while set, the turn's end does not queue the same words. */
   earlyAnswerRowId: string | null;
   /** Files shown with this turn's reply; finalize puts the real files (not chips) on the reply's row. */
@@ -100,6 +102,17 @@ export interface TurnContext {
   voiceFillerFired: boolean;
 
   goingIdleDetectorRanThisTurn: boolean;
+
+  // The provider's reset the last model call met (cleared before each call), and a no-answer abort: finalize reads both.
+  retryAt: number | null;
+  abortHandBack: boolean;
+  // Another agent's request this turn serves; finalize marks it served.
+  servedRequest: AgentRequest | null;
+  // The required reply (v2/forced-reply.ts): armed at most once a turn, and pending until its call returns.
+  forcedReplySpent: boolean;
+  forceReplyPending: boolean;
+  // Why the reply's push to the person's channel is held (it still shows in chat); null when it is not.
+  pushHeld: string | null;
 
   // Timer closures read it at fire time, so it lives on the bag; no driver let beside it.
   state: AgentTurnState | null;
@@ -126,7 +139,8 @@ export function openTurnContext(agentId: string): TurnContext {
     phoneStreamCallSid: null,
     toolPhaseEndedBySpinBrake: false,
     mediaWordsStepOwed: false,
-    jobParked: false,
+    jobParked: null,
+    servedJob: null,
     spinBrakeGraceCalls: 2,
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,
@@ -143,11 +157,16 @@ export function openTurnContext(agentId: string): TurnContext {
     inboundClassifiedAsWork: false,
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
-    startAckPromotedRowId: null,
     earlyAnswerRowId: null,
     replyFiles: [],
     voiceFillerFired: false,
     goingIdleDetectorRanThisTurn: false,
+    retryAt: null,
+    abortHandBack: false,
+    servedRequest: null,
+    forcedReplySpent: false,
+    forceReplyPending: false,
+    pushHeld: null,
     state: null,
   };
   openContexts.set(agentId, ctx);

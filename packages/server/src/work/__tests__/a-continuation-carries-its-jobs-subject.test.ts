@@ -14,8 +14,8 @@
 //
 // EVERY clause below goes through the real doors: the real A2A delivery (which opens the job's task),
 // the engine's real turn entry (`runV2Turn`), the real checkpoint window and `parkJob`, the real
-// assembler. Only the provider is scripted, and the continuation is started the way the runtime
-// starts it (`beginJobRun` for the park's own wake, then the turn).
+// assembler. Only the provider is scripted; the park dates the job's task and the job's next turn is served from
+// that row, as the one clock starts it.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -166,10 +166,7 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
 import { stoppedAgents, pendingWakeups } from '../../agent/shared-state.js';
-import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
-import { recordA2AReply } from '../../agent/a2a-replies.js';
-import { beginJobRun, endJobRun, endJobCarry, jobCarriedIds } from '../task-freshness.js';
 
 const WORKER = 'worker';
 const MANAGER = 'manager';
@@ -217,11 +214,9 @@ beforeEach(() => {
   loggerErrorSpy.mockReset();
   stoppedAgents.clear();
   pendingWakeups.clear();
-  continuationContext.clear();
 });
 
 afterEach(() => {
-  endJobCarry(WORKER);
   // A harness may never abort a turn silently: a turn that died on an exception is recorded with one of these exits.
   const died = mockDb.current!.prepare("SELECT turn_number, exit_reason FROM turns WHERE exit_reason IN ('unknown', 'provider_error', 'abort', 'terminated')").all();
   mockDb.current?.close();
@@ -275,7 +270,10 @@ async function assignedJob(): Promise<{ taskId: string; assignId: string }> {
   const task = db.prepare('SELECT id FROM work WHERE agent_id = ? AND a2a_thread_id = ?').get(WORKER, THREAD) as { id: string } | undefined;
   expect(task, 'the real ASSIGN delivery opened the job\'s task, tied to the thread').toBeDefined();
   // The worker has answered the ASSIGN once (a first reply sent): it is not an unreplied request any more.
-  recordA2AReply({ assignMessageId: assignId, agentId: WORKER, threadId: THREAD, replyIntent: 'ANSWER' });
+  insertMessage({   // it lands in the manager's store, as the transport writes it
+    agentId: MANAGER, role: 'user', lane: 'a2a', sourceAgentId: WORKER, a2aThreadId: THREAD, a2aIntent: 'ANSWER',
+    content: `[A2A:ANSWER thread:${THREAD.slice(0, 8)} from:Worker] on it`,
+  });
   return { taskId: task!.id, assignId };
 }
 
@@ -289,12 +287,16 @@ async function noticeTurn(taskId: string, id: string, reads: number): Promise<vo
   await runV2Turn(WORKER);
 }
 
-/** The park's continuation, started the way the runtime starts it: from the park's own wake. */
+/** The tasks a park dated. */
+const dated = (): string[] => (mockDb.current!.prepare("SELECT id FROM work WHERE kind = 'task' AND agent_id = ? AND next_attempt_at IS NOT NULL")
+  .all(WORKER) as Array<{ id: string }>).map((r) => r.id);
+
+/** The job's next turn, as the one clock starts it: served from the task the park dated. */
 async function continuationTurn(reads: number): Promise<{ turn: number; firstCall: number }> {
-  expect(beginJobRun(WORKER, 'drain'), 'the park\'s own wake is owed, and the run carries the job').toBe(true);
+  expect(dated(), 'the park dated the job\'s task').toHaveLength(1);
   const firstCall = callModelSpy.mock.calls.length;
   script({ reads });
-  try { await runV2Turn(WORKER); } finally { endJobRun(WORKER); }
+  await runV2Turn(WORKER);
   return { turn: lastTurnNumber(), firstCall };
 }
 
@@ -305,7 +307,7 @@ describe('t173 (i): THE MEASURED SHAPE — an engine notice turn parks the job; 
     const parked = lastTurnNumber();
     expect(turnRow(parked).kind, 'the parking turn is the notice turn, an engine turn').toBe('engine');
     expect(turnRow(parked).exit_reason).toBe('iteration_cap');
-    expect(jobCarriedIds(WORKER), 'the park carried the job\'s task').toEqual([taskId]);
+    expect(dated(), 'the park dated the job\'s task').toEqual([taskId]);
     loggerErrorSpy.mockClear();
 
     const { turn, firstCall } = await continuationTurn(0);
@@ -390,7 +392,7 @@ describe('t173 (ii): a continuation that moves nothing carries the job\'s origin
     expect(rec.root_id).toBe(THREAD);
     expect(zeroMessagesLogged(), 'no zero-messages fallback').toBe(false);
     expect(occurrences(firstView(firstCall).text, ASSIGN_TEXT), 'the request, once').toBe(1);
-    expect(beginJobRun(WORKER, 'drain'), 'no further continuation is owed').toBe(false);
+    expect(dated(), 'no further turn is owed').toEqual([]);
     expect(mockDb.current!.prepare("SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'stalled'").get(taskId)).toBeTruthy();
   });
 });
@@ -455,14 +457,4 @@ describe('t173 (iv): a turn that is NOT a job\'s continuation is unchanged', () 
     expect(rec.root_kind).toBeNull();
   });
 
-  it('a run NOT launched from the park\'s wake does not inherit the job, even while the job is parked', async () => {
-    const { taskId } = await assignedJob();
-    await noticeTurn(taskId, 'notice-stolen', 80);
-    // No beginJobRun: this is a stray wake, not the park's continuation (t143 round 6).
-    script({ reads: 0 });
-    await runV2Turn(WORKER);
-    const rec = turnRow(lastTurnNumber());
-    expect(rec.subject_kind).toBe('none');
-    expect(rec.root_kind).toBeNull();
-  });
 });

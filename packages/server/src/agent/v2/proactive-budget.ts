@@ -1,5 +1,5 @@
 // Consecutive proactive deliveries on settled-context wake turns, reset by an authorized owner inbound. At the
-// threshold the closeout floor demotes the outbound to a quiet notices-lane row instead of pinging the owner.
+// threshold the closeout floor keeps the reply in chat and holds its push to the owner.
 // Kept in the config table so the streak survives a restart; these keys are outside the cached config reader.
 import { getDb } from '../../db/connection.js';
 import { setConfigValue } from '../../config/config-value.js';
@@ -7,7 +7,7 @@ import { createLogger } from '../../logger.js';
 
 const logger = createLogger('proactive-budget');
 
-// 2 = the third consecutive proactive ping lands in the notices lane instead.
+// 2 = the third consecutive proactive ping stays in chat and is not pushed.
 export const PROACTIVE_SEND_DEMOTE_THRESHOLD = 2;
 
 function streakKey(agentId: string): string {

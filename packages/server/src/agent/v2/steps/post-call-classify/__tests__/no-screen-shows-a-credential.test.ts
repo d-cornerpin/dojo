@@ -81,7 +81,6 @@ function ctxFor(text: string, toolCalls: ToolCall[], over: Partial<PostCallClass
     configuredModelId: 'floor', messageId: 'msg-1',
     noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(),
-    persistAndBroadcastSystemRow: vi.fn(),
     startAckRepliedNow: () => false,
     result: { content: text, toolCalls, reasoningContent: null } as unknown as PostCallClassifyContext['result'],
     ...over,

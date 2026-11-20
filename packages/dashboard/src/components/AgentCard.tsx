@@ -76,9 +76,6 @@ const statusPresentation: Record<string, { label: string; color?: string }> = {
   paused: { label: 'Paused', color: '#a4762e' },   // never "Ready" for an agent the platform parked
   working: { label: 'Working', color: '#a4762e' },
   error: { label: 'Error', color: '#9c4434' },
-  // Without this row the fallback below calls a rate-limited agent "Ready",
-  // the opposite of what the rate-limit alert exists to say.
-  rate_limited: { label: 'Rate limited', color: '#9c4434' },
   terminated: { label: 'Ended', color: 'var(--dojo3-ink-4)' },
 };
 

@@ -13,7 +13,7 @@ import { PROACTIVE_SEND_DEMOTE_THRESHOLD, bumpProactiveSendStreak, getProactiveS
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import { steerFired, type SteerFloorId } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { continuedJobStillGoing, jobTaskOf } from './job-turn-end.js';
+import { jobTaskOf } from './job-turn-end.js';
 import { noteDeliveryHeld, tasksOwingADelivery } from '../../../../tracker/owed-delivery.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -121,12 +121,8 @@ export function runCloseoutFloors(
     persistedContent = null;
   }
 
-  // A continued job's text while it is still going is progress: kept as a note, not sent.
-  if (persistedContent?.trim() && continuedJobStillGoing(state, ctx)) {
-    demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }); persistedContent = null;
-  }
-  // Proactive-send backoff: past the threshold of consecutive unprompted settled-wake replies, the next is
-  // demoted to a note. Deliberate surfaces are exempt, and so is a turn working a task that owes its owner
+  // Proactive-send backoff: past the threshold of consecutive unprompted settled-wake replies, the next stays in
+  // chat and is not pushed. Deliberate surfaces are exempt, and so is a turn working a task that owes its owner
   // a delivery (`tracker/owed-delivery.ts`): the owner asked for that line.
   if (
     settledContextWakeTurn &&
@@ -139,19 +135,15 @@ export function runCloseoutFloors(
     if (owed().length > 0) {
       // Solicited: neither demoted nor counted toward the streak of unprompted pings.
       if (streak >= PROACTIVE_SEND_DEMOTE_THRESHOLD) {
-        logger.info('v2 RC-5.3: budget reached, but this turn is working a task that owes its owner a delivery; the line goes out (C8)', {
+        logger.info('v2: budget reached, but this turn is working a task that owes its owner a delivery; the line goes out (C8)', {
           agentId, turnNumber, streak, tasks: owed(),
         }, agentId);
       }
     } else if (streak >= PROACTIVE_SEND_DEMOTE_THRESHOLD) {
-      logger.info('v2 RC-5.3: proactive-send budget reached; demoting unsolicited settled-wake outbound to a quiet notices-lane row instead of sending', {
+      logger.info('v2: proactive-send limit reached; the reply stays in chat and its push is held', {
         agentId, turnNumber, streak, threshold: PROACTIVE_SEND_DEMOTE_THRESHOLD,
-        preview: persistedContent.slice(0, 80),
       }, agentId);
-      demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }, {
-        why: 'the proactive-send limit: the owner had not answered the agent\'s recent unprompted messages', owed,
-      });
-      persistedContent = null;
+      turnCtx.pushHeld = "the owner has not answered the agent's last unprompted messages";
     } else {
       // An allowed proactive delivery counts toward the streak and pings as normal.
       bumpProactiveSendStreak(agentId);

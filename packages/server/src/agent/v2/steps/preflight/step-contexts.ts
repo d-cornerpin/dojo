@@ -34,7 +34,6 @@ export interface StepContextsInputs {
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly persistRoutingMarker: (label: string) => void;
   readonly reArmIfStrandedNoAnswer: () => void;
-  readonly stashContinuationIfHuman: () => void;
 }
 
 export interface StepContextsOutputs {
@@ -51,11 +50,11 @@ export function runStepContexts(
 ): StepContextsOutputs {
   const { agentId, stopStatusHeartbeat } = ctx;
   const {
-    db, turnNumber, counterparty, chosenConvKey,
+    db, turnNumber, counterparty, counterpartyIsAgentSender, chosenConvKey,
     chosenConversationId, turnStartedAt, settledContextWakeTurn, isA2ATurn, isEngineTurn,
     triggerWorkId, inboundChannel, inboundContext, contextWindow, contextModelId,
     configuredModelId, isAutoRouted, noteTerminalAnswer, persistRoutingMarker,
-    reArmIfStrandedNoAnswer, stashContinuationIfHuman,
+    reArmIfStrandedNoAnswer,
   } = input;
   const finalizeContext = (): FinalizeContext => ({
     agentId, turnCtx, turnNumber, db,
@@ -67,9 +66,9 @@ export function runStepContexts(
   const teardownContext = (): TeardownContext => ({
     agentId, turnCtx, turnNumber, db,
     chosenConvKey, chosenConversationId, lastAssembledAtIso: turnCtx.lastAssembledAtIso,
-    terminalAnswerRowId: sc.terminalAnswerRowId, triggerWorkId,
+    terminalAnswerRowId: sc.terminalAnswerRowId, triggerWorkId, claimedEngineEvent: sc.claimedEngineEvent,
     toolPhaseEndedBySpinBrake: turnCtx.toolPhaseEndedBySpinBrake,
-    counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
+    counterparty, counterpartyIsAgentSender, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext,
     reArmIfStrandedNoAnswer, stopStatusHeartbeat,
   });
@@ -78,7 +77,7 @@ export function runStepContexts(
   const preCallGatesContext = (): PreCallGatesContext => ({
     agentId, turnNumber, contextWindow, contextModelId, configuredModelId, isAutoRouted,
     counterparty,
-    broadcast, stashContinuationIfHuman,
+    broadcast,
   });
 
   return { finalizeContext, teardownContext, preCallGatesContext };

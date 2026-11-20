@@ -28,14 +28,13 @@ vi.mock('../../../../../db/connection.js', async () => {
   };
 });
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
-const { countMeasure, parkJob, stash } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true), stash: vi.fn() }));
+const { countMeasure, parkJob } = vi.hoisted(() => ({ countMeasure: vi.fn(), parkJob: vi.fn(() => true) }));
 vi.mock('../../../../../work/measure.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/measure.js')>()), countMeasure }));
 vi.mock('../../../../../work/job-continuation.js', async (orig) => ({ ...(await orig<typeof import('../../../../../work/job-continuation.js')>()), parkJob }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { trackerHandlers } from '../../../../tools/cat/tracker.js';
 import { recordTouched } from '../../../../../work/ledger-store.js';
-import { armTimerWake, beginJobRun, endJobCarry, endJobRun } from '../../../../../work/task-freshness.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runGoingIdle } from '../going-idle.js';
 import { taskMovedAtSql } from '../../../../../work/task-freshness.js';
@@ -80,12 +79,16 @@ const menuSteers = (s: AgentTurnState): Array<{ content: string }> =>
   (s.steerQueue as unknown as { fired: Array<{ floor: string; content: string }> }).fired.filter((e) => e.floor === 'going-idle-in-progress');
 
 let turnNumber = 10;
+/** While set, each new turn is the job's own, started from that task's row. */
+let jobTurnOf: string | null = null;
 let lastTurnStartMs = 0;
 /** A new turn. Its start is strictly later than the last one's, as two real turns' are (a fast test can
  *  otherwise open two in the same millisecond, which no turn boundary can tell apart). */
 function freshTurn(): AgentTurnState {
   turnNumber += 1;
-  openTurnContext(AGENT).turnNumber = turnNumber;
+  const bag = openTurnContext(AGENT);
+  bag.turnNumber = turnNumber;
+  bag.servedJob = jobTurnOf;
   lastTurnStartMs = Math.max(Date.now(), lastTurnStartMs + 1000);
   return advance(initState({ agentId: AGENT, turnNumber, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]),
     { loopCount: 1, modelId: 'test-model', turnStartMs: lastTurnStartMs });
@@ -113,19 +116,16 @@ const ids = (n: number, from = 0): string[] => Array.from({ length: n }, (_, i) 
 function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
     agentId: AGENT, db: db(), turnNumber, agent: { id: AGENT, name: 'Worker' },
-    turnCtx: { agentId: AGENT, goingIdleDetectorRanThisTurn: false } as never,
+    turnCtx: turnContext(AGENT) ?? openTurnContext(AGENT),
     triggerRow: null, isA2ATurn: false, mostRecentInbound: undefined, lastUserMessageContent: null,
-    stashContinuationIfHuman: stash, result: { content: '', toolCalls: [] },
+    result: { content: '', toolCalls: [] },
     ...over,
   } as unknown as PostCallClassifyContext;
 }
 const scratch = (reply: string | null = null): PostCallScratch => ({ persistedContent: reply } as PostCallScratch);
 
-/** The park's timer fires and the run it starts is the continuation (`job-continuation.ts`). */
-function theContinuationStarts(): void {
-  armTimerWake(AGENT);
-  beginJobRun(AGENT, 'timer');
-}
+/** The park's due time comes and the next turns are the job's own (`job-continuation.ts`). */
+function theContinuationStarts(id: string): void { jobTurnOf = id; }
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -138,9 +138,7 @@ beforeEach(() => {
     VALUES (?, 'Worker', 'm1', 'idle', '{}', 1, 'owner', datetime('now'), datetime('now'))`).run(AGENT);
   countMeasure.mockReset();
   parkJob.mockClear();
-  endJobRun(AGENT);
-  endJobCarry(AGENT);
-  stash.mockClear();
+  jobTurnOf = null;
 });
 
 describe('D1: a turn that ends mid-job is parked and continued', () => {
@@ -153,7 +151,7 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
 
     expect(out.directive).toBe('exit');
     expect(parkJob).toHaveBeenCalledTimes(1);
-    expect(parkJob.mock.calls[0]).toEqual([AGENT, 'job continues: 10412 remain', 'timer']);
+    expect(parkJob.mock.calls[0]).toEqual([AGENT, 'job continues: 10412 remain', expect.any(Number)]);
     expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10412, touchedThisTurn: 139, turnNumber })]);
     expect(events(id, 'measured').at(-1)).toMatchObject({ remaining: 10412, ok: true });
     expect(systemRows()).toBe(0);
@@ -179,7 +177,7 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 10412 });
     await runGoingIdle(ranCalls(freshTurn(), id, [labelCall(139)], ids(139)), ctxFor(), scratch());
     parkJob.mockClear();
-    theContinuationStarts();
+    theContinuationStarts(id);
 
     countMeasure.mockResolvedValueOnce({ ok: true, count: 10412 });
     const out = await runGoingIdle(freshTurn(), ctxFor(), scratch('still on it'));
@@ -197,7 +195,7 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 10412 });
     await runGoingIdle(ranCalls(freshTurn(), id, [search, labelCall(139)], ids(139)), ctxFor(), scratch());
     parkJob.mockClear();
-    theContinuationStarts();
+    theContinuationStarts(id);
 
     countMeasure.mockResolvedValueOnce({ ok: true, count: 10412 });
     await runGoingIdle(ranCalls(freshTurn(), id, [{ ...search, id: 'tc-s2' }]), ctxFor(), scratch());
@@ -211,7 +209,7 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     countMeasure.mockResolvedValue({ ok: true, count: 10412 });
     await runGoingIdle(ranCalls(freshTurn(), id, [labelCall(10)], ids(10)), ctxFor(), scratch());
     parkJob.mockClear();
-    theContinuationStarts();
+    theContinuationStarts(id);
 
     // The very same label call on the very same ten messages: the ledger's rows move, nothing new is touched.
     await runGoingIdle(ranCalls(freshTurn(), id, [{ ...labelCall(10), id: 'tc-again' }], ids(10)), ctxFor(), scratch());
@@ -225,7 +223,7 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     countMeasure.mockResolvedValueOnce({ ok: true, count: 10412 });
     await runGoingIdle(ranCalls(freshTurn(), id, [labelCall(139)], ids(139)), ctxFor(), scratch());
     parkJob.mockClear();
-    theContinuationStarts();
+    theContinuationStarts(id);
 
     const nextPage: ToolCall = { id: 'tc-p2', name: 'gmail_search', arguments: { query: 'in:inbox -label:Done', page_token: 'p2' } } as ToolCall;
     countMeasure.mockResolvedValueOnce({ ok: true, count: 10412 });
@@ -240,9 +238,9 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     const id = await openTask(true);
     countMeasure.mockResolvedValue({ ok: true, count: 10412 });
     await runGoingIdle(ranCalls(freshTurn(), id, [labelCall(10)], ids(10)), ctxFor(), scratch());
-    theContinuationStarts();
+    theContinuationStarts(id);
     await runGoingIdle(freshTurn(), ctxFor(), scratch());
-    endJobRun(AGENT);
+    jobTurnOf = null;
     expect(events(id, 'stalled')).toHaveLength(1);
     parkJob.mockClear();
 
@@ -255,7 +253,7 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     const id = await openTask(true);
     countMeasure.mockResolvedValue({ ok: true, count: 10412 });
     await runGoingIdle(ranCalls(freshTurn(), id, [labelCall(10)], ids(10)), ctxFor(), scratch());
-    // No `theContinuationStarts()`: some other run of this agent ends first, having done nothing.
+    // No `theContinuationStarts(id)`: some other run of this agent ends first, having done nothing.
     await runGoingIdle(freshTurn(), ctxFor({ isA2ATurn: true }), scratch('noted'));
     expect(events(id, 'stalled')).toHaveLength(0);
   });
@@ -309,11 +307,8 @@ describe('D1: a turn that ends mid-job is parked and continued', () => {
     expect(systemRows()).toBe(0);
     expect(menuSteers(out.state)).toHaveLength(0);
     expect(parkJob).toHaveBeenCalledTimes(1);
-    expect(parkJob.mock.calls[0]).toEqual([AGENT, 'job continues: 10412 remain', 'timer']);
+    expect(parkJob.mock.calls[0]).toEqual([AGENT, 'job continues: 10412 remain', expect.any(Number)]);
     expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10412, touchedThisTurn: 139 })]);
-    // The continuation keeps the owner's conversation (the driver's C3 stash, the one writer of that
-    // record), so his result lands on his own channel; progress lines stay notes (`job-turn-end.ts`).
-    expect(stash).toHaveBeenCalledTimes(1);
   });
 
   it('no measure, nothing touched, no reply: the menu (today\'s text until the text wave), no park', async () => {
@@ -397,7 +392,7 @@ describe('D1 fix round 1: the stop is the job task\'s own successful effects; mo
     countMeasure.mockResolvedValue({ ok: true, count: 10412 });
     await runGoingIdle(ranCalls(freshTurn(), id, [labelCall(10)], ids(10)), ctxFor(), scratch());
     parkJob.mockClear();
-    theContinuationStarts();
+    theContinuationStarts(id);
     const newButFailing = { id: 'tc-new', name: 'gmail_search', arguments: { query: 'a wording never tried' } } as ToolCall;
     await runGoingIdle(ranCalls(freshTurn(), id, [newButFailing], [], true), ctxFor(), scratch());
     expect(parkJob).not.toHaveBeenCalled();
@@ -427,7 +422,6 @@ describe('D1 fix round 1: the stop is the job task\'s own successful effects; mo
     expect(out.directive).toBe('exit');
     expect(parkJob).toHaveBeenCalledTimes(1);
     expect(events(id, 'continued')).toEqual([expect.objectContaining({ remaining: 10551, touchedThisTurn: 0, novelCallsThisTurn: 0 })]);
-    expect(stash).toHaveBeenCalledTimes(1);
   });
 });
 

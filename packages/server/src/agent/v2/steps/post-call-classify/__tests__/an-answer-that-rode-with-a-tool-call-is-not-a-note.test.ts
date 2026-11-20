@@ -135,7 +135,6 @@ function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): Post
     result: modelResult(THE_STATUS),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: noteTerminalAnswerSpy,
     deliverEngineUserAck: deliverAckSpy,
-    persistAndBroadcastSystemRow: vi.fn(),
     startAckRepliedNow: () => false,
     ...over,
   } as unknown as PostCallClassifyContext;

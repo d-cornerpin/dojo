@@ -169,7 +169,7 @@ function judge(a: { id: string; name: string; status: string }, now: number): vo
   // never a `turns` row: a crash leaves an open row behind). An idle agent between turns is never SILENT.
   const owes = a.status === 'working' || activeRuns.has(a.id);
   // A louder status owns this agent, or there is nothing it was meant to be doing: not SILENT.
-  if (['paused', 'error', 'rate_limited'].includes(a.status) || (work.length === 0 && a.status !== 'working') || !owes) {
+  if (['paused', 'error'].includes(a.status) || (work.length === 0 && a.status !== 'working') || !owes) {
     if (silent) endNotice(a.id, 'silent_notice');
     return;
   }

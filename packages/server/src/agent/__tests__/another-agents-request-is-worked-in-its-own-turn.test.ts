@@ -17,12 +17,12 @@
 //    its own turn, the row carries a clause saying so (the row is still printed).
 // 2. STRUCTURAL BACKSTOP: a `send_to_agent` that continues that thread from a turn whose subject is
 //    NOT that thread is refused as a guard refusal (not a tool error), delivers nothing, and leaves
-//    the request unserved — so the dedicated A2A turn the runtime queues for it still runs.
+//    the request unserved — so its own A2A turn still runs.
 //
-// "Awaiting its own turn" is `findUnrepliedAssignForAgent` — the question the runtime itself asks
-// at every turn end to queue that dedicated turn — so these tests drive the REAL preflight
-// (`runPreflight`) to open an owner turn and then the request's own A2A turn on a fixture database
-// with the real migrations; the transport hop is the one dial the test controls.
+// "Awaiting its own turn" is `agentRequests` — the owed items the next turn serves from — so these tests
+// drive the REAL preflight (`runPreflight`) to open an owner turn and then the request's own A2A turn on a
+// fixture database with the real migrations; the transport hop is the one dial the test controls, and it
+// lands each send in the peer's store, as the transport does.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -56,8 +56,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { openTurnContext, endTurnContext, turnContext } from '../turn-context.js';
 import { runPreflight, type PreflightContext } from '../v2/steps/preflight/index.js';
-import { forceA2ATurn, lastTurnWasA2A } from '../turn-state.js';
-import { findUnrepliedAssignForAgent, recordA2AReply } from '../a2a-replies.js';
+import { agentRequests } from '../v2/owed.js';
 import { agentsHandlers } from '../tools/cat/agents.js';
 import { recallHandlers } from '../tools/cat/recall.js';
 import { classifyToolResult } from '../tool-outcome.js';
@@ -139,14 +138,22 @@ const recall = (args: Record<string, unknown> = {}) =>
 
 const LABEL = /this request belongs to agent thread .* it is handled on its own turn/;
 
+/** The request awaiting its own turn: the first one another agent is owed. */
+const awaiting = () => agentRequests(AGENT)[0] ?? null;
+
 beforeEach(() => {
   mockDb.current?.close();
   seed();
   vi.clearAllMocks();
   endTurnContext(AGENT);
-  forceA2ATurn.delete(AGENT);
-  lastTurnWasA2A.delete(AGENT);
-  deliverSpy.mockResolvedValue({ delivered: true, threadId: THREAD, messageId: 'a2a-out-1' });
+  deliverSpy.mockImplementation(async (e: { toAgent: string; fromAgent: string; threadId: string; intent: string; payload: string }) => {
+    const threadId = e.threadId || `thread-new-${deliverSpy.mock.calls.length}-xxxx`;
+    insertMessage({
+      agentId: e.toAgent, role: 'user', lane: 'a2a', sourceAgentId: e.fromAgent, a2aThreadId: threadId, a2aIntent: e.intent,
+      content: `[A2A:${e.intent} thread:${threadId.slice(0, 8)} from:${e.fromAgent}] ${e.payload}`,
+    });
+    return { delivered: true, threadId, messageId: `a2a-out-${deliverSpy.mock.calls.length}` };
+  });
 });
 
 // ── (i) the measured shape: an owner turn's history result shows the pending request, labelled ──
@@ -198,7 +205,7 @@ describe('(ii) an owner turn cannot answer the peer; the request\'s own A2A turn
   it('is refused as a GUARD refusal, delivers nothing, leaves the request unserved — then the A2A turn answers', async () => {
     await openOwnerTurn();
     peerAsks(THREAD, PEER, REQUEST_FP);
-    expect(findUnrepliedAssignForAgent(AGENT)?.threadId).toBe(THREAD);
+    expect(awaiting()?.threadId).toBe(THREAD);
 
     // The owner turn's model answers on the peer's thread.
     const refused = await sendToAgent({ agent: PEER, intent: 'ANSWER', thread_id: THREAD, payload: 'Here are the figures.' });
@@ -210,10 +217,9 @@ describe('(ii) an owner turn cannot answer the peer; the request\'s own A2A turn
     const outcome = classifyToolResult({ toolCallId: 't', name: 'send_to_agent', ...refused });
     expect(outcome.kind).toBe('refused');
     if (outcome.kind === 'refused') expect(outcome.reason).toBe('blocked');
-    // Nothing reached the peer; no reply was recorded; the request is still owed.
+    // Nothing reached the peer; the request is still owed.
     expect(deliverSpy).not.toHaveBeenCalled();
-    expect(mockDb.current!.prepare('SELECT COUNT(*) AS n FROM a2a_replies').get()).toEqual({ n: 0 });
-    expect(findUnrepliedAssignForAgent(AGENT)?.threadId).toBe(THREAD);
+    expect(awaiting()?.threadId).toBe(THREAD);
     // The short thread token is the same thread: refused too.
     const viaShort = await sendToAgent({ agent: PEER, intent: 'ANSWER', thread_id: THREAD.slice(0, 8), payload: 'again' });
     expect(viaShort.isError).toBe(true);
@@ -221,12 +227,9 @@ describe('(ii) an owner turn cannot answer the peer; the request\'s own A2A turn
     expect((await sendToAgent({ agent: PEER, intent: 'STATUS', thread_id: THREAD, payload: 'working on it' })).isError).toBe(true);
     expect(deliverSpy).not.toHaveBeenCalled();
 
-    // The owner turn ends. The runtime's turn-end check (`runtime.ts`, A2A re-trigger) asks exactly
-    // `findUnrepliedAssignForAgent`, finds the request owed, and queues a dedicated A2A turn.
-    const owed = findUnrepliedAssignForAgent(AGENT);
-    expect(owed).not.toBeNull();
+    // The owner turn ends; the request is the first thing owed, so the next turn is its own.
+    expect(awaiting()).not.toBeNull();
     endTurnContext(AGENT);
-    forceA2ATurn.add(AGENT);                                         // what that re-trigger sets
 
     // …and that turn runs, through the real preflight, as an A2A turn for THAT thread…
     const a2aBag = openTurnContext(AGENT);
@@ -242,15 +245,25 @@ describe('(ii) an owner turn cannot answer the peer; the request\'s own A2A turn
     expect(sent.isError).toBe(false);
     expect(deliverSpy).toHaveBeenCalledTimes(1);
     expect(deliverSpy.mock.calls[0][0]).toMatchObject({ intent: 'ANSWER', threadId: THREAD, toAgent: PEER, fromAgent: AGENT });
-    expect(mockDb.current!.prepare('SELECT COUNT(*) AS n FROM a2a_replies').get()).toEqual({ n: 1 });
-    expect(findUnrepliedAssignForAgent(AGENT)).toBeNull();
+    expect(awaiting()).toBeNull();
+  });
+
+  it('with two requests waiting, an owner turn sees both labelled and cannot answer the second either', async () => {
+    await openOwnerTurn();
+    peerAsks(OTHER_THREAD, OTHER, 'first thing CODEWORD-FIRST');
+    peerAsks(THREAD, PEER, REQUEST_FP);
+    const lines = (await recall({ scope: 'all' })).content.split('\n');
+    expect(lines.find((l) => l.includes('CODEWORD-FIRST'))).toMatch(LABEL);
+    expect(lines.find((l) => l.includes(REQUEST_FP))).toMatch(LABEL);
+    const r = await sendToAgent({ agent: PEER, intent: 'ANSWER', thread_id: THREAD, payload: 'from the wrong turn' });
+    expect(r.errorCode).toBe('PERMISSION_DENIED');
+    expect(deliverSpy).not.toHaveBeenCalled();
   });
 
   it('an A2A turn for ANOTHER thread cannot answer this one either', async () => {
     // Thread A's request is the one served; thread B's is the newer request awaiting its own turn.
     peerAsks(OTHER_THREAD, OTHER, 'first thing');
     endTurnContext(AGENT);
-    forceA2ATurn.add(AGENT);
     const bag = openTurnContext(AGENT);
     expect((await runPreflight(bag, ctx())).directive).toBe('proceed');
     expect(bag.kind).toBe('a2a');
@@ -258,7 +271,7 @@ describe('(ii) an owner turn cannot answer the peer; the request\'s own A2A turn
     expect((await sendToAgent({ agent: OTHER, intent: 'ANSWER', thread_id: OTHER_THREAD, payload: 'ok' })).isError).toBe(false);
     // …but once a second request lands on a different thread mid-turn, this turn does not serve it.
     peerAsks(THREAD, PEER, REQUEST_FP);
-    expect(findUnrepliedAssignForAgent(AGENT)?.threadId).toBe(THREAD);
+    expect(awaiting()?.threadId).toBe(THREAD);
     const r = await sendToAgent({ agent: PEER, intent: 'ANSWER', thread_id: THREAD, payload: 'wrong turn' });
     expect(r.isError).toBe(true);
     expect(r.errorCode).toBe('PERMISSION_DENIED');
@@ -272,7 +285,6 @@ describe('(iii) the owner\'s own delegation is unaffected', () => {
   it('a NEW question to a peer (no thread) is delivered while another peer\'s request awaits its turn', async () => {
     await openOwnerTurn();
     peerAsks(THREAD, PEER, REQUEST_FP);
-    deliverSpy.mockResolvedValue({ delivered: true, threadId: 'thread-new-0001-xxxx', messageId: 'a2a-out-2' });
     const r = await sendToAgent({ agent: OTHER, intent: 'QUESTION', payload: 'Can you pull the owner\'s numbers?' });
     expect(r.isError).toBe(false);
     expect(deliverSpy).toHaveBeenCalledTimes(1);
@@ -282,12 +294,11 @@ describe('(iii) the owner\'s own delegation is unaffected', () => {
     expect(same.isError).toBe(false);
     expect(deliverSpy).toHaveBeenCalledTimes(2);
     // The waiting request is untouched by either.
-    expect(findUnrepliedAssignForAgent(AGENT)?.threadId).toBe(THREAD);
+    expect(awaiting()?.threadId).toBe(THREAD);
   });
 
   it('a send on a thread with NO awaiting request, from an owner turn, is delivered', async () => {
     await openOwnerTurn();
-    deliverSpy.mockResolvedValue({ delivered: true, threadId: OTHER_THREAD, messageId: 'a2a-out-3' });
     const r = await sendToAgent({ agent: OTHER, intent: 'ASSIGN', thread_id: OTHER_THREAD, payload: 'next step' });
     expect(r.isError).toBe(false);
     expect(deliverSpy).toHaveBeenCalledTimes(1);
@@ -307,25 +318,27 @@ describe('(iv) an A2A turn answers its own thread', () => {
   it('delivers, records the reply, and clears the obligation', async () => {
     peerAsks(THREAD, PEER, REQUEST_FP, 'ASSIGN');
     endTurnContext(AGENT);
-    forceA2ATurn.add(AGENT);
     const bag = openTurnContext(AGENT);
     expect((await runPreflight(bag, ctx())).directive).toBe('proceed');
     expect(bag.kind).toBe('a2a');
     const r = await sendToAgent({ agent: PEER, intent: 'DELIVERABLE', thread_id: THREAD, payload: 'done' });
     expect(r.isError).toBe(false);
     expect(deliverSpy).toHaveBeenCalledTimes(1);
-    expect(findUnrepliedAssignForAgent(AGENT)).toBeNull();
+    expect(awaiting()).toBeNull();
   });
 });
 
 // ── (v) a history result whose a2a rows were already answered carries no label ──
 
 describe('(v) an answered request carries no label', () => {
-  it('after the reply is recorded, none of the history tools label the row', async () => {
+  it('after the reply lands in the peer\'s store, none of the history tools label the row', async () => {
     await openOwnerTurn();
     requestId = peerAsks(THREAD, PEER, REQUEST_FP);
-    recordA2AReply({ assignMessageId: requestId, agentId: AGENT, threadId: THREAD, replyIntent: 'ANSWER' });
-    expect(findUnrepliedAssignForAgent(AGENT)).toBeNull();
+    insertMessage({
+      agentId: PEER, role: 'user', lane: 'a2a', sourceAgentId: AGENT, a2aThreadId: THREAD, a2aIntent: 'ANSWER',
+      content: `[A2A:ANSWER thread:${THREAD.slice(0, 8)} from:Primary] the figures`,
+    });
+    expect(awaiting()).toBeNull();
     const r = await recall({ scope: 'all' });
     expect(r.content).toContain(REQUEST_FP);
     expect(r.content).not.toMatch(/this request belongs to/);

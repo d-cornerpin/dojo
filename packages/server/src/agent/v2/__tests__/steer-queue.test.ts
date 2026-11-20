@@ -20,7 +20,7 @@ import { persistEngineSteer } from '../engine-steer.js';
 import { initState, type AgentTurnState } from '../state.js';
 import {
   clearSteerQueueFor, emptySteerQueue, enqueueSteer, markSteerAttempted, markSteerDelivered,
-  nextSteer, steerFireCount, steerFired, steerFiredAny, steerFiredAtLoop,
+  nextSteer, steerFired, steerFiredAny, steerFiredAtLoop,
   MAX_STEER_DELIVERY_ATTEMPTS, STEER_PRECEDENCE, TRACKER_STEER_FLOORS,
   type SteerQueue,
 } from '../steer-queue.js';
@@ -90,7 +90,7 @@ describe('THE ONE-SLOT LOSS', () => {
   it('ACROSS ITERATIONS: draining one leaves the rest queued, never dropped', () => {
     let q = emptySteerQueue();
     q = enqueueSteer(q, { floor: 'ungrounded-claim', content: 'first', atLoop: 1 });
-    q = enqueueSteer(q, { floor: 'silent-closeout', content: 'second', atLoop: 1 });
+    q = enqueueSteer(q, { floor: 'delegation-exit', content: 'second', atLoop: 1 });
     q = enqueueSteer(q, { floor: 'add-notes-stop', content: 'third', atLoop: 1 });
 
     // Iteration 1 delivers exactly one entry; two survive untouched.
@@ -175,7 +175,9 @@ describe('the declared precedence table', () => {
     // 32: `tracker-closeout` went with the close-out gate.
     // The repeat rule replaced `thrash-gate`, `thrash-drift` and `repetition`; `dead-end` replaced
     // `spinning` and `no-results`.
-    expect(STEER_PRECEDENCE.length).toBe(27);
+    // `forced-reply` is the required reply's steer.
+    expect(STEER_PRECEDENCE.length).toBe(23);
+    expect(STEER_PRECEDENCE.filter((f) => f.id === 'forced-reply').length).toBe(1);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
       expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);
     }
@@ -185,7 +187,6 @@ describe('the declared precedence table', () => {
     // tool returned `is_error` saying the report was cancelled. The truth band's four could not see
     // it — `ungrounded-claim` reads the DELIVERIES ledger and `dojo_report` writes no such row.
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'false-delivery-claim').length).toBe(1);
-    expect(STEER_PRECEDENCE.filter((f) => f.id === 'reminder-silence').length).toBe(1);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'uncommitted-promise').length).toBe(1);
     // The retired number is a GAP, not a reallocation.
     expect(STEER_PRECEDENCE.filter((f) => f.priority === 60)).toEqual([]);
@@ -197,37 +198,28 @@ describe('the declared precedence table', () => {
     expect(p('failed-save-claim')).toBeLessThan(p('uncommitted-promise'));
     // …and above every silence floor, because "the promise is recorded" is a statement of
     // fact and it is untrue, which outranks a turn merely ending quietly.
-    expect(p('uncommitted-promise')).toBeLessThan(p('ghosted-ask'));
+    expect(p('uncommitted-promise')).toBeLessThan(p('forced-reply'));
     expect(p('uncommitted-promise')).toBeLessThan(p('promise-floor'));
-  });
-
-  it('the converted reminder floor ranks with the silence floors, above the start-ack band', () => {
-    const p = (id: string) => STEER_PRECEDENCE.find((f) => f.id === id)!.priority;
-    // A person set an alarm: the words are the whole point of the turn, so it outranks the
-    // "you have been waiting" ack and everything below it, and yields to the truth guards.
-    expect(p('ungrounded-claim')).toBeLessThan(p('reminder-silence'));
-    expect(p('reminder-silence')).toBeLessThan(p('start-ack'));
   });
 
   it('a truth guard outranks a silence floor outranks loop health outranks advice', () => {
     const p = (id: string) => STEER_PRECEDENCE.find((f) => f.id === id)!.priority;
-    expect(p('ungrounded-claim')).toBeLessThan(p('silent-closeout'));
-    expect(p('silent-closeout')).toBeLessThan(p('add-notes-stop'));
+    expect(p('ungrounded-claim')).toBeLessThan(p('forced-reply'));
+    expect(p('forced-reply')).toBeLessThan(p('add-notes-stop'));
     expect(p('add-notes-stop')).toBeLessThan(p('hoarding-advisory'));
   });
 });
 
 describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
   it('a floor that already fired this turn is a no-op, and the queue comes back unchanged', () => {
-    let q = enqueueSteer(emptySteerQueue(), { floor: 'promise-floor', content: 'once', atLoop: 1 });
+    const q = enqueueSteer(emptySteerQueue(), { floor: 'promise-floor', content: 'once', atLoop: 1 });
     const again = enqueueSteer(q, { floor: 'promise-floor', content: 'twice', atLoop: 2 });
     expect(again).toBe(q); // identity: nothing was built, nothing was recorded
-    expect(steerFireCount(q, 'promise-floor')).toBe(1);
   });
 
   it('THE LATCH COUNTS A STEER THAT IS STILL WAITING — this is what a boolean could not do', () => {
-    const q = enqueueSteer(emptySteerQueue(), { floor: 'silent-closeout', content: 'x', atLoop: 1 });
-    expect(steerFired(q, 'silent-closeout')).toBe(true);  // fired…
+    const q = enqueueSteer(emptySteerQueue(), { floor: 'delegation-exit', content: 'x', atLoop: 1 });
+    expect(steerFired(q, 'delegation-exit')).toBe(true);  // fired…
     expect(q.delivered).toEqual([]);                       // …and not yet delivered
   });
 
@@ -242,13 +234,6 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
     q = enqueueSteer(q, { floor: 'a2a-missed-reply', content: 'n3', key: '', atLoop: 1 });
     const blocked = enqueueSteer(q, { floor: 'a2a-missed-reply', content: 'n4', key: '', atLoop: 2 });
     expect(blocked).toBe(q);
-  });
-
-  it('a COUNTER latch fires more than once and reports its own count', () => {
-    let q = emptySteerQueue();
-    q = enqueueSteer(q, { floor: 'dead-end', content: 's1', key: 'loop-1', atLoop: 1 });
-    q = enqueueSteer(q, { floor: 'dead-end', content: 's2', key: 'loop-2', atLoop: 2 });
-    expect(steerFireCount(q, 'dead-end')).toBe(2);
   });
 
   it('TWO FLOORS NEVER SHARE A LATCH — the tracker pair, whose one flag disarmed either', () => {
@@ -272,7 +257,7 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
 
 describe('delivered-to-model is RECORDED, not assumed', () => {
   function pushed(): { q: SteerQueue; entry: ReturnType<typeof nextSteer> } {
-    const q = enqueueSteer(emptySteerQueue(), { floor: 'ghosted-ask', content: 'speak', atLoop: 1 });
+    const q = enqueueSteer(emptySteerQueue(), { floor: 'forced-reply', content: 'speak', atLoop: 1 });
     return { q, entry: nextSteer(q) };
   }
 
@@ -298,7 +283,7 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
     expect(q.abandoned.map((e) => e.content)).toEqual([sys('speak')]);
     expect(q.delivered).toEqual([]);
     // fired-without-delivered is the fact the single slot destroyed. It survives here.
-    expect(steerFired(q, 'ghosted-ask')).toBe(true);
+    expect(steerFired(q, 'forced-reply')).toBe(true);
   });
 
   it('negative control: marking an entry this queue does not hold changes nothing', () => {

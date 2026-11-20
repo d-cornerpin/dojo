@@ -1,28 +1,32 @@
 import { getDb } from '../db/connection.js';
+import type { HandBackCause, TurnEnd } from './ask-settlement.js';
 
-// ENGINE- or OWNER-imposed exits: the re-serve ladder (`work/ask-settlement.ts`) spends no rung on them.
-// Model choices stay out: `answered`, `handoff`, `no_reply_intended` (adding it disarms the silence bound).
-export const ENGINE_IMPOSED_EXITS: ReadonlySet<string> = new Set([
-  'iteration_cap', 'park', 'brake', 'stop', 'preempt', 'provider_error',
-  'stream_idle', 'abort', 'terminated', 'budget', 'identical_call',
-]);
+// Model choices (`answered`, `handoff`, `no_reply_intended`, and a death nobody could place) are silence.
+const PROVIDER_EXITS: ReadonlySet<string> = new Set(['provider_error', 'stream_idle', 'abort']);
+const CUT_EXITS: ReadonlySet<string> = new Set([...PROVIDER_EXITS, 'brake', 'identical_call', 'terminated', 'iteration_cap', 'park']);
+const FREE_EXITS: ReadonlySet<string> = new Set(['preempt', 'budget', 'stop']);
 
 // Reads the turn's record, which `finalizeTurn` writes earlier in the same teardown (keep that order). No
-// record, or a failed read, means no: inferring a cut there would disarm the ladder's bound.
-export function turnWasEngineCut(agentId: string, turnNumber: number | null): boolean {
-  if (turnNumber == null) return false;
+// record, or a failed read, is null: read as silence, so the silence bound stays armed.
+export function turnExitReason(agentId: string, turnNumber: number | null): string | null {
+  if (turnNumber == null) return null;
   try {
-    const r = getDb().prepare(
-      'SELECT exit_reason FROM turns WHERE agent_id = ? AND turn_number = ?',
-    ).get(agentId, turnNumber) as { exit_reason: string | null } | undefined;
-    return r?.exit_reason ? ENGINE_IMPOSED_EXITS.has(r.exit_reason) : false;
+    return (getDb().prepare('SELECT exit_reason FROM turns WHERE agent_id = ? AND turn_number = ?')
+      .get(agentId, turnNumber) as { exit_reason: string | null } | undefined)?.exit_reason ?? null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-export function engineCutHandBackReason(turnNumber: number | null): string {
-  return `re-opened: the engine ended the turn (${turnNumber ?? '?'}) before it delivered an answer `
-    + '— the model never declined this ask, so the person is still waiting and the re-serve ladder '
-    + 'is NOT spent on a turn the model did not get to finish';
+/** A cut that also met a provider limit waits for both: the later of its backoff and the provider's reset. */
+export const dueAfterCut = (backoffAt: number, retryAt?: number | null): number => Math.max(backoffAt, retryAt ?? 0);
+
+/** THE EXIT TABLE: how a turn that did not answer hands its request back. A provider limit on the turn's
+ *  first call waits for the reset; after paid calls it is a counted cut. A turn that parked its job, whatever
+ *  its exit (a full context, a turn budget), re-opens it uncounted with no due: the job's continuation serves it. */
+export function handBackCauseOf(exit: string | null, t: TurnEnd): HandBackCause {
+  if (exit === null) return 'silence';
+  if (t.parkedTask || FREE_EXITS.has(exit)) return 'free';
+  if (PROVIDER_EXITS.has(exit) && t.retryAt && !t.paidBeforeLimit) return 'wait';
+  return CUT_EXITS.has(exit) ? 'cut' : 'silence';
 }

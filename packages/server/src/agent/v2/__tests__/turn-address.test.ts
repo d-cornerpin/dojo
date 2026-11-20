@@ -40,13 +40,7 @@ describe('the turn address: who the written reply really goes to', () => {
     expect(second).toEqual(first);
   });
 
-  it('A3: a continuation has no inbound of its own and keeps the original address', () => {
-    const original = addr({ counterparty: contact, inboundChannel: 'imessage', inboundContext: { chatId: 'c1' } });
-    const cont = addr({ counterparty: contact, inboundChannel: null, inboundContext: null, restoredFrom: original });
-    expect(cont.boundChannel).toBe('imessage');
-    expect(cont.inboundContext).toEqual({ chatId: 'c1' });
-    expect(cont.deliveryChannel).toBe('imessage');
-    // Without the restore it would have fallen to the dashboard.
+  it('A3: a turn with no inbound of its own falls to the dashboard', () => {
     expect(addr({ counterparty: contact, inboundChannel: null }).deliveryChannel).toBe('dashboard');
   });
 

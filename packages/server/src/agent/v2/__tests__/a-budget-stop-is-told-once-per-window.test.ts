@@ -378,7 +378,6 @@ import {
   stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
-import { continuationContext, MAX_DRAIN_STUCK } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { checkBudget } from '../../../costs/budget.js';
@@ -461,7 +460,7 @@ beforeEach(async () => {
   recordErrorMock.mockImplementation(() => false);
   toolPayload.tokens = 2_000;
   stoppedAgents.clear(); recoveryRunStreak.clear(); doomedPrefillCompactionSpent.clear();
-  declaredPatienceHonestFailTurn.clear(); pendingWakeups.clear(); continuationContext.clear();
+  declaredPatienceHonestFailTurn.clear(); pendingWakeups.clear();
   // The scripted provider. The REAL wall in `callModel` decides first: while the limit stands it
   // throws exactly what it throws on a user's box; past it, the provider answers.
   callModelSpy.mockImplementation(async (p: { agentId: string; modelId: string }) => {
@@ -512,7 +511,7 @@ describe('t167 (iii): a budget stop that parks an agent is told once per budget 
     expect(stop).toMatch(/waiting/i);
     expect(stop, 'how to release them').toMatch(/raise the limit.*Ledger/i);
     expect(stop, 'the window turning over also releases them').toMatch(/turns over/i);
-    expect(stop, 'messages are kept').toMatch(/messages? (?:is|are) kept/i);
+    expect(stop, 'no promise that the messages are answered').not.toMatch(/kept and answered/i);
     expect(stop, 'no agent is named').not.toContain('Dock Desk');
     expect(stopCards().map((c) => c.words), 'the card carries the very words that were texted').toEqual([stop]);
     expect(stopCards()[0].severity).toBe('notice');

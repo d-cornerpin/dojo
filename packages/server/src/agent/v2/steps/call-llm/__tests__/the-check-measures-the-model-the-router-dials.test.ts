@@ -186,7 +186,6 @@ async function oneRoutedCall(): Promise<{ turnWindow: number; dialedModelId: str
     configuredModelId: 'auto', isAutoRouted: true, counterparty: OWNER,
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: () => { /* not the subject */ },
-    stashContinuationIfHuman: vi.fn(),
   } as unknown as PreCallGatesContext;
   const gated = await runPreCallGates(state, gateCtx);
   expect(gated.directive, 'the gate lets the turn proceed').toBe('proceed');

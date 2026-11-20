@@ -1,26 +1,12 @@
 // State that OUTLIVES a turn (runtime ↔ assembler); this module's existence breaks their import cycle.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { clearDrainLadder } from './drain-state.js';
 
 // Turn-start instant: assembly skips mid-turn user messages; cleared only after the next wakeup is queued.
 export const turnBoundary = new Map<string, string>();
 
-// Carries "a human is waiting" across an engine auto-continue; read once and deleted so a stale one never restores.
-export const continuationContext = new Map<string, {
-  convKey: string;
-  conversationId: string | null;
-  counterparty: import('./v2/counterparty.js').TurnCounterparty;
-  address?: import('./v2/turn-address.js').TurnAddress;
-}>();
-
-// Set when a user turn supersedes an unreplied A2A (a wakeup gives it its own turn); retries bound the spin.
-export const forceA2ATurn = new Set<string>();
-export const a2aTurnRetries = new Map<string, number>();
-
-// Clears the human ladder only: clearing both hands the unserved-wake drain extra self-wakes per session start.
+// A new session starts its untracked-work count from zero.
 export function clearServedConversations(agentId: string): void {
-  clearDrainLadder(agentId, 'human_conversation');
   untrackedWorkAcrossTurns.delete(agentId);
 }
 
@@ -50,8 +36,6 @@ export function clearUntrackedWorkAcrossTurnsForConversation(agentId: string, co
   if (prev && prev.convKey === convKey) untrackedWorkAcrossTurns.delete(agentId);
 }
 
-export const MAX_DRAIN_STUCK = 4;
-export const lastTurnWasA2A = new Set<string>();
 export const MAX_A2A_TURN_RETRIES = 2;
 
 // Async-scoped so concurrent safe-batch calls keep their own id; a record for another agent gets null.

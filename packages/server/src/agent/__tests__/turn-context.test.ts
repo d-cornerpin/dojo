@@ -11,8 +11,7 @@
 //   * WHAT IS NOT, and survives the clear — the plan's explicit warning that a
 //     careless collapse sweeps the CROSS-TURN state into an object emptied in
 //     `finally` and thereby deletes the state that is supposed to outlive the turn
-//     (`continuationContext` is stashed by one turn expressly FOR the next one;
-//     `untrackedWorkAcrossTurns` exists because a per-turn counter resetting every
+//     (`untrackedWorkAcrossTurns` exists because a per-turn counter resetting every
 //     turn WAS the defect). `drainHead`'s retirement into `drain_state` (migration
 //     140, "A Map dies with the process") is the shape those follow — not this one.
 //   * THAT THE TEN MAPS ARE GONE rather than standing beside their replacement,
@@ -27,8 +26,7 @@ import {
 } from '../turn-context.js';
 
 import {
-  turnBoundary, continuationContext, forceA2ATurn, a2aTurnRetries,
-  untrackedWorkAcrossTurns, lastTurnWasA2A,
+  turnBoundary, untrackedWorkAcrossTurns,
 } from '../turn-state.js';
 import {
   activeRuns, pendingWakeups, stoppedAgents, activeAbortControllers, preemptedAgents,
@@ -45,7 +43,8 @@ const THE_TURN_OWNS = [
   'address',   // 3.5: who this turn talks to and where the reply lands; computed once in preflight, read by delivery, the assembler and the send tools
   'turnNumber', 'root', 'servedWork', 'triggerMessageId',
   'pickupSeq',   // t145: the message-sequence high-water at pickup, read by the delegate-reply link (tracker-store)
-  'jobParked',   // t159 G2: written by `parkJob` (work/), read by `turnParkedTheJob` (v2/engine-exit): a published fact
+  'jobParked',   // the task `parkJob` (work/) parked the job on, read by `turnParkedTheJob` and finalize: a published fact
+  'servedJob',   // the task a job's own turn was started from (the preflight's pickup); the job's readers and finalize read it
 ];
 
 /** POPULATION 2 — mutable DRIVER locals that cross a step boundary, carried here
@@ -111,14 +110,6 @@ const THE_DRIVER_CARRIES = [
   // redundant-closeout floor, so a lost write double-SENDS the answer.
   'engineStartAckDeliveredThisTurn',
   'deferredDeliveredByAck',
-  // ANSWER-ANYWAY — the SEVENTH local of the same F10 mechanism, and it is classified here
-  // rather than drifting in. The pair above records THAT the ack lane spoke; this records
-  // WHICH bubble carried the words, which is what the `[no-reply]` reply rule needs to name
-  // the turn's answer when the promotion delivered it. Written in `postCallClassify` and read
-  // by a LATER ITERATION of the same span (the promotion rides with a tool call; the sentinel
-  // arrives after the tools have run), so a step-local resets each round and the answer is
-  // nameless on every turn that promoted — which is the measured defect, not a hypothesis.
-  'startAckPromotedRowId',
   // The queued row of an answer delivered mid-turn: written by the start-ack closure, read by finalize,
   // so it crosses the whole span; finalize does not queue the same words again while it is set.
   'earlyAnswerRowId',
@@ -132,6 +123,17 @@ const THE_DRIVER_CARRIES = [
   // and the branch that reads it is the one that deliberately does NOT steer — so a reset
   // latch produces an EXTRA engine nudge on a turn that was already nudged.
   'goingIdleDetectorRanThisTurn',
+  // The provider's reset the last call met (recovery writes it, finalize reads it) and the no-answer abort mark:
+  // both cross from the model call to the turn's end.
+  'retryAt',
+  'abortHandBack',
+  // Another agent's request the preflight picked: the send door and the served ids read it, finalize marks it served.
+  'servedRequest',
+  // The required reply: armed in the loop's exit, read by the gates, the model call, the empty ladder and finalize.
+  'forcedReplySpent',
+  'forceReplyPending',
+  // Why this turn's push is held: written by the closeout floors, read by finalize's router.
+  'pushHeld',
   // PHASE-6 T2 (CUT 9) — the LAST tranche's one written crossing, and the crossing the
   // ruling was written about. T2 handed this span back rather than guess: seven closures
   // declared in `preflight` read live crossing mutable state. Eight cuts drained six of
@@ -214,19 +216,15 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
 });
 
 describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () => {
-  it('the seventeen CROSS-TURN carriers survive endTurnContext', () => {
+  it('the thirteen CROSS-TURN carriers survive endTurnContext', () => {
     const A = FXID.n4;
     openTurnContext(A);
 
-    // Six that live in `turn-state.ts` on purpose.
+    // Two that live in `turn-state.ts` on purpose.
     turnBoundary.set(A, '2026-08-04 00:00:00');
-    continuationContext.set(A, { convKey: 'ck', conversationId: 'conv-1', counterparty: {} as never });
-    forceA2ATurn.add(A);
-    a2aTurnRetries.set(A, 1);
     untrackedWorkAcrossTurns.set(A, { convKey: 'ck', count: 3 });
-    lastTurnWasA2A.add(A);
 
-    // Twelve that live in `shared-state.ts`, shared with the v1 runtime.
+    // Eleven that live in `shared-state.ts`, shared with the v1 runtime.
     activeRuns.add(A);
     pendingWakeups.add(A);
     stoppedAgents.add(A);
@@ -241,18 +239,13 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
 
     endTurnContext(A);
 
-    // THE CLAUSE: the turn's bag is gone and every one of the seventeen is still there.
-    // A collapse that swept these in would delete a continuation the NEXT turn is meant
-    // to consume, reset a counter whose whole purpose is to cross turns, and drop an
+    // THE CLAUSE: the turn's bag is gone and every one of the thirteen is still there.
+    // A collapse that swept these in would reset a counter whose whole purpose is to cross turns, and drop an
     // abort controller mid-flight.
     expect(turnContext(A)).toBeUndefined();
     const survivors = {
       turnBoundary: turnBoundary.has(A),
-      continuationContext: continuationContext.has(A),
-      forceA2ATurn: forceA2ATurn.has(A),
-      a2aTurnRetries: a2aTurnRetries.has(A),
       untrackedWorkAcrossTurns: untrackedWorkAcrossTurns.has(A),
-      lastTurnWasA2A: lastTurnWasA2A.has(A),
       activeRuns: activeRuns.has(A),
       pendingWakeups: pendingWakeups.has(A),
       stoppedAgents: stoppedAgents.has(A),
@@ -266,12 +259,12 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
       recoveryRunStreak: recoveryRunStreak.has(A),
     };
     expect(Object.entries(survivors).filter(([, v]) => !v).map(([k]) => k)).toEqual([]);
-    expect(Object.keys(survivors)).toHaveLength(17);
+    expect(Object.keys(survivors)).toHaveLength(13);
 
-    for (const m of [turnBoundary, continuationContext, a2aTurnRetries, untrackedWorkAcrossTurns,
+    for (const m of [turnBoundary, untrackedWorkAcrossTurns,
       activeAbortControllers, lastCompactionDividerAt, lastA2APreemptAt, agentStartTimes,
       statusHeartbeats, recoveryRunStreak]) m.delete(A);
-    for (const s of [forceA2ATurn, lastTurnWasA2A, activeRuns, pendingWakeups, stoppedAgents,
+    for (const s of [activeRuns, pendingWakeups, stoppedAgents,
       preemptedAgents, backgroundDrains]) s.delete(A);
   });
 });

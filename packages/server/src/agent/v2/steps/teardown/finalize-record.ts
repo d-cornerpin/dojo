@@ -1,19 +1,21 @@
 // Teardown, the turn record: write how the turn ended, then everything that reads it in the same span.
 
 import { createLogger } from '../../../../logger.js';
-import { setAnswerMessageId } from '../../../../memory/message-store.js';
-import { clearUntrackedWorkAcrossTurnsForConversation, continuationContext } from '../../../turn-state.js';
-import { isStopFenced } from '../../../shared-state.js';
+import { markServedByRowid, releaseEngineEventByRowid, setAnswerMessageId, sweepByRowid } from '../../../../memory/message-store.js';
+import { clearUntrackedWorkAcrossTurnsForConversation } from '../../../turn-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { appendWorkEvent, claimingTurnOf, joinState } from '../../../../work/store.js';
-import { settleAsksAtTurnFinalize } from '../../../../work/ask-settlement.js';
-import { assembledContextAsks } from '../../counterparty.js';
+import { settleAsksAtTurnFinalize, type TurnEnd } from '../../../../work/ask-settlement.js';
+import { assembledContextAsks, recordEngineEventDeliveryFailure } from '../../counterparty.js';
+import { serveLater } from '../../serve-later.js';
+import { handBackCauseOf } from '../../../../work/exit-attribution.js';
 import { inboundAsksNothing } from '../../classifiers/inbound-routing.js';
 import {
   pauseDriveWorkWaitingOnOwner, stillClaimedWork, terminalDeliveryForTurn,
 } from '../../answered-edge.js';
 import { finalizeTurn, type TurnExitReason } from '../../turn-record.js';
 import { turnParkedTheJob } from '../../engine-exit.js';
+import { stretchMoved } from '../post-call-classify/job-turn-end.js';
 import type { AgentTurnState } from '../../state.js';
 import type { TeardownContext } from './index.js';
 
@@ -25,7 +27,7 @@ export async function finalizeTurnRecord(
 ): Promise<void> {
   const {
     agentId, turnCtx, turnNumber, chosenConvKey, chosenConversationId, lastAssembledAtIso,
-    terminalAnswerRowId, triggerWorkId,
+    terminalAnswerRowId, triggerWorkId, claimedEngineEvent,
     toolPhaseEndedBySpinBrake, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     db,
   } = ctx;
@@ -70,15 +72,29 @@ export async function finalizeTurnRecord(
     // Work-classified but nothing effectful: the pause side does not park its work on the owner
     // (a misclassification only leaves a task unpaused).
     const startLineOnly = turnCtx.inboundClassifiedAsWork && state.nonIdempotentCallsThisTurn === 0;
-    // The engine queued this turn's own continuation, so settlement does not take its opening line as
-    // the answer. Same expression as queuedOwnContinuation below.
-    const continuing = turnParkedTheJob(agentId) || (!isStopFenced(agentId) && continuationContext.has(agentId));
     // `claimed_by_turn` is NULLed when an answered ask leaves `claimed` mid-turn; claim_turn is the record.
     const triggerAsk = triggerWorkId
       ? db.prepare('SELECT kind, requester FROM work WHERE id = ?').get(triggerWorkId) as
         { kind: string; requester: string } | undefined
       : undefined;
     const triggerAskClaimingTurn = triggerWorkId ? claimingTurnOf(triggerWorkId) : null;
+    // How the turn ended, as the exit table reads it (`work/exit-attribution.ts`); the asks and the event share it.
+    const turnEnd: TurnEnd = {
+      retryAt: turnCtx.retryAt, paidBeforeLimit: turnCtx.retryAt !== null && state.loopCount > 1,
+      parkedTask: turnParkedTheJob(agentId) ? turnCtx.jobParked : null, jobTurn: turnCtx.servedJob !== null,
+      // The required call returned (a throw or a Stop leaves it pending), nothing cut the turn after it, no answer.
+      forcedEmpty: turnCtx.forcedReplySpent && !turnCtx.forceReplyPending && state.engineCutExit === null && !answerRow,
+      peerBox: ctx.counterpartyIsAgentSender,
+    };
+    const cause = handBackCauseOf(exitReason, turnEnd);
+    // A job turn the engine cut: a job that moved resumes at the provider's reset or in a minute, as does one whose
+    // first call met the limit; one that moved nothing stops, and the PM's ladder takes it.
+    if (turnCtx.servedJob && !turnEnd.parkedTask && (cause === 'wait' || (cause === 'cut' && exitReason !== 'iteration_cap' && exitReason !== 'park'))) {
+      const at = cause === 'wait' ? turnCtx.retryAt : stretchMoved(state, agentId) ? (turnCtx.retryAt ?? Date.now() + 60_000) : null;
+      try { if (at !== null) serveLater({ kind: 'task', id: turnCtx.servedJob }, at, 'the job turn was cut; it resumes'); } catch (err) {
+        logger.warn('v2: a cut job turn could not re-park its task', { agentId, turnNumber, error: String(err) }, agentId);
+      }
+    }
     // Settle every ask this turn claimed or assembled (work/ask-settlement.ts). Must precede the answer
     // stamp below, which keys on the served_by_turn the settlement writes.
     try {
@@ -86,11 +102,40 @@ export async function finalizeTurnRecord(
         ? assembledContextAsks(agentId, chosenConvKey, lastAssembledAtIso)
         : [];
       const askedNothing = triggerWorkId && await inboundAsksNothing(turnCtx) ? triggerWorkId : null;
-      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled, continuing, askedNothing });
+      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled, askedNothing, ...turnEnd });
     } catch (err) {
       logger.warn('v2: the turn-finalize ask adjudication FAILED — an owner ask may be left mid-flight', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
       }, agentId);
+    }
+    // Another agent's request this turn served is marked served here, and only here. When nothing was served (the
+    // provider's limit met the first call, a barge-in, a spending stop) its serve is given back: due at the reset,
+    // or now. A Stop and a turn that parked its job keep the mark.
+    const request = turnCtx.servedRequest;
+    const nothingServed = cause === 'wait' || (cause === 'free' && exitReason !== 'stop' && !turnEnd.parkedTask);
+    try {
+      if (request && nothingServed) serveLater({ kind: 'row', agentId, rowid: request.rowid, attempts: request.attempts }, turnCtx.retryAt ?? Date.now(), 'nothing was served; the request is owed again');
+      else if (request) markServedByRowid(request.rowid, turnNumber);
+    } catch (err) {
+      logger.warn('v2: another agent\'s request was not marked at finalize; it stays unserved', { agentId, turnNumber, error: String(err) }, agentId);
+    }
+    // The engine event this turn claimed: swept on Stop; released after an abort or a counted cut that made no
+    // side effect, to wait for the provider's reset when the limit met the first call; otherwise it stays served.
+    if (claimedEngineEvent) {
+      try {
+        const { rowid } = claimedEngineEvent;
+        if (exitReason === 'stop') {
+          sweepByRowid({ rowid, agentId });
+        } else if ((turnCtx.abortHandBack || cause === 'cut') && state.nonIdempotentCallsThisTurn === 0
+            && releaseEngineEventByRowid({ rowid, agentId, turnNumber: claimedEngineEvent.turnNumber }) > 0) {
+          if (cause === 'wait') serveLater({ kind: 'row', agentId, rowid }, turnCtx.retryAt, 'the provider asked to wait; the event is served at its reset');
+          else recordEngineEventDeliveryFailure(agentId, rowid, turnCtx.retryAt);
+        }
+      } catch (err) {
+        logger.warn('v2: the engine event hand-back at finalize failed; the event stays served', {
+          agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
     }
     // Closeout: warn when an unanswered turn leaves work claimed, and hand work back to the owner when a
     // user turn talked but did not act. Records only, no prose; the rules live in answered-edge.ts.
@@ -111,7 +156,7 @@ export async function finalizeTurnRecord(
           startLineOnly,
           trackerWriteThisTurn: state.trackerWriteThisTurn,
           servedSourceMessageId: turnCtx.root?.sourceMessageId ?? null,
-          queuedOwnContinuation: continuing,
+          queuedOwnContinuation: turnEnd.parkedTask != null,
           // Only work this turn touched; untouched backlog belongs to the poke ladder.
           touchedSince: turnStartedAt,
         });

@@ -76,7 +76,6 @@ vi.mock('../../../../../db/connection.js', () => ({ getDb: () => fakeDb }));
 const reArmIfStrandedNoAnswerSpy = vi.fn();
 const noteTerminalAnswerSpy = vi.fn();
 const deliverEngineUserAckSpy = vi.fn(async () => undefined);
-const persistAndBroadcastSystemRowSpy = vi.fn();
 const startAckRepliedNowSpy = vi.fn(() => false);
 
 function turnCtxFor(over: Record<string, unknown> = {}): PostCallClassifyContext['turnCtx'] {
@@ -137,7 +136,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     reArmIfStrandedNoAnswer: reArmIfStrandedNoAnswerSpy,
     noteTerminalAnswer: noteTerminalAnswerSpy,
     deliverEngineUserAck: deliverEngineUserAckSpy,
-    persistAndBroadcastSystemRow: persistAndBroadcastSystemRowSpy,
     startAckRepliedNow: startAckRepliedNowSpy,
     ...over,
   } as PostCallClassifyContext;
@@ -213,21 +211,11 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     const out = await runPostCallClassify(freshState(), ctx);
 
     if (out.directive !== 'proceed') throw new Error('unreachable');
-    // UX-REPAIR T2: the same call, now carrying the two facts the engine already knew and
-    // used to discard — the start-ack STAMP and the explicit `agent-text` kind (so the stamp
-    // does not reclassify the model's own words as engine fallback). Settlement itself still
-    // REFUSES a promoted row as an ask receipt (the seventh narrowing's blanket rule).
-    //
-    // ANSWER-ANYWAY (as reworked under owner rulings 10(d)/OR2): `reuseId` is no longer null.
-    // The row id is MINTED at the promotion site and recorded on the bag, because the words
-    // the person heard have to stay NAMEABLE — the un-blinded ghosted-ask steer quotes them
-    // back so the MODEL decides whether they answered the ask; the engine never judges the
-    // content. Without the id the steer had nothing to show, which is how turn 5649's
-    // answered ask was blindly re-served four times and parked `blocked`.
+    // The line carries the start-ack stamp and the explicit `agent-text` kind, so the stamp
+    // does not reclassify the model's own words as engine fallback.
     expect(deliverEngineUserAckSpy).toHaveBeenCalledWith(
-      'Here is the answer.', 'engine_start_ack', ctx.turnCtx.startAckPromotedRowId, 'agent-text',
+      'Here is the answer.', 'engine_start_ack', null, 'agent-text',
     );
-    expect(ctx.turnCtx.startAckPromotedRowId).toEqual(expect.any(String));
     expect(out.persistedContent).toBeNull();
     // The pair is written ON THE BAG, live, so the wall-clock timer sees it at fire time.
     expect(ctx.turnCtx.engineStartAckDeliveredThisTurn).toBe(true);
@@ -289,7 +277,6 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
       ctxFor({ result: modelResult({ content: '', toolCalls: [] }), hasUnansweredUser: false }),
     );
     expect(out.directive).toBe('exit');
-    expect(persistAndBroadcastSystemRowSpy).not.toHaveBeenCalled();
     expect(noteTerminalAnswerSpy).not.toHaveBeenCalled();
     expect(out.state.steerQueue.fired).toHaveLength(0);
   });

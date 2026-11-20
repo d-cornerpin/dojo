@@ -35,20 +35,21 @@ vi.mock('../../agent/model.js', () => ({
   getContextWindow: () => 32_000, getModelOutputCap: () => 4096, getProviderCeilingTokens: () => null,
   effectiveContextWindow: (d: number) => d, resolveNumCtx: () => ({ effective: null }),
 }));
-// The park's timer wake starts a run through the runtime: here, the woken turn is the same forced pass and park.
-const wakes = vi.hoisted(() => ({ by: {} as Record<string, number>, turns: [] as Array<Promise<void>>, turn: null as null | ((agentId: string) => Promise<void>) }));
 vi.mock('../../agent/runtime.js', () => ({
-  getAgentRuntime: () => ({ handleMessage: async (agentId: string) => { wakes.by[agentId] = (wakes.by[agentId] ?? 0) + 1; if (wakes.turn) wakes.turns.push(wakes.turn(agentId)); }, getAgentUptime: () => 0 }),
+  getAgentRuntime: () => ({ handleMessage: async () => 'ran', getAgentUptime: () => 0 }),
   stopAgent: async () => {},
 }));
-const parks = vi.hoisted(() => [] as Array<{ how?: string; delayMs?: number; after: boolean }>);
+// A park dates the job's task row; the one clock (not driven here) wakes an agent whose job is due, and each such
+// wake is the same forced pass and park, run below by hand.
+vi.mock('../../agent/v2/owed.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), armOwedClock: () => undefined }));
+const parks = vi.hoisted(() => [] as Array<{ due: 'event' | 'time'; after: boolean }>);
 vi.mock('../../work/job-continuation.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../work/job-continuation.js')>();
   return {
     ...real,
-    parkJob: (agentId: string, reason: string, how?: 'drain' | 'timer', delayMs?: number, after?: Promise<unknown>) => {
-      parks.push({ how: how ?? 'drain', delayMs, after: after !== undefined });
-      return real.parkJob(agentId, reason, how, delayMs, after);
+    parkJob: (agentId: string, reason: string, due: number | 'event', after?: Promise<unknown>) => {
+      parks.push({ due: due === 'event' ? 'event' : 'time', after: after !== undefined });
+      return real.parkJob(agentId, reason, due, after);
     },
   };
 });
@@ -67,7 +68,8 @@ import { markWaiting, __resetSummaryWriterHealthForTests } from '../writer.js';
 import { __resetBrakesForTests, compactionBrakeMsLeft } from '../compaction-brakes.js';
 import { __resetCompactionFailuresForTests } from '../compaction-defect.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
-import { backgroundDrains, pendingWakeups } from '../../agent/shared-state.js';
+import { backgroundDrains } from '../../agent/shared-state.js';
+import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { parkAfterForcedPass, __resetFullContextWaitForTests } from '../../agent/v2/full-context-wait.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { configRouter } from '../../gateway/routes/config.js';
@@ -89,9 +91,9 @@ const settle = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, m
 
 beforeEach(() => {
   writers.calls = []; writers.unreachable = new Set([OWN]);
-  wakes.by = {}; wakes.turns = []; wakes.turn = null; parks.length = 0; logLines.length = 0;
+  parks.length = 0; logLines.length = 0;
   ollama.psOk = true; ollama.showOk = true;
-  backgroundDrains.clear(); pendingWakeups.clear();
+  backgroundDrains.clear();
   __resetBrakesForTests(); __resetBreakersForTests(); __resetSummaryWriterHealthForTests(); __resetCompactionFailuresForTests(); __resetFullContextWaitForTests();
   mockDb.current = new Database(':memory:');
   runMigrations(mockDb.current);
@@ -137,24 +139,41 @@ function seed(agentId = AGENT, turns = 24): void {
 const realSummaries = (agentId = AGENT): number =>
   (db().prepare("SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ? AND kind != 'uncondensed'").get(agentId) as { n: number }).n;
 /** The turn whose assembly the provider boundary refused: one forced pass, then the park (as `recovery.ts` does). */
+let turnNumber = 100;
 async function overBudgetTurn(agentId: string): Promise<void> {
-  const own = (db().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string }).model_id;
-  const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
-  await checkAndCompact(agentId, own, 8_000, { force: true, inTurn: true });
-  parkAfterForcedPass(agentId, 'recovery-over-budget-assembly', brakedBefore);
+  const ask = (db().prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1").get(agentId) as { id: string }).id;
+  const bag = openTurnContext(agentId);   // the turn serves the owner's latest message, so its park has a task to date
+  bag.turnNumber = ++turnNumber;
+  bag.root = { kind: 'ask', id: ask, sourceMessageId: ask };
+  try {
+    const own = (db().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string }).model_id;
+    const brakedBefore = compactionBrakeMsLeft(agentId) !== null;
+    await checkAndCompact(agentId, own, 8_000, { force: true, inTurn: true });
+    parkAfterForcedPass(agentId, 'recovery-over-budget-assembly', brakedBefore);
+  } finally { endTurnContext(agentId); }
 }
+const dueNow = (agentId: string): boolean => !!db().prepare("SELECT 1 FROM work WHERE agent_id = ? AND kind = 'task' AND next_attempt_at <= ?").get(agentId, Date.now());
 /** Both agents' spans wait: their writer (the own model) not answering, the small writer with no room; each parked. */
 async function bothWaiting(): Promise<void> {
   seed(AGENT); seed(OTHER);
   for (const a of [AGENT, OTHER]) markWaiting(a, OWN, '', 'not-answering');
-  wakes.turn = overBudgetTurn;
   await overBudgetTurn(AGENT); await overBudgetTurn(OTHER);
-  expect(parks.filter((p) => p.how === 'timer' && p.after).length, 'precondition: both parked on their writer').toBe(2);
-  expect(pendingWakeups.size, 'and nothing woke at once').toBe(0);
+  expect(parks.filter((p) => p.due === 'event' && p.after).length, 'precondition: both parked on their writer').toBe(2);
+  expect(dueNow(AGENT) || dueNow(OTHER), 'and nothing woke at once').toBe(false);
 }
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-/** Wait past the park's settle second, then for every woken turn. */
-async function afterTheWake(): Promise<void> { await settle(1_300); await Promise.all(wakes.turns); }
+/** Each agent whose job came due is woken once: the job turn picks its task up and runs the same pass. */
+const wakes = { by: {} as Record<string, number> };
+async function afterTheWake(): Promise<void> {
+  await settle(50);
+  wakes.by = {};
+  for (const a of [AGENT, OTHER]) {
+    if (!dueNow(a)) continue;
+    wakes.by[a] = 1;
+    db().prepare("UPDATE work SET next_attempt_at = NULL WHERE agent_id = ? AND kind = 'task'").run(a);
+    await overBudgetTurn(a);
+  }
+}
 
 describe('an owner change that can make a writer runnable wakes each waiting agent once', () => {
   // v3.5 field fix 3: deleted with the Summarization setting (owner ruling: there is none): the pick saved in Settings.

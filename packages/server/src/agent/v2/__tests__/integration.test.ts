@@ -26,6 +26,8 @@ import type { ToolCall } from '@dojo/shared';
 // for the duration of these tests.
 
 const mockDb = { current: null as Database.Database | null };
+/** A park dates the job's task row: that due is the continuation. */
+const jobParked = (): boolean => !!mockDb.current!.prepare("SELECT 1 FROM work WHERE agent_id = 'primary' AND kind = 'task' AND next_attempt_at IS NOT NULL").get();
 const broadcastSpy = vi.fn();
 const callModelSpy = vi.fn();
 const executeToolSpy = vi.fn();
@@ -366,7 +368,7 @@ vi.mock('../steer-queue.js', async () => {
 });
 import { runV2Turn } from '../loop.js';
 import {
-  stoppedAgents, recoveryRunStreak, pendingWakeups,
+  stoppedAgents, recoveryRunStreak, pendingWakeups, preemptedAgents,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
 import { AgentError } from '../../errors.js';
@@ -440,6 +442,11 @@ function migratedDb(): Database.Database {
   // be. Proven: a `models` row naming an absent provider raises `FOREIGN KEY constraint failed`.
   db.pragma('foreign_keys = ON');
   return db;
+}
+
+/** The backoff a failed turn set on its request has passed: the next run serves it again. */
+function backoffPasses(): void {
+  mockDb.current!.prepare("UPDATE work SET next_attempt_at = ? WHERE kind = 'ask' AND next_attempt_at IS NOT NULL").run(Date.now() - 1);
 }
 
 function setupTestDb(): Database.Database {
@@ -698,9 +705,9 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // Loop should call model exactly ONCE, complete_task exits before
-    // a follow-up call.
-    expect(callModelSpy).toHaveBeenCalledTimes(1);
+    // complete_task ends the passes; the person still waiting gets the required reply, whose tool call never runs.
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    expect(callModelSpy.mock.calls[1][0].forceReply).toBe(true);
     expect(executeToolSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -861,7 +868,7 @@ describe('runV2Turn integration', () => {
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
     expect(sysMsgs.filter((r) => /tool calls.*Starting a fresh turn/.test(r.content))).toEqual([]);
-    expect(pendingWakeups.has('primary'), 'the continuation is queued').toBe(true);
+    expect(jobParked(), 'the job is parked on its task').toBe(true);
   });
 
   it('PRESERVATION #7: drainPendingAttachments IS called when persisting assistant message', async () => {
@@ -926,60 +933,34 @@ describe('runV2Turn integration', () => {
     expect(args[3]).toBe('meaningful response');
   });
 
-  it('PRESERVATION #38: empty response triggers silent retry, then nudge, then toast', async () => {
-    // v1 behavior: 3-phase recovery from empty model responses.
-    //   phase 1, silent retry (no nudge, no toast)
-    //   phase 2, explicit steer injection
-    //   phase 3, chat:error toast
-    // v2 used to skip straight to phase 3. This test enforces the full chain.
+  it('PRESERVATION #38: an empty response with a person waiting gets the silent retry, then the required reply, then is held', async () => {
     let modelCallCount = 0;
     callModelSpy.mockImplementation(async () => {
       modelCallCount++;
-      // Always return empty content + no tool calls.
-      return {
-        content: '',
-        toolCalls: [],
-        inputTokens: 100,
-        outputTokens: 0,
-        stopReason: 'end_turn',
-      };
+      return { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
     });
 
     await runV2Turn('primary');
 
-    // The model should have been called THREE times:
-    //   call 1, initial empty
-    //   call 2, after silent retry
-    //   call 3, after explicit nudge
-    // After the third empty response, the loop breaks with the error toast.
+    // The empty call, its silent retry, then the required reply: no nudge in between.
     expect(modelCallCount).toBe(3);
-
-    // Exactly one chat:error event was broadcast on the final empty.
-    //
-    // ⚠ t125 CHANGED THE CODE, NOT THE COUNT, AND THE REASON IS THIS FIXTURE'S OWN SHAPE:
-    // `msg-user-1` is left UNCLAIMED here, so a person is waiting. A waiting person now
-    // gets the honest end of the ladder — `FLOOR_GHOSTED`, carrying a DURABLE role='system'
-    // row in the platform's voice — instead of `MODEL_FAILED`, which is live-only and left
-    // a reloaded page showing a turn that said nothing at all. The nobody-waiting turn still
-    // gets exactly the old `MODEL_FAILED` toast and no row; that arm is asserted in
-    // `post-call-classify/__tests__/a-turn-that-owes-a-person-never-ends-in-silence.test.ts`.
+    expect(callModelSpy.mock.calls.map((c) => c[0].forceReply === true)).toEqual([false, false, true]);
+    // The required reply came back empty too: the request is held and the owner told once, as the Dojo.
+    const ask = mockDb.current!.prepare("SELECT state FROM work WHERE agent_id = 'primary' AND kind = 'ask'").get() as { state: string };
+    expect(ask.state).toBe('blocked');
     const errors = getBroadcastEventsByType('chat:error') as Array<{ code?: string }>;
-    expect(errors).toHaveLength(1);
-    expect(errors[0].code).toBe('FLOOR_GHOSTED');
-    // The durable half, which a toast never had.
-    const ghostRows = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' AND content LIKE '%empty reply%'")
+    expect(errors.map((e) => e.code)).toEqual(['FLOOR_GHOSTED']);
+    const held = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' AND content LIKE '%stopped trying%'")
       .all();
-    expect(ghostRows).toHaveLength(1);
-
-    // No assistant message was persisted (all responses were empty).
+    expect(held).toHaveLength(1);
     const assistantMsgs = mockDb.current!
       .prepare("SELECT * FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all();
     expect(assistantMsgs).toHaveLength(0);
   });
 
-  it('PRESERVATION #40: identical response on a NO-TRIGGER turn is not double-persisted', async () => {
+  it('PRESERVATION #40: identical response on a NO-TRIGGER turn is held once and the agent told, never dropped unseen', async () => {
     // Scoped by G-SUP-3 (comms-audit, 1f8b9b4 2026-07-02): the identical-
     // response dedup now fires ONLY on turns with no waiting human (a genuine
     // mid-stall regeneration). Claim the seeded user message so nothing is
@@ -1007,13 +988,12 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // The model ran (this is not a vacuous no-turn), but the dup was rejected:
-    // still exactly one assistant message.
-    expect(callModelSpy).toHaveBeenCalledTimes(1);
+    // The repeat is held once and the agent is told (the near-duplicate floor); written again, it goes out.
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
     const assistantMsgs = mockDb.current!
       .prepare("SELECT id FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all();
-    expect(assistantMsgs).toHaveLength(1);
+    expect(assistantMsgs).toHaveLength(2);
   });
 
   it('PRESERVATION #40 / G-SUP-3: identical reply on a USER turn IS delivered (never eaten)', async () => {
@@ -1106,11 +1086,9 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // Four model calls (the nudge resets the counter so the post-nudge
-    // sequence repeats): iter 1 → counter 1; iter 2 → counter hits 2,
-    // nudge fires, counter resets to 0; iter 3 (with nudge) → counter 1;
-    // iter 4 → counter hits 2 again, already nudged → break with NO_RESULTS.
-    expect(modelCallCount).toBe(4);
+    // Four passes (the nudge resets the counter so the post-nudge sequence repeats): iter 2 nudges, iter 4
+    // breaks with NO_RESULTS. The person still waiting then gets the required reply: a fifth call.
+    expect(modelCallCount).toBe(5);
 
     const noResultsErrors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string }>).filter(
       (e) => e.code === 'NO_RESULTS',
@@ -1163,37 +1141,16 @@ describe('runV2Turn integration', () => {
     expect(noResultsErrors).toHaveLength(0);
   });
 
-  it('PRESERVATION #38 (REWRITTEN BY t125): tool calls then empty, with a person waiting, never ends the turn silently', async () => {
-    // ════════════════════════════════════════════════════════════════════════════════════
-    // ⚠ THIS TEST ASSERTED THE DEFECT, END TO END, AND IT IS THE THIRD ONE THAT DID
-    //   (the other two are in `post-call-classify/__tests__/an-answer-in-the-wrong-channel-
-    //   is-retried.test.ts`; this one the triage did not find).
-    //
-    // AS WRITTEN: it drove a real turn on an agent holding a WAITING user message
-    // (`msg-user-1`, seeded by this file's fixture), had the model call a tool and then
-    // return empty, and asserted "two model calls, no toast — a legitimate end". That is
-    // the owner's screenshot pinned as correct behaviour: he asked his PM a question, it
-    // ran two `history_search` calls, and the turn ended with nothing on his screen.
-    //
-    // THE v1 CARVE-OUT IT CITED IS REAL AND IS KEPT — runtime.ts:1167-1171, "the agent did
-    // work and has nothing more to say" — but only for the turn it was written about: one
-    // where NOBODY IS WAITING. That half cannot be asserted here, and the reason is the
-    // finding itself: on a user-driven turn the engine's own convention is `triggerRow` set
-    // ⇒ this turn serves a waiting human (`steps/preflight/closeout-gate.ts:106`), so a
-    // user turn is never a nobody-owed turn and this fixture cannot honestly make it one.
-    // The carve-out is asserted where it is actually reachable, across all seven provider
-    // seams, in `post-call-classify/__tests__/a-turn-that-owes-a-person-never-ends-in-
-    // silence.test.ts` ("nobody is owed: the not-a-failure exit is byte-identical").
-    //
-    // What this test now asserts is the shape the owner actually met, end to end, on the
-    // default (non-DeepSeek) contract this fixture resolves.
-    // ════════════════════════════════════════════════════════════════════════════════════
+  it('PRESERVATION #38: tool calls then empty, with a person waiting, ends in the required reply, never in silence', async () => {
     const toolCall: ToolCall = { id: 'tc1', name: 'file_read', arguments: { path: '/x' } };
     let modelCallCount = 0;
     callModelSpy.mockImplementation(async () => {
       modelCallCount++;
       if (modelCallCount === 1) {
         return { content: '', toolCalls: [toolCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+      }
+      if (modelCallCount === 4) {
+        return { content: 'The file says hello.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
       }
       return { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
     });
@@ -1203,30 +1160,90 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // THE MODEL IS ASKED AGAIN rather than left alone: the ladder's silent retry, then its
-    // one-shot steer. Four calls (tool-use, empty, retry, post-steer) — bounded, and the
-    // same bound every other empty reply in this engine gets. Before t125: two.
+    // The tool call, the empty one, its silent retry, then the required reply, which the person hears.
     expect(modelCallCount).toBe(4);
-
-    // AND THE PERSON HEARS SOMETHING DURABLE. Not a live-only toast — a role='system' row
-    // in the platform's own voice (OR2: never the engine wearing the agent's face), which
-    // is still there after a reload. That is the half the owner's screen was missing.
-    const notices = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' AND content LIKE '%empty reply%'")
-      .all() as Array<{ content: string }>;
-    expect(notices).toHaveLength(1);
-    expect(notices[0].content).toMatch(/send it again/i);
-    // The platform speaks as the platform: no first-person line standing in for the agent.
-    expect(notices[0].content).not.toMatch(/\bI\b/);
-
-    // "THE REPLY STANDS" IS UNTOUCHED: no assistant row was forged for the person. The one
-    // assistant row this turn wrote is the tool_use itself, which carries no text — a ghost
-    // is by definition a turn with no reply to stand.
+    expect(callModelSpy.mock.calls[3][0].forceReply).toBe(true);
     const spoken = (mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all() as Array<{ content: string }>)
       .filter((r) => !r.content.includes('"type":"tool_use"'));
-    expect(spoken).toHaveLength(0);
+    expect(spoken.map((r) => r.content)).toEqual(['The file says hello.']);
+    expect(getBroadcastEventsByType('chat:error')).toHaveLength(0);
+  });
+
+  it('a voice turn that owes a person and goes empty keeps the nudge: no must-answer call follows there', async () => {
+    mockDb.current!.prepare("UPDATE messages SET channel = 'voice' WHERE id = 'msg-user-1'").run();
+    callModelSpy.mockResolvedValue({ content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' });
+
+    await runV2Turn('primary');
+
+    // The empty call, its silent retry, then the nudge; never the must-answer call.
+    expect(callModelSpy).toHaveBeenCalledTimes(3);
+    expect(callModelSpy.mock.calls.some((c) => c[0].forceReply === true)).toBe(false);
+    const nudged = (callModelSpy.mock.calls[2][0].messages as Array<{ content: unknown }>)
+      .some((m) => typeof m.content === 'string' && m.content.startsWith('[System: You returned an empty response.'));
+    expect(nudged).toBe(true);
+  });
+
+  it('a peer Dojo box\'s message that goes empty gets no nudge, no toast, no must-answer call, and is settled', async () => {
+    mockDb.current!.prepare("UPDATE messages SET channel = 'imessage', inbound_meta = ? WHERE id = 'msg-user-1'")
+      .run(JSON.stringify({ channel: 'imessage', relation: 'third_party', senderIsAgent: true }));
+    callModelSpy.mockResolvedValue({ content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' });
+
+    await runV2Turn('primary');
+
+    // The empty call and its silent retry, then the turn ends.
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    expect(getBroadcastEventsByType('chat:error')).toHaveLength(0);
+    // The peer flag reached the required-reply check and finalize: no forced call, the request closed, no card.
+    expect(callModelSpy.mock.calls.some((c) => c[0].forceReply === true)).toBe(false);
+    const ask = mockDb.current!.prepare("SELECT state FROM work WHERE agent_id = 'primary' AND kind = 'ask'").get() as { state: string };
+    expect(ask.state).toBe('abandoned');
+    expect(mockDb.current!.prepare("SELECT 1 FROM messages WHERE content LIKE '%stopped trying%'").all()).toHaveLength(0);
+  });
+
+  it('a turn that throws after its required reply returned is handed back, never held as empty', async () => {
+    const empty = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
+    callModelSpy.mockResolvedValueOnce(empty).mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce({ content: 'The second quote.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' });
+    mockDb.current!.exec(`CREATE TRIGGER no_answer_row BEFORE INSERT ON messages WHEN NEW.role = 'assistant'
+      BEGIN SELECT RAISE(ABORT, 'the disk is full'); END`);
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(3);
+    const ask = mockDb.current!.prepare("SELECT state FROM work WHERE agent_id = 'primary' AND kind = 'ask'").get() as { state: string };
+    expect(ask.state).not.toBe('blocked');
+    expect(mockDb.current!.prepare("SELECT 1 FROM messages WHERE content LIKE '%stopped trying%'").all()).toHaveLength(0);
+  });
+
+  it('a required-reply pass that leaves before its call (a preempt) arms no second one', async () => {
+    const empty = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
+    callModelSpy.mockImplementationOnce(async () => empty).mockImplementationOnce(async () => {
+      preemptedAgents.add('primary');
+      return empty;
+    });
+
+    await runV2Turn('primary');
+
+    // The empty call and its silent retry; the armed pass meets the preempt at its gate and the turn ends.
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    const turn = mockDb.current!.prepare("SELECT exit_reason FROM turns WHERE agent_id = 'primary' ORDER BY turn_number DESC LIMIT 1").get() as { exit_reason: string };
+    expect(turn.exit_reason).toBe('preempt');
+  });
+
+  it('a required reply that meets a provider error is handed back by the exit table, never held as empty', async () => {
+    const empty = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
+    callModelSpy.mockImplementationOnce(async () => empty).mockImplementationOnce(async () => empty)
+      .mockRejectedValueOnce(new Error('500 Internal Server Error: something weird'));
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(3);
+    const ask = mockDb.current!.prepare("SELECT state FROM work WHERE agent_id = 'primary' AND kind = 'ask'").get() as { state: string };
+    expect(ask.state).not.toBe('blocked');
+    const held = mockDb.current!.prepare("SELECT 1 FROM messages WHERE agent_id = 'primary' AND content LIKE '%stopped trying%'").all();
+    expect(held).toHaveLength(0);
   });
 
   it('CONVERSATION INVARIANT: no system message between assistant tool_use and tool_result', async () => {
@@ -1389,6 +1406,7 @@ describe('runV2Turn integration', () => {
     onAgentInjuredSpy.mockClear();
 
     // Second identical failure, same kind, same fingerprint → escalate.
+    backoffPasses();
     await runV2Turn('primary');
 
     expect(recordErrorMock).toHaveBeenCalledWith('primary');
@@ -1422,7 +1440,7 @@ describe('runV2Turn integration', () => {
     );
 
     // Wakeup queued.
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
 
     // No injury.
     expect(recordErrorMock).not.toHaveBeenCalled();
@@ -1450,7 +1468,7 @@ describe('runV2Turn integration', () => {
         expect.any(Number),
         expect.objectContaining({ force: true }),
       );
-      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(jobParked()).toBe(true);
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
       expect(recordErrorMock).not.toHaveBeenCalled();
     });
@@ -1579,7 +1597,7 @@ describe('runV2Turn integration', () => {
         expect.any(Number),
         expect.objectContaining({ force: true }),
       );
-      expect(pendingWakeups.has('primary')).toBe(true); // not declined — the retry wake fires
+      expect(jobParked()).toBe(true); // not declined: the retry comes due
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
       expect(recordErrorMock).not.toHaveBeenCalled();
 
@@ -1626,7 +1644,7 @@ describe('runV2Turn integration', () => {
         expect.any(Number),
         expect.objectContaining({ force: true }),
       );
-      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(jobParked()).toBe(true);
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
     });
 
@@ -1787,7 +1805,7 @@ describe('runV2Turn integration', () => {
       await runV2Turn('primary');
 
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
-      expect(pendingWakeups.has('primary')).toBe(true); // a real retry IS queued
+      expect(jobParked()).toBe(true); // a real retry IS queued
       expect(declaredPatienceHonestFailTurn.has('primary'), 'a legitimate compaction retry must not be mistaken for a no-retry honest fail').toBe(false);
     });
 
@@ -1798,7 +1816,7 @@ describe('runV2Turn integration', () => {
       await runV2Turn('primary');
 
       expect(checkAndCompactSpy).toHaveBeenCalled();
-      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(jobParked()).toBe(true);
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
       expect(declaredPatienceHonestFailTurn.has('primary'), 'this arm never touches last_error either — the OLD check could have wrongly declined a LATER turn').toBe(false);
     });
@@ -1843,7 +1861,7 @@ describe('runV2Turn integration', () => {
       await runV2Turn('primary');
 
       expect(checkAndCompactSpy).toHaveBeenCalled();
-      expect(pendingWakeups.has('primary')).toBe(true);
+      expect(jobParked()).toBe(true);
       expect(onAgentInjuredSpy).not.toHaveBeenCalled();
     });
   });
@@ -1912,6 +1930,7 @@ describe('runV2Turn integration', () => {
       expect(headsUpMessages()).toHaveLength(1);
 
       callModelSpy.mockRejectedValue(midFlightTimeout());
+      backoffPasses();
       await runV2Turn('primary'); // turn N+1: the retry ALSO dies at patience — ladder exhaustion
 
       const allHeadsUp = headsUpMessages();
@@ -1932,6 +1951,7 @@ describe('runV2Turn integration', () => {
       callModelSpy.mockRejectedValue(midFlightTimeout());
       await runV2Turn('primary');
       callModelSpy.mockRejectedValue(midFlightTimeout());
+      backoffPasses();
       await runV2Turn('primary');
 
       const allHeadsUp = headsUpMessages();
@@ -1961,6 +1981,7 @@ describe('runV2Turn integration', () => {
       callModelSpy.mockRejectedValue(midFlightTimeout());
       await runV2Turn('primary'); // turn N: first death — status line (no ask quoted, unaffected)
       callModelSpy.mockRejectedValue(midFlightTimeout());
+      backoffPasses();
       await runV2Turn('primary'); // turn N+1: ladder exhaustion — the honest-fail line quotes the ask
 
       const allHeadsUpWithMarker = headsUpMessages();
@@ -2100,26 +2121,22 @@ describe('runV2Turn integration', () => {
     expect(errors.find((e) => e.code === 'MODEL_FAILED')).toBeDefined();
   });
 
-  it('PHASE 6: rate-limit 429 → injury + RATE_LIMITED code + rate-limit system msg', async () => {
+  it('PHASE 6: a rate-limit 429 waits for the reset: no injury, no rate-limit note, the ask waits on its own record', async () => {
     callModelSpy.mockRejectedValue(new Error('429 Rate limit exceeded'));
 
     await runV2Turn('primary');
 
-    expect(onAgentInjuredSpy).toHaveBeenCalled();
-
-    const errors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string; severity?: string; retryable?: boolean }>);
-    const rateLimited = errors.find((e) => e.code === 'RATE_LIMITED');
-    expect(rateLimited).toBeDefined();
-    expect(rateLimited?.severity).toBe('warning');
-    expect(rateLimited?.retryable).toBe(true);
-
-    // v2.3.19, system message text updated to the spec's plain-English
-    // template. Tests assert the agent-facing language, not the old
-    // "[Rate limited]" bracket.
+    expect(onAgentInjuredSpy).not.toHaveBeenCalled();
+    expect(recordErrorMock).not.toHaveBeenCalled();
+    const errors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string }>);
+    expect(errors.find((e) => e.code === 'RATE_LIMITED')).toBeUndefined();
     const sysMsgs = mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
-    expect(sysMsgs.find((m) => /rate limit error/i.test(m.content) && /retrying automatically/i.test(m.content))).toBeDefined();
+    expect(sysMsgs.find((m) => /rate limit/i.test(m.content))).toBeUndefined();
+    const ask = mockDb.current!.prepare("SELECT state, next_attempt_at AS due FROM work WHERE kind = 'ask' AND agent_id = 'primary'").get() as { state: string; due: number };
+    expect(ask.state).toBe('open');
+    expect(ask.due).toBeGreaterThanOrEqual(Date.now() + 59_000);
   });
 
   it('PHASE 6: error-loop trip → status paused, ERROR_LOOP code', async () => {
@@ -2424,8 +2441,10 @@ describe('runV2Turn integration', () => {
 // received.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const EMPTY_RESPONSE_NUDGE =
-  "[System: You returned an empty response. Please respond to TestUser's last message or call a tool to continue your task. If you are finished, say so clearly.]";
+// The steer the required reply carries: the vehicle here, since an empty turn with a person waiting makes it.
+const FORCED_REPLY_STEER = '[Engine: TestUser is waiting for your answer to their message. Write it now.]';
+const DEAD_END_STEER = '[System: Your last calls all came back empty or refused. What you need may not be there, '
+  + 'or may not be open to you. Try responding based on what you already know, or ask TestUser for clarification.]';
 
 /** The assembled shape a mid-turn steer has to survive: … assistant tool_use, tool-result carrier. */
 function toolResultTail(): Array<Record<string, unknown>> {
@@ -2468,18 +2487,15 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
   });
 
   it('delivers a steer set mid-turn to the NEXT model call even though the assembled tail is a tool-result carrier', async () => {
-    // Drive the empty-response recovery chain, which is a real in-loop steer
-    // writer: call 1 empty → silent retry; call 2 empty → enqueues the steer;
-    // call 3 must CARRY that steer. Before the fix call 3 is byte-for-byte the
-    // same array as calls 1 and 2 — the exact "logged as sent, never received"
-    // signature the kit instrument measured live.
+    // A real in-loop steer writer: call 1 empty, call 2 its silent retry, then the required reply's steer;
+    // call 3 must CARRY it. Undelivered, call 3 is byte-for-byte the same array as calls 1 and 2.
     callModelSpy.mockImplementation(recordingModel((n) => (n <= 2 ? EMPTY : DONE)));
 
     await runV2Turn('primary');
 
     expect(seenByModel.length).toBeGreaterThanOrEqual(3);
     const third = seenByModel[2];
-    expect(indexOfEntry(third, EMPTY_RESPONSE_NUDGE)).toBeGreaterThanOrEqual(0);
+    expect(indexOfEntry(third, FORCED_REPLY_STEER)).toBeGreaterThanOrEqual(0);
   });
 
   it('appends the steer as its OWN user-role message, never folded into another message', async () => {
@@ -2488,13 +2504,13 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
     await runV2Turn('primary');
 
     const third = seenByModel[2];
-    const at = indexOfEntry(third, EMPTY_RESPONSE_NUDGE);
+    const at = indexOfEntry(third, FORCED_REPLY_STEER);
     expect(at).toBeGreaterThanOrEqual(0);
     // Its own message: exact string content, user role — not appended onto the
     // tool-result carrier's block array, and not merged into a neighbour.
     expect(third[at].role).toBe('user');
     expect(typeof third[at].content).toBe('string');
-    expect(third[at].content).toBe(EMPTY_RESPONSE_NUDGE);
+    expect(third[at].content).toBe(FORCED_REPLY_STEER);
   });
 
   it('keeps alternation legal: the steer lands AFTER the tool results, never between tool_use and tool_result', async () => {
@@ -2509,7 +2525,7 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
     const resultAt = third.findIndex(
       (m) => Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some((b) => b.type === 'tool_result'),
     );
-    const steerAt = indexOfEntry(third, EMPTY_RESPONSE_NUDGE);
+    const steerAt = indexOfEntry(third, FORCED_REPLY_STEER);
     expect(useAt).toBeGreaterThanOrEqual(0);
     // The result carrier still IMMEDIATELY follows its tool_use (the conversation
     // invariant at loop.ts:6415 — nothing may be inserted between the pair).
@@ -2519,32 +2535,31 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
   });
 
   it('marks the entry delivered on a confirmed drain: the steer rides exactly ONE model call, never repeats', async () => {
-    // Call 3 carries the steer and then calls a tool, so the loop assembles a
-    // FOURTH time. A steer that is delivered but never cleared would ride call 4
-    // as well (the engine repeating itself at the model); a steer cleared without
-    // being delivered would ride none.
-    const toolCall: ToolCall = { id: 'tc1', name: 'file_read', arguments: { path: '/x' } };
+    // Two dead-end passes file the steer, call 3 carries it and calls a tool, so the loop assembles a FOURTH
+    // time. A steer delivered but never cleared would ride call 4 as well; one cleared undelivered would ride none.
+    const search = (n: number): ToolCall => ({ id: `tc${n}`, name: 'history_search', arguments: { pattern: `p${n}` } });
     callModelSpy.mockImplementation(
       recordingModel((n) => {
-        if (n <= 2) return EMPTY;
-        if (n === 3) return { content: 'reading', toolCalls: [toolCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+        if (n <= 3) return { content: '', toolCalls: [search(n)], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
         return DONE;
       }),
     );
-    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'file_read', content: 'file body', isError: false });
+    executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => ({
+      toolCallId: tc.id, name: tc.name, isError: false,
+      content: tc.id === 'tc3' ? 'Found 2 messages' : 'No results found for that.',
+    }));
 
     await runV2Turn('primary');
 
     expect(seenByModel.length).toBeGreaterThanOrEqual(4);
-    // t210 (decision 37): a later call of a turn APPENDS to what the previous call sent, so call 4
-    // still SHOWS call 3's steer where it was. "Never repeats" means never SENT AGAIN: the steer is
-    // new in exactly one call (call 3), and every later array holds that one copy at the same index.
-    const firstAt = seenByModel.findIndex((msgs) => indexOfEntry(msgs, EMPTY_RESPONSE_NUDGE) >= 0);
+    // A later call APPENDS to what the previous call sent, so call 4 still SHOWS call 3's steer where it was.
+    // "Never repeats" means never SENT AGAIN: new in exactly one call, one copy at the same index after.
+    const firstAt = seenByModel.findIndex((msgs) => indexOfEntry(msgs, DEAD_END_STEER) >= 0);
     expect(firstAt).toBe(2);
-    const at = indexOfEntry(seenByModel[2], EMPTY_RESPONSE_NUDGE);
+    const at = indexOfEntry(seenByModel[2], DEAD_END_STEER);
     for (const later of seenByModel.slice(3)) {
-      expect(later.filter((m) => m.content === EMPTY_RESPONSE_NUDGE), 'one copy, never re-sent').toHaveLength(1);
-      expect(indexOfEntry(later, EMPTY_RESPONSE_NUDGE), 'where it was').toBe(at);
+      expect(later.filter((m) => m.content === DEAD_END_STEER), 'one copy, never re-sent').toHaveLength(1);
+      expect(indexOfEntry(later, DEAD_END_STEER), 'where it was').toBe(at);
     }
   });
 
@@ -2627,12 +2642,12 @@ describe('HL3: model-visible means logged (the runtime invariant, driven)', () =
     // It reached the model: the third call carries it (T1's property, restated here because
     // this clause is meaningless if the steer never actually shipped).
     expect(seenByModel.length).toBeGreaterThanOrEqual(3);
-    const carried = seenByModel[2].some((m) => m.content === EMPTY_RESPONSE_NUDGE);
+    const carried = seenByModel[2].some((m) => m.content === FORCED_REPLY_STEER);
     expect(carried, 'the steer never reached the model — this clause would be vacuous').toBe(true);
 
     // …and it is IN THE LOG. Byte-identical: a row that paraphrases what the model saw is
     // not a reconstruction of it.
-    const rows = durableRows().filter((r) => r.content === EMPTY_RESPONSE_NUDGE);
+    const rows = durableRows().filter((r) => r.content === FORCED_REPLY_STEER);
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows[0].turn_number).not.toBeNull();
   });
@@ -2686,15 +2701,7 @@ describe('HL3: model-visible means logged (the runtime invariant, driven)', () =
 // STRIP-2 enumerated the conv-KEY-passed-as-conversation-ID class tree-wide (13 signatures,
 // 21 call sites, 51 SQL bind sites) and found exactly two live members. Both cross a
 // function boundary, so no bind-site grep can see them and no type can catch them — both
-// values are `string`. These two clauses are the alarm, and both were written RED.
-//
-//   (a) `loop.ts` handed `recordedAnswerInConversation` a conv KEY ('owner') where its SQL
-//       filters `m1.conversation_id = ?` — a UUID column. Measured on the live body: a key
-//       matches 0 of 6,975 stamped rows (0 of them non-UUID) where real ids match 954. The
-//       call therefore always returned null, `excerpt.length > 0` was always false, and the
-//       ghosted-work-ask ladder's SECOND rung — the one that hands the model its own
-//       recorded words to restate rather than the engine speaking as the agent (OR2) — has
-//       never once fired since the T10I rekey.
+// values are `string`. The member that remains is held below.
 //
 //   (b) `currentTurnConversationId` was written from the PRE-repair value: the pickup repair
 //       (`loop.ts`, "resolved at pickup") reassigns `chosenConversationId` for exactly the
@@ -2746,22 +2753,10 @@ describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversati
     expect(seenAtAssembly.length).toBeGreaterThan(0);
     expect(seenAtAssembly[0]).toBe('conv-primary');
   });
+});
 
-  it('(a) the ghosted-ask ladder\'s second steer hands the model its own recorded answer', async () => {
-    // The recorded answer the second rung is supposed to quote: an answered ask in THIS
-    // conversation, written the way the answered edge records one (`answer_message_id`).
-    // Raw SQL on purpose — this pair is settled history, not a waiting ask, so it must not
-    // open a ticket.
-    mockDb.current!.prepare(
-      `INSERT INTO messages (id, agent_id, role, content, turn_number, conversation_id, created_at)
-       VALUES ('msg-prior-answer', 'primary', 'assistant', 'The launch is on the 14th; the pricing page is already live.', 1, 'conv-primary', (CAST(strftime('%s','now') AS INTEGER) * 1000) - 60000)`,
-    ).run();
-    mockDb.current!.prepare(
-      `INSERT INTO messages (id, agent_id, role, content, turn_number, conversation_id, channel, sender_id, answer_message_id, created_at)
-       VALUES ('msg-prior-ask', 'primary', 'user', 'when does the launch happen?', 1, 'conv-primary', 'dashboard', 'owner', 'msg-prior-answer', (CAST(strftime('%s','now') AS INTEGER) * 1000) - 61000)`,
-    ).run();
-
-    // The trigger: a human ask the decision model judges WORK, not a decline of the earlier reply.
+describe('a bare [no-reply] on a direct work ask is answered by the required reply, never a ladder', () => {
+  it('one required call carries the one steer, and no engine hint about [no-reply] is sent', async () => {
     installDecisionModel(mockDb.current!);
     scriptDecisions((name) => yes(name === 'declined' ? 0.1 : 0.9));
     expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
@@ -2771,26 +2766,16 @@ describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversati
       turnNumber: 2, channel: 'dashboard', senderId: 'owner', conversationId: 'conv-primary',
       inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
     });
-
-    // The model ghosts every time: bare sentinel, no tool calls.
     callModelSpy.mockResolvedValue({
       content: '[no-reply]', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
     });
 
     await runV2Turn('primary');
 
-    const messagesOfCall = (i: number): string =>
-      JSON.stringify((callModelSpy.mock.calls[i]?.[0] as { messages?: unknown })?.messages ?? []);
-
-    // POSITIVE CONTROL: the ladder was reached and its FIRST rung fired. Without this a
-    // green below could mean "the ladder never ran", which is the opposite finding.
-    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(messagesOfCall(1)).toContain('[Engine hint: you ended with [no-reply]');
-
-    // THE CLAUSE: the second rung fires, and it carries the agent's OWN recorded words.
-    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
-    expect(messagesOfCall(2)).toContain('[Engine record: you again ended with [no-reply]');
-    expect(messagesOfCall(2)).toContain('The launch is on the 14th');
+    const sent = callModelSpy.mock.calls.map((c) => JSON.stringify((c[0] as { messages?: unknown }).messages ?? []));
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toContain('is waiting for your answer to their message. Write it now.');
+    expect(sent.join('\n')).not.toContain('you ended with [no-reply]');
     vi.unstubAllGlobals();
   });
 });
@@ -3216,7 +3201,7 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
       .all() as Array<{ content: string }>;
     expect(sys).toEqual([]);
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
   });
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -3271,7 +3256,7 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     expect(recaps()).toEqual([]);
     // The turn still parks — the branch is best-effort about the rebuild, never about
     // the continuation.
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
   });
 
   // ══════════════════════════════════════════════════════════════════════════════
@@ -3368,13 +3353,13 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     const sysOf = (): unknown[] => mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'").all();
     expect(sysOf()).toEqual([]);
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
 
     pendingWakeups.clear();
     mockDb.current = setupTestDb();
     await runAcrossTheBudget();
     expect(sysOf()).toEqual([]);
-    expect(pendingWakeups.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
   });
 });
 
@@ -3624,15 +3609,11 @@ describe('PHASE-6 CUT 4: the deferred answer is recovered at finalize (G-SUP-2)'
 //     email twice. The loop's own words: "a turn that performed a side effect
 //     must never re-fire" (07 §2c, ledger P6b-1).
 //
-// ⚠ SWEEP-A TB1 (2026-08-05) — THE SECOND ARM'S DIRECTION WAS REVERSED BY THE OWNER, and
-// these clauses are updated rather than deleted because the ABORT-PATH refusal itself is
-// untouched. His governing ruling: "the user asks the agent to do something and it does it.
-// Period." — an ambiguous or absent answer errs toward SERVING THE ASK AGAIN, never toward
-// silence or a parked ticket. `revertAskClaimOnAbort` still refuses to re-arm mid-abort and
-// still writes `rearm_refused`, so the fact that the turn acted is recorded exactly as
-// before; but at the TURN BOUNDARY the settlement authority (`work/ask-settlement.ts`) now
-// adjudicates every ask the turn held, and an ask with no delivery behind it goes back to
-// `open` whatever the turn did. The residual the owner accepted, stated out loud: a
+// The owner's governing ruling: "the user asks the agent to do something and it does it.
+// Period." An ambiguous or absent answer errs toward SERVING THE ASK AGAIN, never toward
+// silence or a parked ticket. The abort only marks the turn; at the TURN BOUNDARY the one
+// hand-back (`handBackAsk`, `work/ask-settlement.ts`) adjudicates every ask the turn held, and
+// an ask with no delivery behind it goes back to `open` whatever the turn did. The residual the owner accepted, stated out loud: a
 // non-idempotent call on a turn that then delivered NOTHING can be repeated by the re-serve.
 // The structural invariant that makes it necessary: no ask may remain `claimed` by a
 // finalized turn — that is the fossil class, 36 stuck rows on this box.
@@ -3731,17 +3712,14 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
     // proof that this turn claimed the ask and then gave it back, carrying the
     // engine's reason with it.
     expect(askRow().state).toBe('open');
-    const handBack = eventsFor(before.id).find((e) => String(e.payload ?? '').includes('handing the ask back to the waiting set'));
-    expect(handBack, 'no hand-back event on the ask').toBeTruthy();
-    expect(kinds(before.id)).not.toContain('rearm_refused');
+    const handBack = eventsFor(before.id).find((e) => String(e.payload ?? '').includes('ct0_ask_re_served'));
+    expect(handBack, 'no hand-back record on the ask').toBeTruthy();
   });
 
-  it('THE REFUSAL IS RECORDED, AND THE TURN BOUNDARY STILL HANDS THE ASK BACK', async () => {
-    // One successful send, then the model dies. The abort arm still REFUSES to re-arm and
-    // writes `rearm_refused`, so "this turn already acted" stays a fact somebody can find —
-    // that half is untouched. What changed is the turn BOUNDARY: the owner ruled on
-    // 2026-08-05 that an ask with no answer behind it is served again rather than parked, and
-    // no ask may outlive its turn `claimed`. So the row ends `open`, carrying both records.
+  it('A TURN THAT ACTED AND THEN DIED: THE TURN BOUNDARY STILL HANDS THE ASK BACK', async () => {
+    // One successful send, then the model dies. The owner ruled on 2026-08-05 that an ask with no
+    // answer behind it is served again rather than parked, and no ask may outlive its turn `claimed`;
+    // the hand-back is the turn boundary's alone, so the row ends `open`.
     let n = 0;
     callModelSpy.mockImplementation(async () => {
       n += 1;
@@ -3757,12 +3735,10 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
       toolCallId: 'tc1', name: 'imessage_send', content: 'sent', isError: false,
     });
 
-    const before = askRow();
     await runV2Turn('primary');
 
     expect(n).toBe(2);                                   // positive control: it did die on the second call
-    expect(kinds(before.id)).toContain('rearm_refused'); // P6b's abort refusal, unchanged
-    expect(askRow().state).toBe('open');                 // …and the boundary hands it back anyway
+    expect(askRow().state).toBe('open');                 // the boundary hands it back
     // The invariant the reversal exists for: nothing is left claimed by a turn that is over.
     expect(askRow().state).not.toBe('claimed');
   });
@@ -4281,5 +4257,90 @@ describe('BUG-2, inherited: the compile gate never arms on a turn a human is wai
 
     expect(refusedCompile()).toBe(false);
     expect(executeToolSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// A CONTEXT OVERFLOW NEVER SETS THE OWNER'S MESSAGE ASIDE (owner decision 12), through the real turn: the
+// provider refuses a prompt that is too long, recovery forces a pass and parks the job on its task, and the request
+// is held on that job: nothing counted, no due of its own; the job's turns serve it.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('a context overflow never sets the owner\'s message aside, through the real turn', () => {
+  const ask = (): { state: string; due: number | null } => mockDb.current!
+    .prepare("SELECT state, next_attempt_at AS due FROM work WHERE id = 'ask:msg-user-1'").get() as { state: string; due: number | null };
+  const marks = (): number => (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'ask:msg-user-1'
+    AND ((kind = 'audit' AND json_extract(payload, '$.marker') = 'ct0_ask_re_served') OR kind = 'floor_ghosted')`).get() as { n: number }).n;
+
+  it('six full-context turns leave it owed on its job, uncounted and undated; it is served when room returns', async () => {
+    const { nextOwed } = await import('../owed.js');
+    isContextOverflowErrorMock.mockImplementation(() => true);
+    callModelSpy.mockRejectedValue(new Error('400 prompt is too long: 250000 tokens > 200000 maximum'));
+    for (let turn = 1; turn <= 6; turn++) {
+      await runV2Turn('primary');
+      expect(ask(), `overflow ${turn}`).toEqual({ state: 'blocked', due: null });
+      expect(nextOwed('primary').map((i) => i.kind), `overflow ${turn}: its parked job serves it`).toEqual(['job']);
+    }
+    expect(marks(), 'no count and no stand-down record').toBe(0);
+    isContextOverflowErrorMock.mockImplementation(() => false);
+    callModelSpy.mockReset();
+    callModelSpy.mockResolvedValue({ content: 'Here is the summary.', toolCalls: [] as ToolCall[], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+    await runV2Turn('primary');
+    expect(callModelSpy).toHaveBeenCalled();
+    const last = mockDb.current!.prepare("SELECT root_id AS root, exit_reason AS exit FROM turns ORDER BY turn_number DESC LIMIT 1").get();
+    expect(last, 'its job turn serves it once there is room').toEqual({ root: 'msg-user-1', exit: 'answered' });
+    expect(marks()).toBe(0);
+  });
+});
+
+describe('a provider limit after a paid call is counted, through the real turn', () => {
+  it('one tool call, then a 429: the request is counted once and waits for the later of the reset and the backoff', async () => {
+    let n = 0;
+    callModelSpy.mockImplementation(async () => {
+      n += 1;
+      if (n === 1) return { content: '', toolCalls: [{ id: 'tc1', name: 'file_read', arguments: { path: '/tmp/x' } }] as ToolCall[], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+      throw new Error('429 Rate limit exceeded');
+    });
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'file_read', content: 'ok', isError: false });
+    const before = Date.now();
+    await runV2Turn('primary');
+    expect(n).toBe(2);
+    const row = mockDb.current!.prepare("SELECT state, next_attempt_at AS due FROM work WHERE id = 'ask:msg-user-1'").get() as { state: string; due: number };
+    expect(row.state).toBe('open');
+    expect(row.due).toBeGreaterThanOrEqual(before + 60_000);
+    const engine = (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'ask:msg-user-1' AND kind = 'audit'
+      AND json_extract(payload, '$.cause') = 'cut'`).get() as { n: number }).n;
+    expect(engine).toBe(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// A STOOD-DOWN REQUEST COMES BACK WHEN THE PERSON WRITES AGAIN, through the real pickup and finalize: the new message's
+// turn claims it and settles it; a failed turn stands it down again at once, the owner is not told twice, and a serve of
+// another request of the same person lifts nothing.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('a stood-down request comes back when the person writes again, through the real turn', () => {
+  const state = (id: string): string => (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(`ask:${id}`) as { state: string }).state;
+  const told = (): number => (mockDb.current!.prepare(`SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'ask:msg-user-1'
+    AND kind = 'floor_ghosted' AND json_extract(payload, '$.floor') = 'request-stood-down'`).get() as { n: number }).n;
+  const writesAgain = (id: string): void => { insertMessage({ id, agentId: 'primary', role: 'user', content: 'any news?', channel: 'dashboard',
+    senderId: 'owner', conversationId: 'conv-primary', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }) }); };
+
+  it('the new message serves it with one model call; a failure holds it again; another serve lifts nothing', async () => {
+    callModelSpy.mockRejectedValue(new Error('500 internal server error'));
+    for (let turn = 1; turn <= 6; turn++) { backoffPasses(); await runV2Turn('primary'); }
+    expect(state('msg-user-1')).toBe('blocked');
+    expect(told()).toBe(1);
+
+    writesAgain('msg-user-2');
+    callModelSpy.mockClear();
+    await runV2Turn('primary');
+    expect(callModelSpy, 'one turn serves both').toHaveBeenCalledTimes(1);
+    expect(state('msg-user-1'), 'the failed turn stands it down again at once').toBe('blocked');
+    expect(told(), 'told once per request').toBe(1);
+
+    backoffPasses();
+    await runV2Turn('primary');
+    expect(state('msg-user-2'), 'the backoff serve of the newer request ran').not.toBe('claimed');
+    expect(state('msg-user-1'), 'a serve of another request lifts nothing').toBe('blocked');
   });
 });

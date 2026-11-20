@@ -11,6 +11,8 @@ import { taskScope } from '../tracker-view.js';
 import { workingExpr } from '../terminal-states.js';
 import { isPrimaryAgent } from '../../config/platform.js';
 import { ownerAskedInThisTurn } from '../row-authority.js';
+import { notifyTaskEnded } from '../task-ended.js';
+import { announceTaskLiveWork } from '../../agent/v2/serve-later.js';
 
 export type HoldKind = 'paused' | 'blocked';
 export interface Hold { kind: HoldKind; reason: string; at: number }
@@ -44,8 +46,14 @@ export function setHold(workId: string, kind: HoldKind, reason: string, by: stri
     if (ownerHoldStands(workId, byOwner(by) || ownerAsked)) return { ok: false, why: OWNER_HOLD_REFUSAL };
     if (!holdable(workId)) return { ok: false, why: 'only an Open or Working task can be held' };
     noteUnsettled(patchWork(workId, { hold_kind: kind, hold_reason: line, hold_at: Date.now(), paused_until: kind === 'paused' ? pausedUntilMs : null }), 'hold set', { taskId: workId });
+    announceTaskLiveWork(workId);
     const note = ownerAsked ? `the owner asked: "${String(ownerQuote)}"` : null;
     appendAuditEntry(workId, by, { entryKind: 'hold_set', toStatus: kind, reason: holdOf(workId)?.reason ?? '', note });
+    // The owner holding a task ends it for the request held on it: that request is released.
+    if (byOwner(by)) {
+      const t = getDb().prepare('SELECT agent_id, source_message_id FROM work WHERE id = ?').get(workId) as { agent_id: string; source_message_id: string | null };
+      notifyTaskEnded(t.agent_id, t.source_message_id);
+    }
     return { ok: true };
   });
 }
@@ -61,6 +69,7 @@ export function clearHold(workId: string, by: string, ownerQuote?: unknown): boo
     const ownerAsked = ownerAskedToLift(by, ownerQuote);
     if (!was || ownerHoldStands(workId, byOwner(by) || ownerAsked)) return false;
     noteUnsettled(patchWork(workId, { hold_kind: null, hold_reason: null, hold_at: null, paused_until: null }), 'hold cleared', { taskId: workId });
+    announceTaskLiveWork(workId);
     const note = ownerAsked ? `the owner asked: "${String(ownerQuote)}"` : null;
     appendAuditEntry(workId, by, { entryKind: 'hold_cleared', fromStatus: was.kind, reason: was.reason, note });
     return true;

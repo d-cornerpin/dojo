@@ -23,7 +23,7 @@
 // faked contract object) so each row is the contract the product would actually resolve for
 // that seam, and it asserts BOTH WAYS on every one of them:
 //
-//   · a person is owed      → the turn NEVER exits mute; it walks the ladder.
+//   · a person is owed      → the turn NEVER exits mute: the silent retry, then the required reply.
 //   · nobody is owed        → the "did work, nothing to say" exit is byte-identical.
 //
 // It also asserts the seams are genuinely DIFFERENT (their `answersInReasoning` values do
@@ -185,51 +185,28 @@ describe('t125 — the silent turns (Q2): a turn that owes a person never ends i
           expect(reArmSpy).not.toHaveBeenCalled();
         });
 
-        it('the whole ladder, to its end: the person HEARS something, and it is the platform speaking', () => {
-          // Rung 1 — the silent retry.
+        it('a person is owed: after the silent retry the turn ends into the required reply, never mute here', () => {
           const first = runEmptyResponse(afterHistorySearches(), ctxFor());
           expect(first.directive).toBe('continue');
           if (first.directive !== 'continue') throw new Error('unreachable');
-          expect(broadcastSpy).not.toHaveBeenCalled();
-
-          // Rung 2 — still empty: the one-shot steer. Model-visible, never the agent's voice
-          // on the person's lane (OR2).
+          // Still empty: no nudge and no card here; the loop's exit makes the required reply (forced-reply.ts).
           const second = runEmptyResponse(first.state, ctxFor());
-          expect(second.directive).toBe('continue');
-          if (second.directive !== 'continue') throw new Error('unreachable');
-          expect(steerFired(second.state.steerQueue, 'empty-response')).toBe(true);
+          expect(second.directive).toBe('exit');
+          if (second.directive !== 'exit') throw new Error('unreachable');
+          expect(second.reason).toBe('empty-response-owed');
+          expect(steerFired(second.state.steerQueue, 'empty-response')).toBe(false);
+          // Not an engine cut: the model's silence is what the request's count and its hold read.
+          expect(second.state.engineCutExit).toBeNull();
           expect(ghostSpy).not.toHaveBeenCalled();
-
-          // Rung 3 — empty a third time, after being told. THE BOUND, and the honest end.
-          const third = runEmptyResponse(second.state, ctxFor());
-          expect(third.directive).toBe('exit');
-          if (third.directive !== 'exit') throw new Error('unreachable');
-          expect(third.reason).toBe('empty-response-gave-up');
-
-          // THE WHOLE POINT OF THE LANE: the owner is not left looking at nothing. A durable
-          // `role='system'` row in the PLATFORM's voice, on the `empty-response` floor.
-          expect(ghostSpy).toHaveBeenCalledTimes(1);
-          const ghost = ghostSpy.mock.calls[0][0] as Record<string, unknown>;
-          expect(ghost.floor).toBe('empty-response');
-          expect(ghost.agentId).toBe('pm-agent');
-          expect(ghost.turnNumber).toBe(41);
-          // Plain language, and never a first-person sentence wearing the agent's face.
-          expect(String(ghost.ownerLine)).toMatch(/empty reply/i);
-          expect(String(ghost.ownerLine)).toMatch(/send it again/i);
-          expect(String(ghost.ownerLine)).not.toMatch(/\bI\b/);
-          // And the ask is handed back so the drain re-serves it.
-          expect(reArmSpy).toHaveBeenCalled();
+          expect(reArmSpy).not.toHaveBeenCalled();
         });
 
-        it('the bound holds: three empties end the turn, there is no fourth rung', () => {
-          let state = afterHistorySearches();
-          for (let i = 0; i < 2; i++) {
-            const out = runEmptyResponse(state, ctxFor());
-            expect(out.directive).toBe('continue');
-            if (out.directive !== 'continue') throw new Error('unreachable');
-            state = out.state;
-          }
-          expect(runEmptyResponse(state, ctxFor()).directive).toBe('exit');
+        it('the required reply that comes back empty ends the turn at once, with no retry', () => {
+          const out = runEmptyResponse(afterHistorySearches(), ctxFor({ turnCtx: turnCtx({ forcedReplySpent: true }) }));
+          expect(out.directive).toBe('exit');
+          if (out.directive !== 'exit') throw new Error('unreachable');
+          expect(out.reason).toBe('forced-reply-empty');
+          expect(out.state.retriedEmptyResponse).toBe(false);
         });
       });
     }
@@ -277,51 +254,5 @@ describe('t125 — the silent turns (Q2): a turn that owes a person never ends i
         expect(out.directive).toBe('continue');
       });
     }
-  });
-
-  // ══════════════════════════════════════════════════════════════════════════════════════
-  // THE REFUSAL, PINNED SO IT IS NOT QUIETLY REVERSED — AND PINNED TO THE *SOUND* ARGUMENT.
-  //
-  // The triage's clause asked for the terminal rung to `latchEngineCut` as well, so the
-  // re-serve ladder stops being charged for an engine decision. It is NOT latched.
-  //
-  // ⚠ THE FIRST VERSION OF THIS PIN GAVE A FALSE REASON, and it is corrected here rather
-  // than quietly dropped, because a correct refusal pinned to a checkable falsehood is
-  // exactly how the next lane overturns it. It said latching would re-serve the ask "for
-  // ever", "an infinite loop". IT WOULD NOT. The drain is bounded: `MAX_DRAIN_STUCK = 4`
-  // (`agent/turn-state.ts:189`, read at `agent/runtime.ts:1032`) QUARANTINES the head
-  // conversation after four failed serves, and every self-wake is additionally gated by
-  // `underWakeBudget`. The real cost is 3 model calls per turn x up to 4 serves per ask —
-  // about a dozen calls — and then the conversation is set aside with the owner told.
-  //
-  // THE SOUND REASON IS THAT THE ASK NEVER SETTLES. `work/ask-settlement.ts:777` reads
-  // `!engineCut && spent >= MAX_ASK_RE_SERVES` and `:786` reads `if (!engineCut)
-  // recordReServe(...)`, so a cut BOTH bypasses the stand-down AND suppresses the counter:
-  // the ask is handed back open, spends nothing, and can never reach `blocked`. That matters
-  // because `blocked` is not a dead end — it is the OWED state the open-work surface renders
-  // while the drain's `state = 'open'` queue stops picking it up, i.e. the one place a
-  // question that was neither answered nor declined stays VISIBLE to the owner. Latching
-  // here would leave his question sitting `open` behind a quarantined conversation instead:
-  // not answered, not declined, and no longer in the held state built for that case.
-  //
-  // And by THIS rung `no_reply_intended` is honest in a way it never was at the exit this
-  // lane fixed: the model has now been asked three times, once explicitly, and has chosen
-  // silence every time — exactly what `work/exit-attribution.ts` reserves the word for. The
-  // lie was the UNRETRIED exit.
-  //
-  // If someone later decides the cut IS wanted here, this test reds and they must answer the
-  // settling question first: where does an unanswered, undeclined ask become visible?
-  // ══════════════════════════════════════════════════════════════════════════════════════
-  it('the terminal rung does NOT latch an engine cut — a cut suppresses the counter, so the ask could never settle to `blocked`', () => {
-    let state = afterHistorySearches();
-    for (let i = 0; i < 2; i++) {
-      const out = runEmptyResponse(state, ctxFor());
-      if (out.directive !== 'continue') throw new Error('unreachable');
-      state = out.state;
-    }
-    const last = runEmptyResponse(state, ctxFor());
-    expect(last.directive).toBe('exit');
-    if (last.directive !== 'exit') throw new Error('unreachable');
-    expect(last.state.engineCutExit).toBeNull();
   });
 });

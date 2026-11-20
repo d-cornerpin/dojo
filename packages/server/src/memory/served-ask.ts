@@ -3,10 +3,9 @@
 
 import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';
-import { runCarriesJob, jobCarriedAsks } from '../work/task-freshness.js';
-import { jobOrigin } from '../work/job-origin.js';
-import { findUnrepliedAssignForAgent } from '../agent/a2a-replies.js';
+import { originOfTasks } from '../work/job-origin.js';
 import { getMessagesByIds } from './store.js';
+import { repliedOnThread } from './message-store.js';
 import type { Message } from '@dojo/shared';
 import type { Database } from 'better-sqlite3';
 
@@ -28,13 +27,8 @@ export function servedOwnerMessageIds(agentId: string): string[] {
       ).all({ agentId, trigger }) as Array<{ id: string }>;
       return rows.map((r) => r.id);
     }
-    // A continuation carrying a job: the ask(s) the park recorded on the job record (`work/task-freshness.ts`);
-    // any other trigger-less run (A2A, scheduler, engine event) serves nothing it did not pick up.
-    if (!bag.root && runCarriesJob(agentId)) {
-      // Also the ask the job's task came from, unless the continuation restored its person's conversation.
-      const origin = bag.conversationId ? null : jobOrigin(agentId);
-      return [...new Set([...jobCarriedAsks(agentId), ...(origin?.kind === 'ask' ? [origin.messageId] : [])])];
-    }
+    // A trigger-less run (A2A, scheduler, engine event) serves nothing it did not pick up; a job turn started by a
+    // person's request is rooted in it above.
     return [];
   } catch {
     return [];
@@ -59,20 +53,20 @@ export function turnAnswersSpokenRequest(agentId: string): boolean {
   return spoken;
 }
 
-/** The reply-needed message a running A2A turn answers, until answered, else `[]`. Same finder as preflight
- *  (`findUnrepliedAssignForAgent`) so both agree; kept apart from the owner's words, which a park carries. */
+/** The reply-needed message a running A2A turn answers, until answered, else `[]`: the request the preflight
+ *  picked for it; kept apart from the owner's words, which a park carries. */
 export function servedAssignMessageIds(agentId: string): string[] {
   try {
     const bag = turnContext(agentId);
     if (bag?.kind !== 'a2a') return [];
-    // A job's continuation serves the request its job started from, replied to or not: its root is that
-    // thread, found from the job's task (`work/job-origin.ts`).
-    if (bag.root?.kind === 'a2a') {
-      const origin = jobOrigin(agentId);
+    // A job turn serves the request its job started from, replied to or not: its root is that thread, found from
+    // the job's task (`work/job-origin.ts`).
+    if (bag.root?.kind === 'a2a' && bag.servedJob) {
+      const origin = originOfTasks(agentId, [bag.servedJob]);
       if (origin?.kind === 'a2a' && origin.threadId === bag.root.id && origin.messageId) return [origin.messageId];
     }
-    const assign = findUnrepliedAssignForAgent(agentId);
-    return assign ? [assign.messageId] : [];
+    const r = bag.servedRequest;
+    return r && !repliedOnThread(agentId, r.fromId, r.threadId, r.createdAt) ? [r.messageId] : [];
   } catch {
     return [];
   }

@@ -242,12 +242,6 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     measured: 'fixed 331-char marker; prepended to an existing message',
   },
   {
-    id: 'lane.a2a-salience',
-    slot: 1195,
-    reserveTokens: 108,
-    measured: 'fixed 430-char reply directive; prepended to a message already in the array',
-  },
-  {
     id: 'lane.loop-tail',
     slot: MessageSlot.TurnContext,
     reserveTokens: 1650,

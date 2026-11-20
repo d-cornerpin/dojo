@@ -66,7 +66,7 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
   // false alarms from old test groups or paused projects.
   const troubled = db.prepare(`
     SELECT id, name, status, updated_at FROM agents
-    WHERE status IN ('error', 'paused', 'rate_limited')
+    WHERE status IN ('error', 'paused')
       AND status != 'terminated' AND instr(COALESCE(last_error, ''), '[budget_stop]') != 1 AND instr(COALESCE(last_error, ''), '[no_model_fits]') != 1  -- t148: a parked agent is not an injury
   `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
@@ -110,15 +110,6 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
         code: 'AGENT_ERROR',
         title: `${agent.name} has been in an error state for ${timeStr}`,
         detail: `Something went wrong with ${agent.name} and it stopped working. It may need to be restarted or have its conversation cleared.`,
-        agentId: agent.id,
-        agentName: agent.name,
-      });
-    } else if (agent.status === 'rate_limited') {
-      items.push({
-        severity: durationMin > 60 ? 'warning' : 'info',
-        code: 'AGENT_RATE_LIMITED',
-        title: `${agent.name} is being throttled by its AI provider`,
-        detail: `${agent.name} is making too many requests and the AI service is asking it to slow down. It will automatically retry.`,
         agentId: agent.id,
         agentName: agent.name,
       });

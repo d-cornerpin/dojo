@@ -47,6 +47,7 @@ import { insertMessage, insertEngineEventIfAbsent } from '../../memory/message-s
 import { transition } from '../../work/store.js';
 import { decideApproval } from '../approval-decision.js';
 import { runTurnClassification } from '../v2/steps/preflight/turn-classification.js';
+import { nextOwed } from '../v2/owed.js';
 import type { PreflightContext, PreflightScratch } from '../v2/steps/preflight/index.js';
 import type { TurnContext } from '../turn-context.js';
 
@@ -140,6 +141,7 @@ describe('t232 (race) the queued wake meets the serve boundary', () => {
     const ask = openOwnerAsk();
     const token = fileHeldCall({ rootKind: 'ask', rootId: ask.messageId });
     db().prepare('UPDATE messages SET served_by_turn = 1 WHERE id = ?').run(ask.messageId);
+    transition(ask.workId, { to: 'claimed', by: 'agent', actorId: WORKER, claimedByTurn: 1, reason: 'pickup' });   // mid-work, as live
     await decideApproval({ deciderAgentId: PRIMARY, token, decision: 'deny' });
 
     const turnCtx = await classify();
@@ -177,7 +179,7 @@ async function classify(): Promise<TurnContext> {
     engineStartAckAfterMs: 0,
   } as unknown as PreflightContext;
   const out = await runTurnClassification(turnCtx, ctx, scratch, {
-    db: db(), waitingConvs: [], openHumanWorkAtTurnStart: false, triggerRow: null,
+    db: db(), waitingConvs: [], openHumanWorkAtTurnStart: false, item: nextOwed(WORKER)[0], triggerRow: null,
     chosenConvKey: '', lastUserMessageContent: '', unrepliedAssign: null,
   });
   if (out.directive !== 'proceed') throw new Error(`expected proceed, got ${out.reason}`);

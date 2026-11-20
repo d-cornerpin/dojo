@@ -35,11 +35,6 @@ vi.mock('../../config/platform.js', () => ({
   getPrimaryAgentName: () => 'Prime',
 }));
 
-// The REAL writeAgentStatus runs (agent-status.js is NOT mocked) and calls the owner-card
-// module; we mock only that module so the call can be asserted.
-const agentStatusMovedMock = vi.hoisted(() => ({ agentStatusMoved: vi.fn() }));
-vi.mock('../../agent/agent-owner-cards.js', () => agentStatusMovedMock);
-
 vi.mock('../imessage-bridge.js', () => ({
   getSafeSenders: () => [{ address: '+15550001', name: 'Owner', is_primary: true, sharing_level: 'open_book' }],
   findSafeSenderByAddress: (records: Array<{ address: string }>, q: string) =>
@@ -64,13 +59,6 @@ beforeEach(() => {
 afterEach(() => { mockDb.current?.close(); mockDb.current = null; });
 
 describe('replies to text commands are labelled as the Dojo and the agent is told', () => {
-  it('resume: starts "Dojo:" (the agent is told later, after the send)', async () => {
-    const reply = await handleIMCommand('resume', OWNER);
-    expect(reply).toBe('Dojo: Agent resumed.');
-    // the agent is told by the BRIDGE, only after the send succeeded (see imessage-dojo-message-told-after-send.test.ts)
-    expect(noticeMock).not.toHaveBeenCalled();
-  });
-
   it('an approval with no match is the Dojo speaking, never "I"', async () => {
     mockDb.current!.prepare(`INSERT INTO healer_proposals (id, status, surface, category, severity, title, description, proposed_fix, created_at) VALUES ('abc123ff', 'pending', 'imessage', 'x', 'low', 't', 'd', 'f', datetime('now'))`).run();
     const reply = await handleIMCommand('yes deadbeef', OWNER);

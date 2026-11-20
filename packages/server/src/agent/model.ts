@@ -6,6 +6,7 @@ import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { extractTextToolCalls } from './text-tool-fallback.js';
+import { isContextOverflowError } from './context-overflow.js';
 import { AgentError } from './errors.js';
 import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelContract } from './model-contract.js';
 import { classifyProviderError, classifyProviderErrorText, isRetryableProviderClass } from './provider-error.js';
@@ -15,7 +16,6 @@ import {
   DECLARED_PATIENCE_EXCEEDED_CODE, STREAM_IDLE_TIMEOUT_CODE,
   type StreamPatience,
 } from './stream-patience.js';
-import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { getFilteredTools } from './tools/surface.js';
 import type { ToolDefinition } from './tools/types.js';
 import { estimateRequestTokens, reasoningRidesThisTurn, effectiveDivisor } from '../memory/budget.js';
@@ -232,7 +232,16 @@ export interface ModelCallParams {
   abortSignal?: AbortSignal;
   /** Best-effort utility call with a fallback; downgrades the provider-failure log from ERROR to WARN. */
   bestEffort?: boolean;
+  /** The reply is required: where the transport can name a tool choice, the model must call `reply`. */
+  forceReply?: boolean;
 }
+
+/** The one tool a required reply is given; its `text` becomes the call's answer. */
+const REPLY_TOOL = {
+  name: 'reply',
+  description: 'Your answer to the person who is waiting, in your own words.',
+  input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+};
 
 export interface ModelCallResult {
   content: string;
@@ -1564,8 +1573,10 @@ async function callOpenAIModel(
   refuseIfDoomed(agentId, finalInputEstimate, patience, modelInfo);
 
   // The engine's extra-room ask is honoured up to the contract's ceiling; the result reports what was sent.
-  // A memory-summarize dial forces thinking off where the contract allows; else the model's own value.
-  const thinkingSent = utilityDial(purpose)?.purpose === 'memory_summarize' && contract.thinkingToggle !== 'none' ? false : modelInfo.thinkingEnabled;
+  // A memory-summarize dial and a required reply force thinking off where the contract allows
+  // (a named tool choice is refused while thinking is on); else the model's own value.
+  const thinkingOff = utilityDial(purpose)?.purpose === 'memory_summarize' || params.forceReply === true;
+  const thinkingSent = thinkingOff && contract.thinkingToggle !== 'none' ? false : modelInfo.thinkingEnabled;
   const budgetInfo = { ...modelInfo, thinkingEnabled: thinkingSent, outputEscalationCeiling: contract.outputEscalationCeiling };
   const effectiveMaxTokens = resolveOutputBudget(budgetInfo, finalInputEstimate, params.outputRoomAsk ?? 0);
   const outputRoomCeiling = resolveOutputCeiling(budgetInfo, finalInputEstimate);
@@ -1660,6 +1671,11 @@ async function callOpenAIModel(
       : { max_tokens: effectiveMaxTokens }),
     ...(openaiTools && openaiTools.length > 0 ? { tools: openaiTools } : {}),
   };
+  if (params.forceReply) {
+    const { name, description, input_schema } = REPLY_TOOL;
+    requestParams.tools = [...(openaiTools ?? []), { type: 'function', function: { name, description, parameters: input_schema } }];
+    requestParams.tool_choice = { type: 'function', function: { name } };
+  }
 
   const supportsThinking = modelInfo.capabilities.includes('thinking');
   applyProviderRequestParams(requestParams, contract, {
@@ -1888,8 +1904,8 @@ async function callOpenAIModel(
     recordProviderSuccess(modelInfo.providerId, { modelId, purpose });
 
     // Text tool-call fallback: only a tool this call actually offered is taken; see text-tool-fallback.ts.
-    if (toolCalls.length === 0 && openaiTools) {
-      const extracted = extractTextToolCalls(fullText, openaiTools.flatMap(t => (t.type === 'function' ? [t.function.name] : [])));
+    if (toolCalls.length === 0 && requestParams.tools) {
+      const extracted = extractTextToolCalls(fullText, requestParams.tools.flatMap(t => (t.type === 'function' ? [t.function.name] : [])));
       if (extracted.toolCalls.length > 0) {
         toolCalls.push(...extracted.toolCalls);
         fullText = extracted.cleanText;
@@ -1990,30 +2006,6 @@ async function callOpenAIModel(
         ).toISOString();
         updateRateLimits(modelId, rlHeaders);
       } catch { /* best effort */ }
-    }
-
-    // Schedule background retry on rate limit, skip auto-routed agents; their fallback chain owns switching.
-    if ((isRateLimited || isOverloaded) && !params.routerTier) {
-      let retryAfterSeconds: number | null = null;
-      if (err instanceof OpenAI.APIError && err.headers) {
-        const retryAfter = err.headers['retry-after'];
-        if (retryAfter) {
-          const parsed = parseInt(retryAfter, 10);
-          if (!isNaN(parsed)) retryAfterSeconds = parsed;
-        }
-      }
-
-      const lastMsg = (() => {
-        try {
-          const db = getDb();
-          const row = db.prepare(
-            "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1"
-          ).get(agentId) as { content: string } | undefined;
-          return row?.content ?? null;
-        } catch { return null; }
-      })();
-
-      scheduleRateLimitRetry(agentId, retryAfterSeconds, lastMsg);
     }
 
     throw new AgentError(`OpenAI call failed: ${message}`, agentId, {
@@ -2178,7 +2170,7 @@ async function callAnthropicSdkModel(
       { providerId: modelInfo.providerId, agentId, signal: params.abortSignal, bestEffort: params.bestEffort, facts: classifyProviderError(err) });
 
     // The shared recovery classifier decides rate limits for every path, 'usage limit' wording included.
-    // Known drift: the direct/OpenAI catches and rate-limit-retry.ts keep their own substring sets.
+    // Known drift: the direct/OpenAI catches keep their own substring sets.
     const { classifyError } = await import('./v2/recovery.js');
     const kind = classifyError(err instanceof Error ? err : new Error(message)).kind;
     const isRateLimited = kind === 'rate_limit';
@@ -2203,21 +2195,6 @@ async function callAnthropicSdkModel(
         ).toISOString();
         updateRateLimits(modelId, rlHeaders);
       } catch { /* best effort */ }
-    }
-
-    // A pinned-model 429/overload arms the background retry; auto-routed agents are the router's business.
-    if ((isRateLimited || isOverloaded) && !params.routerTier) {
-      const lastMsg = (() => {
-        try {
-          const db = getDb();
-          const row = db.prepare(
-            "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1"
-          ).get(agentId) as { content: string } | undefined;
-          return row?.content ?? null;
-        } catch { return null; }
-      })();
-
-      scheduleRateLimitRetry(agentId, retryAfterSeconds, lastMsg);
     }
 
     // Re-throw so control flow stays identical to the other transports.
@@ -2250,11 +2227,31 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     ? AbortSignal.any([params.abortSignal, stopCtl.signal])
     : stopCtl.signal;
   try {
-    return await dialModel({ ...params, abortSignal: signal });
+    return await (params.forceReply ? dialRequiringReply : dialModel)({ ...params, abortSignal: signal });
   } finally {
     releaseAbortable(params.agentId, stopCtl);
   }
 }
+
+// The `reply` call becomes the answer's text; a call beside it is dropped (the turn drops every call on a required
+// reply, call-llm/model-call.ts). An answer that ignored the choice is kept whole. A refusal of the form (a bad request,
+// never money or a too-long context) bills nothing and gets one ordinary call, the same request where it is unforced.
+async function dialRequiringReply(params: ModelCallParams): Promise<ModelCallResult> {
+  let r: ModelCallResult;
+  try {
+    r = await dialModel(params);
+  } catch (err) {
+    if (err instanceof AgentError && refusedTheForm(err)) return dialModel({ ...params, forceReply: false });
+    throw err;
+  }
+  const call = r.toolCalls.find((t) => t.name === REPLY_TOOL.name);
+  if (!call) return r;
+  const text = typeof call.arguments?.text === 'string' ? call.arguments.text.trim() : '';
+  return { ...r, content: text || r.content, toolCalls: [] };
+}
+
+const refusedTheForm = (err: AgentError): boolean => err.provider?.class === 'bad_request'
+  && (err.provider.status === 400 || err.provider.status === 422) && !isContextOverflowError(err.message);
 
 async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;
@@ -2653,30 +2650,6 @@ async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
           updateRateLimits(modelId, rlHeaders);
         }
       } catch { /* best effort */ }
-    }
-
-    // Background retry only for non-auto-routed agents: auto-routed ones use the runtime's fallback chain.
-    if ((isRateLimited || isOverloaded) && !params.routerTier) {
-      let retryAfterSeconds: number | null = null;
-      if (err instanceof Anthropic.APIError && err.headers) {
-        const retryAfter = err.headers['retry-after'];
-        if (retryAfter) {
-          const parsed = parseInt(retryAfter, 10);
-          if (!isNaN(parsed)) retryAfterSeconds = parsed;
-        }
-      }
-
-      const lastMsg = (() => {
-        try {
-          const db = getDb();
-          const row = db.prepare(
-            "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1"
-          ).get(agentId) as { content: string } | undefined;
-          return row?.content ?? null;
-        } catch { return null; }
-      })();
-
-      scheduleRateLimitRetry(agentId, retryAfterSeconds, lastMsg);
     }
 
     throw new AgentError(`Model call failed: ${message}`, agentId, {

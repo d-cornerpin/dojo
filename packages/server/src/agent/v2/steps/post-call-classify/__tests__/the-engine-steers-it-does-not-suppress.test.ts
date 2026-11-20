@@ -2,14 +2,15 @@
 //
 // Two floors nulled the agent's final reply: a line of 30 characters or less after the turn already
 // delivered (and `chat:retract`ed it off the screen), and a reply that looked like one sent in the last
-// five. Owner law: engine detects, agent
-// speaks. Each floor now holds the line (demoted to a working note, never discarded), states the fact to
-// the agent once, and lets the agent decide; a reply written again after the fact goes out.
+// five. Owner law: engine detects, agent speaks. Each floor now holds the line (demoted to a working
+// note, never discarded), states the fact to the agent once, and lets the agent decide; a reply written
+// again after the fact goes out.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ToolCall } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import {
   POST_CALL_CLASSIFY_PHASE,
+  runPostCallClassify,
   type PostCallClassifyContext,
 } from '../index.js';
 import { FX } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -37,7 +38,6 @@ const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 
 const reArmIfStrandedNoAnswerSpy = vi.fn();
 const noteTerminalAnswerSpy = vi.fn();
 const deliverEngineUserAckSpy = vi.fn(async () => undefined);
-const persistAndBroadcastSystemRowSpy = vi.fn();
 const startAckRepliedNowSpy = vi.fn(() => false);
 
 function turnCtxFor(over: Record<string, unknown> = {}): PostCallClassifyContext['turnCtx'] {
@@ -99,7 +99,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     reArmIfStrandedNoAnswer: reArmIfStrandedNoAnswerSpy,
     noteTerminalAnswer: noteTerminalAnswerSpy,
     deliverEngineUserAck: deliverEngineUserAckSpy,
-    persistAndBroadcastSystemRow: persistAndBroadcastSystemRowSpy,
     startAckRepliedNow: startAckRepliedNowSpy,
     ...over,
   } as PostCallClassifyContext;
@@ -131,7 +130,7 @@ import type { PostCallScratch } from '../index.js';
 const scFor = (text: string): PostCallScratch => ({ persistedContent: text, deliberateSurfaceTurn: false, interAgentTurn: false } as unknown as PostCallScratch);
 const retracted = (): boolean => broadcastSpy.mock.calls.some((c) => (c[0] as { type?: string })?.type === 'chat:retract');
 const dbWithRecentReply = (content: string): PostCallClassifyContext['db'] => ({
-  prepare: (sql: string) => (/role = 'assistant'/.test(sql) ? { ...emptyStmt, all: () => [{ content }] } : emptyStmt),
+  prepare: (sql: string) => (/role = 'assistant'/.test(sql) ? { ...emptyStmt, all: () => [{ content }], get: () => ({ content }) } : emptyStmt),
   transaction: (fn: (...a: unknown[]) => unknown) => (...a: unknown[]) => fn(...a),
 } as unknown as PostCallClassifyContext['db']);
 
@@ -164,5 +163,13 @@ describe('a near-duplicate reply is steered, not nulled', () => {
     const sc2 = scFor(text);
     await runReplyFloors(out.state, ctx, sc2);
     expect(sc2.persistedContent).toBe(text);
+  });
+
+  it('through the whole step: a reply repeating the last one sent is steered, never dropped unseen', async () => {
+    const text = 'Dry cleaning set for 6pm, dentist not found.';
+    const ctx = ctxFor({ db: dbWithRecentReply(text), hasUnansweredUser: false, result: modelResult({ content: text }) });
+    const out = await runPostCallClassify(freshState(), ctx);
+    expect(out.directive).toBe('continue');
+    expect(steerFired(out.state.steerQueue, 'near-duplicate-reply')).toBe(true);
   });
 });

@@ -95,8 +95,8 @@
 // have their own fixtures.
 //
 // ⚠ UNREACHED, and named rather than guessed: BACKLOG line 33 also says "the -1 is on purpose".
-// I could not source that -1. The only `-1` in `work/**` is `work-reaper.ts`'s `humanAsksOpen`
-// returning -1 for an unreadable spine (already documented there, and nothing to do with
+// I could not source that -1. The only such `-1` is `agent/v2/owed.ts`'s `personsWaiting`
+// returning -1 for an unreadable read (already documented there, and nothing to do with
 // teardown), and the kit's own teardown lives in `dojo-test-kit`, which this lane must not
 // touch. Rather than invent a meaning for a number I cannot find, it is recorded here as open.
 // ════════════════════════════════════════════════════════════════════════════════════════

@@ -172,7 +172,7 @@ export interface QueuedReply {
 export async function queueReply(r: QueuedReply): Promise<{ id: string; held: boolean } | null> {
   // Loaded on use: the credential registry and the sender sit above the ledger in the import graph.
   const { redactHandedCredentials } = await import('../../credentials/secret-fields.js');
-  const { armSenderTimer } = await import('./channel-sender.js');
+  const { armOwedClock } = await import('./owed.js');
   const { announceLiveWork } = await import('../live-work.js');
   const bare = (r.relay !== undefined || r.kind === 'cannot-run') && r.address.toAgent === true;
   const text = redactHandedCredentials(r.agentId, bare ? r.relay?.answer ?? '' : r.text).trim();
@@ -191,7 +191,7 @@ export async function queueReply(r: QueuedReply): Promise<{ id: string; held: bo
   await writeRoutingPill(r.agentId, r.turnNumber, held ? withRoutingState(label, 'not sent', 'another Dojo\'s agent') : withRoutingState(label, 'sending'));
   if (!held) {
     announceLiveWork(r.agentId);
-    armSenderTimer();
+    armOwedClock();
   }
   return { id, held };
 }
@@ -249,12 +249,15 @@ export function resolvePendingDelivery(id: string, seen: DoorVerdict): LedgerOut
   }
 }
 
-/** Stop: each reply of the agent still waiting to go, except one mid-send, ends `suppressed`. Synchronous, so the
- *  caller ends the requests in the same transaction; returns those requests (the asks each reply answered). */
-export function suppressQueuedReplies(agentId: string): { repliesNotSent: number; askIds: string[] } {
+/** Stop: each reply of the agent still waiting to go (only those for the asks `roots`, when given), except one
+ *  mid-send, ends `suppressed`. Synchronous, so the caller ends the requests in the same transaction; returns those
+ *  requests (the asks each reply answered). */
+export function suppressQueuedReplies(agentId: string, roots?: string[]): { repliesNotSent: number; askIds: string[] } {
   const rows = getDb().prepare(
-    "SELECT id, turn_number, conversation_id, payload_json FROM deliveries WHERE agent_id = ? AND outcome = 'pending' AND payload_json IS NOT NULL ORDER BY rowid",
-  ).all(agentId) as Array<{ id: string; turn_number: number | null; conversation_id: string | null; payload_json: string }>;
+    `SELECT id, turn_number, conversation_id, payload_json FROM deliveries WHERE agent_id = @agentId AND outcome = 'pending' AND payload_json IS NOT NULL
+       AND (@roots IS NULL OR 'ask:' || root_id IN (SELECT value FROM json_each(@roots)) OR json_extract(payload_json, '$.joinId') IN (SELECT value FROM json_each(@roots)))
+     ORDER BY rowid`,
+  ).all({ agentId, roots: roots ? JSON.stringify(roots) : null }) as Array<{ id: string; turn_number: number | null; conversation_id: string | null; payload_json: string }>;
   const askIds = new Set<string>();
   let repliesNotSent = 0;
   for (const row of rows) {

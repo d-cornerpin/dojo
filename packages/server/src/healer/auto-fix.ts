@@ -287,29 +287,6 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
 }
 
 
-function fixStaleRateLimit(item: DiagnosticItem): AutoFixResult {
-  if (item.code !== 'AGENT_RATE_LIMITED' || !item.agentId) return { applied: false, description: '' };
-
-  // Only clear if rate limited for >1 hour
-  const db = getDb();
-  const agent = db.prepare('SELECT updated_at FROM agents WHERE id = ? AND status = ?').get(item.agentId, 'rate_limited') as { updated_at: string } | undefined;
-  if (!agent) return { applied: false, description: '' };
-
-  const limitedMs = Date.now() - new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
-  if (limitedMs < 60 * 60 * 1000) {
-    return { applied: false, description: '' };
-  }
-
-  writeAgentStatus(item.agentId, 'idle');
-  broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
-
-  return {
-    applied: true,
-    description: `Cleared the throttle on ${item.agentName ?? item.agentId} — the AI provider stopped slowing it down`,
-    agentId: item.agentId,
-  };
-}
-
 // ── Fix Dispatcher ──
 
 const FIX_MAP: Record<string, (item: DiagnosticItem) => AutoFixResult> = {
@@ -317,7 +294,6 @@ const FIX_MAP: Record<string, (item: DiagnosticItem) => AutoFixResult> = {
   AGENT_PAUSED: fixPausedAgent,
   AGENT_ERROR: fixErrorAgent,
   ORPHANED_TASK: fixOrphanedTask,
-  AGENT_RATE_LIMITED: fixStaleRateLimit,
 };
 
 // ── Main Entry Point ──

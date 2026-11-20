@@ -4,7 +4,7 @@
 // What the dashboard spreads over several tabs, read live on the read-only connection: the
 // running version, every agent, the providers and their models, the router's tiers, the models
 // platform jobs use, what is scheduled next, budgets, integration switches, every other
-// setting, the Ollama lock, the drains, and the latest Healer diagnostic. Every row passes
+// setting, the Ollama lock, and the latest Healer diagnostic. Every row passes
 // `redactRows` first, so a key in a setting or a password in a provider URL is blanked; the
 // credential tables are never read. Each line names an id so `sql` can follow it up.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -17,7 +17,7 @@ import { agentLabel, agentNames, short, toMs, utc } from './scope.js';
 import { pointerLine, sourceRef } from './source-remote.js';
 
 export const STATE_SECTIONS = ['Version', 'Agents', 'Providers and models', 'Router tiers', 'Models for platform jobs', 'Schedules',
-  'Budgets', 'Integrations and switches', 'Settings', 'Ollama', 'Drains', 'Healer diagnostics'] as const;
+  'Budgets', 'Integrations and switches', 'Settings', 'Ollama', 'Healer diagnostics'] as const;
 
 type Row = Record<string, unknown>;
 const rows = (db: Database.Database, q: string, ...args: unknown[]): Row[] => redactRows(db.prepare(q).all(...args) as Row[]);
@@ -84,8 +84,6 @@ export function state(db: Database.Database = getReadOnlyDb()): string {
     'Integrations and switches': or(config.filter((c) => SWITCH_KEY.test(c.key as string)).map((c) => `- ${c.key}: ${c.value}`), 'No integration switches set.'),
     Settings: or(settings(config.filter((c) => !MODEL_KEY.test(c.key as string) && !SWITCH_KEY.test(c.key as string))), 'No other settings.'),
     Ollama: redactText(JSON.stringify(getOllamaLock().getStatus())),
-    Drains: or(rows(db, 'SELECT agent_id, drain, head, stuck, updated_at FROM drain_state ORDER BY agent_id').map((d) =>
-      `- ${agentLabel(names, d.agent_id as string)} · ${d.drain} · head ${d.head} · stuck ${d.stuck} · updated ${utc(Number(d.updated_at))}`), 'No drain is counting.'),
     'Healer diagnostics': (() => {
       const [d] = rows(db, 'SELECT report, created_at, critical_count, warning_count FROM healer_diagnostics ORDER BY created_at DESC LIMIT 1');
       if (!d) return 'No diagnostic has run.';

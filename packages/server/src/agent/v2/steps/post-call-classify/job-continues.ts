@@ -1,6 +1,5 @@
 import { lastTurnEnd, recordContinued, recordStalled } from '../../../../work/job-momentum.js';
 import { parkJob } from '../../../../work/job-continuation.js';
-import { runCarriesJob } from '../../../../work/task-freshness.js';
 import { noteEngineCheckpoint } from '../../../../work/engine-checkpoint-note.js';
 import { readJobAtPassEnd } from './job-turn-end.js';
 import { createLogger } from '../../../../logger.js';
@@ -17,7 +16,7 @@ export async function continueTheJob(state: AgentTurnState, ctx: PostCallClassif
   const { agentId, turnNumber } = ctx;
   // A human still owed a reply gets the reply first, as does an armed close-out gate left unanswered.
   if (ctx.triggerRow && !(sc.persistedContent ?? '').trim()) return null;
-  if (ctx.turnCtx.jobParked) return null;   // this turn already queued its continuation (another park)
+  if (ctx.turnCtx.jobParked) return null;   // this turn already parked its job (another park)
   const job = await readJobAtPassEnd(state, ctx);
   // Only a measured job with items left continues (0 = finished; never read = nothing to go on).
   if (!job?.measure || job.remaining === null || job.remaining <= 0) return null;
@@ -28,14 +27,13 @@ export async function continueTheJob(state: AgentTurnState, ctx: PostCallClassif
     try { noteEngineCheckpoint(agentId, 'job-continues', [taskId]); } catch (err) {
       logger.warn('v2: job-continues checkpoint note failed (non-fatal)', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
     }
-    ctx.stashContinuationIfHuman();
-    parkJob(agentId, `job continues: ${remaining} remain`, 'timer');
+    parkJob(agentId, `job continues: ${remaining} remain`, Date.now());
     recordContinued(taskId, { remaining, touchedThisTurn, novelCallsThisTurn, turnNumber });
     logger.info('v2 job continues: turn ended mid-job with momentum, parked', { agentId, taskId, remaining, touchedThisTurn, novelCallsThisTurn }, agentId);
     return 'continued';
   }
-  // Only the run the park's own wake started counts as the continuation, so only it can be a stall.
-  if (lastTurnEnd(taskId)?.kind === 'continued' && runCarriesJob(agentId)) {
+  // Only a turn started from the job counts as its continuation, so only it can be a stall.
+  if (lastTurnEnd(taskId)?.kind === 'continued' && ctx.turnCtx.servedJob) {
     recordStalled(taskId, { remaining, turnNumber });
     logger.info('v2 job stalled: a continued turn made no progress; left in progress for the PM', { agentId, taskId, remaining }, agentId);
     return 'stalled';

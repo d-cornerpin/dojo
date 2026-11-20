@@ -7,12 +7,12 @@ import { createLogger } from '../logger.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { archiveAgentConversation } from '../vault/archive.js';
 import { onAgentRecovered, evaluateSessionResetGuard } from '../healer/injury-recovery.js';
-import { endJobCarry } from '../work/task-freshness.js';
 import { writeAgentStatus } from './agent-status.js';
 import { activeRuns, pendingWakeups } from './shared-state.js';
 import { buildSessionResetMessage } from './session-reset.js';
 import { forgetSessionScratch } from './session-forget.js';
 import { rehomeUnclaimedEngineEvents } from './v2/counterparty.js';
+import { serveLater } from './v2/serve-later.js';
 
 const logger = createLogger('session-reset');
 
@@ -60,7 +60,8 @@ export async function resetSession(targetId: string, opts: ResetSessionOptions):
   db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.scratchpad') WHERE id = ?")
     .run(boundary, boundary, targetId);
   rehomeUnclaimedEngineEvents(targetId, boundary);
-  if (!live) { pendingWakeups.delete(targetId); endJobCarry(targetId); } // a reset session has no job to continue
+  if (!live) pendingWakeups.delete(targetId);
+  for (const { id } of db.prepare("SELECT id FROM work WHERE agent_id = ? AND kind <> 'ask' AND next_attempt_at IS NOT NULL").all(targetId) as Array<{ id: string }>) serveLater({ kind: 'task', id }, null, 'a reset session has no job to continue');
 
   // created_at is stamped at insert, at or after `boundary`, so both rows land inside the new session.
   for (const content of [NEW_SESSION_DIVIDER, buildSessionResetMessage(targetId)]) {

@@ -3,13 +3,11 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../../../../gateway/ws.js';
-import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
+import { insertMessageIfAbsent, repliedOnThread } from '../../../../memory/message-store.js';
 import { type AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { a2aReplyEnforcer } from '../../classifiers/a2a.js';
-import { hasPriorReplyOnThread } from '../../../a2a-replies.js';
-import { hasVerifiedA2ASendOnThread } from '../../outbound-ledger.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -64,13 +62,10 @@ export function runMissedReply(
     intent: a2aReplyContext?.intent,
     threadShort: a2aReplyContext?.threadShort,
     fromName: a2aReplyContext?.fromName,
-    // Softer nudge when the agent already replied on this thread, so it is not told the peer got nothing.
+    // Softer nudge when the asker's store already holds a row from this agent on the thread, so a reply that
+    // landed is never called "got nothing".
     priorReplyOnSameThread:
-      !!a2aReplyContext?.threadShort && hasPriorReplyOnThread(agentId, a2aReplyContext.threadShort, unrepliedAssign?.threadId ?? null),
-    // The verified send receipt covers a reply that never bound to the assign (no thread_id), so a
-    // delivery the platform recorded is never called "got nothing".
-    verifiedSendReceiptOnThread:
-      !!a2aReplyContext?.threadShort && hasVerifiedA2ASendOnThread(agentId, a2aReplyContext.threadShort, unrepliedAssign?.threadId ?? null),
+      !!unrepliedAssign && repliedOnThread(agentId, unrepliedAssign.fromId, unrepliedAssign.threadId, 0),
   });
   if (replyDecision.decision === 'nudge') {
     // Keyed on the assign id, so the next pass's enforcer finds it fired and the hardcap engages.

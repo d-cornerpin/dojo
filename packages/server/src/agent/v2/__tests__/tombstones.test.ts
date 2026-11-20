@@ -104,16 +104,16 @@ describe('TOMBSTONE 2 — the owed-interrupt near-duplicate swallow (wording nev
 // as an `assistant` row, then stamped it as the turn's terminal answer. The owner could not
 // tell it from their agent.
 //
-// OR2: *the engine never speaks to the user as the agent.* The replacement keeps the SAME
-// check and hands back the mic — the `silent-closeout` steer, after which the MODEL says
-// the completion in its own words.
+// OR2: *the engine never speaks to the user as the agent.* The replacement hands back the
+// mic: the required reply (`forced-reply`), in which the MODEL says the completion in its
+// own words.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 describe('TOMBSTONE 3 — the engine-composed "Done:" line (OR2: the engine never speaks as the agent)', () => {
 
-  it('REPLACEMENT: the same check survives as a declared steer floor and the model says it', () => {
-    const spec = STEER_PRECEDENCE.find((f) => f.id === 'silent-closeout');
-    expect(spec, 'the silent-closeout floor must be declared in the precedence table').toBeTruthy();
+  it('REPLACEMENT: the required reply is a declared steer floor and the model says it', () => {
+    const spec = STEER_PRECEDENCE.find((f) => f.id === 'forced-reply');
+    expect(spec, 'the required-reply floor must be declared in the precedence table').toBeTruthy();
     expect(spec!.priority, 'it is a SILENCE floor: a human is waiting and will hear nothing')
       .toBeGreaterThanOrEqual(20);
     expect(spec!.priority).toBeLessThan(40);

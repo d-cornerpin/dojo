@@ -57,6 +57,10 @@ import {
   stopAffordance, composerStopControl, type StopSubject,
 } from '../../../../../dashboard/src/lib/stop-affordance.js';
 import { liveWork, hasLiveWork } from '../../../agent/live-work.js';
+import { serveLater } from '../../../agent/v2/serve-later.js';
+import { setHold, clearHold } from '../../../work/done/hold.js';
+import { transition } from '../../../work/store.js';
+import { resetSession } from '../../../agent/reset-session.js';
 import { createGenerationJob, setCancelled } from '../../../services/generation-jobs.js';
 import type { AgentDetail } from '@dojo/shared';
 import { FX, FXID } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -587,5 +591,42 @@ describe('§9 a stop lands on a turn that is still unwinding', () => {
     s.lastRunEndedAt.set('some-other-agent', Date.now());
 
     expect((await pressStop()).status, 'one agent\'s unwind made every agent stoppable').toBe(400);
+  });
+});
+
+// ── §10: a job parked between stretches ───────────────────────────────────────────────
+
+describe('§10 a job parked between stretches is work the Stop button offers to end', () => {
+  const job = { kind: 'task' as const, id: 'parked-job' };
+  beforeEach(async () => {
+    const { seedTrackerTask } = await import('../../../work/__tests__/work-fixture.js');
+    seedTrackerTask(mockDb.current!, { id: job.id, agentId: AGENT, title: 'Rename the archive' });
+  });
+  const told = async (): Promise<unknown> => { await vi.dynamicImportSettled(); return lastJobsFrame()?.stoppable; };
+  const park = async (): Promise<unknown> => { serveLater(job, Date.now() + 60_000, 'parked between stretches'); return told(); };
+
+  it('every write of the due or the hold tells the composer: park, claim, the owner\'s hold and lift, New Session', async () => {
+    expect(await park()).toBe(true);
+    serveLater(job, null, 'claimed by its job turn');
+    expect(await told(), 'a claim clears the due').toBe(false);
+    expect(await park()).toBe(true);
+    expect(setHold(job.id, 'paused', 'paused by the owner on the dashboard', 'owner').ok).toBe(true);
+    expect(await told(), 'the owner held it').toBe(false);
+    expect(clearHold(job.id, 'owner')).toBe(true);
+    expect(await told(), 'his lift parks it again').toBe(true);
+    expect((await resetSession(AGENT, { callerAgentId: null, ownerRequested: true })).ok).toBe(true);
+    expect(await told(), 'New Session ends it').toBe(false);
+    expect(await park()).toBe(true);
+    const ended = transition(job.id, { to: 'abandoned', by: 'owner', actorId: 'owner', reason: 'ended on the board', claim: 'decided' });
+    expect(ended.kind).toBe('applied');
+    expect(await told(), 'a parked job whose task ended is no longer work to stop').toBe(false);
+  });
+
+  it('an idle agent with a parked job is served a stoppable payload, and the press is accepted', async () => {
+    await park();
+    const detail = await payload();
+    expect(stopAffordance({ status: detail.status, inFlight: detail.inFlight }).show).toBe(true);
+    expect((await pressStop()).status).toBe(200);
+    expect(await told(), 'the stopped job is held, so nothing is left to stop').toBe(false);
   });
 });

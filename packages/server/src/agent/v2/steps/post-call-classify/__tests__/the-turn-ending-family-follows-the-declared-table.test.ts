@@ -138,7 +138,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     reArmIfStrandedNoAnswer: vi.fn(),
     noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(async () => undefined),
-    persistAndBroadcastSystemRow: vi.fn(),
     startAckRepliedNow: () => false,
     ...over,
   } as unknown as PostCallClassifyContext;
@@ -164,9 +163,6 @@ function scratchFor(over: Partial<PostCallScratch> = {}): PostCallScratch {
  * open work on a turn that worked a task), plus a human message that arrived mid-turn
  * (so `owed-interrupt` sees somebody waiting). Nothing surfaced, so the turn really is
  * ending with the person hearing nothing — which is the shape both floors exist for.
- *
- * `silent-closeout` (22) runs first in BOTH orders and is deliberately held down: no
- * work row closes this turn, so it stands down and the pass reaches the pair under test.
  */
 function collisionState(): AgentTurnState {
   seedClaimedTask();
@@ -254,10 +250,8 @@ describe('§2 the family order is the declared table, and cannot drift from it',
     const declared = new Set(STEER_PRECEDENCE.map((f) => f.id));
     for (const member of TURN_ENDING_FAMILY) expect(declared.has(member.floor)).toBe(true);
     expect(TURN_ENDING_FAMILY.map((f) => f.floor)).toEqual([
-      'silent-closeout',        // 22
       'owed-interrupt',         // 27
       'promise-floor',          // 28
-      'a2a-handoff-floor',      // 29
       'a2a-missed-reply',       // 30
       'going-idle-in-progress', // 31 — was second, ranks ninth; the inversion this fixes
     ]);

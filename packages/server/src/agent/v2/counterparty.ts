@@ -8,20 +8,20 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import {
   createdAtText,
-  recordDeliveryAttempt,
   rehomeUndeliveredCreatedAt,
   sweepByReferent,
   sweepByRowid,
 } from '../../memory/message-store.js';
 import { conversationIdentityOf, type ConversationIdentity } from '../../memory/conversations.js';
 import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
-import { transition } from '../../work/store.js';
+import { askIdForMessage } from '../../work/store.js';
 import { spentRun, spentTask, spentWakeAsk } from './work-lineage.js';
 import { postAgentNotice } from '../agent-notice.js';
+import { spendServe } from './serve-later.js';
 
 const logger = createLogger('counterparty');
 // "Unanswered human conversation" = an open `work(kind='ask')` row: real, so it survives a
-// restart; FIFO oldest-first per item; engine events and A2A never open an ask.
+// restart; served in one order (the owner, then never served, then oldest); engine events and A2A never open an ask.
 export interface WaitingConversation {
   key: string;
   /** Conversation id of the OLDEST unanswered row; NULL until pickup re-resolves it via `identity`. */
@@ -43,6 +43,12 @@ export interface WaitingConversation {
   /** OLDEST unanswered row = the turn TRIGGER: turns answer oldest-first, a later ping cannot go first. */
   oldest: WaitingConversation['latest'];
   oldestWaitingRowid: number;
+  /** The smallest due time of the conversation's asks (0: due now); a conversation waits while it is in the future. */
+  dueAt: number;
+  /** The owner wrote it; the owner is served before anyone else. */
+  owner: boolean;
+  /** Its oldest ask was picked up by a turn before (handed back); a never-served one goes first. */
+  served: boolean;
 }
 
 /** ONE projection for every read; `seq AS rowid` must stay: `seq` is the INTEGER PRIMARY KEY. */
@@ -80,23 +86,26 @@ function sessionStartOf(agentId: string): string {
   return (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
 }
 
-export function getWaitingHumanConversations(agentId: string): WaitingConversation[] {
+/** Conversations whose asks are due now, or with `includeNotDue` also those waiting for a later due time. */
+export function getWaitingHumanConversations(agentId: string, opts: { includeNotDue?: boolean } = {}): WaitingConversation[] {
   const db = getDb();
   const sessionStart = sessionStartOf(agentId);
   // Narrow INTO the WHERE before the LIMIT: steers/notices/A2A are all role='user', so post-LIMIT
   // filtering lets them eat the window and an older human ask is forgotten.
   const rows = db.prepare(
-    `SELECT ${WAITING_COLS}
+    `SELECT ${WAITING_COLS}, COALESCE(w.next_attempt_at, 0) AS due_at,
+            EXISTS (SELECT 1 FROM work_events ce WHERE ce.work_id = w.id AND ce.kind = 'claim_turn') AS served
        FROM ${WAITING_HUMAN_CANDIDATE_FROM}
       WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}
       ORDER BY w.opened_at ASC, m.seq ASC LIMIT 50`,
-  ).all({ agentId, sessionStart }) as WaitingConversation['latest'][];
+  ).all({ agentId, sessionStart }) as Array<WaitingConversation['latest'] & { due_at: number; served: number }>;
+  const now = Date.now();
   // UNANSWERED iff the row's OWN ask is open: a mid-turn arrival must not ride an unrelated reply.
-  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; workId: string; identity: ConversationIdentity }>();
+  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; workId: string; identity: ConversationIdentity; dueAt: number; owner: boolean; served: boolean }>();
   for (const r of rows) {                              // now OLDEST → newest by rowid (ASC)
     const o = originOfCandidate(r);
     // The one "owes a reply" definition: AUTHORIZED human inbound; the rest is Lane-3 awareness.
-    // Trigger pick, drain, hasUnansweredUser and isA2ATurn all derive from this skip.
+    // Trigger pick, the owed items, hasUnansweredUser and isA2ATurn all derive from this skip.
     if (o.kind !== 'user' || !o.authorized) continue;
     const key = conversationKey(o.channel, o.senderId, o.senderName, o.threadId);
     let e = agg.get(key);
@@ -104,13 +113,16 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
     if (!e) {
       e = {
         latest: r, oldest: r, oldestWaitingRowid: r.rowid, workId: r.work_id,
-        identity: conversationIdentityOf(o.channel, o.senderId, o.senderName, o.threadId),
+        identity: conversationIdentityOf(o.channel, o.senderId, o.senderName, o.threadId), dueAt: r.due_at,
+        owner: o.relation === 'owner', served: r.served === 1,
       };
       agg.set(key, e);
     }
     e.latest = r;                                      // iterating oldest→newest, last write = newest unanswered
+    e.dueAt = Math.min(e.dueAt, r.due_at);
   }
   return [...agg.entries()]
+    .filter(([, e]) => opts.includeNotDue === true || e.dueAt <= now)
     .map(([key, e]) => ({
       key,
       conversationId: e.oldest.conversation_id ?? null,
@@ -119,8 +131,11 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
       latest: e.latest,
       oldest: e.oldest,
       oldestWaitingRowid: e.oldestWaitingRowid,
+      dueAt: e.dueAt,
+      owner: e.owner,
+      served: e.served,
     }))
-    .sort((a, b) => a.oldestWaitingRowid - b.oldestWaitingRowid);              // FIFO by rowid
+    .sort((a, b) => Number(b.owner) - Number(a.owner) || Number(a.served) - Number(b.served) || a.oldestWaitingRowid - b.oldestWaitingRowid);
 }
 
 /** Has a person's message for `agentId` arrived after the row `sinceSeq`, or, given the conversation a turn
@@ -129,33 +144,14 @@ export function personArrivedSince(agentId: string, sinceSeq: number, servedKey?
   return getWaitingHumanConversations(agentId).some((c) => c.latest.rowid > sinceSeq || (servedKey !== undefined && c.key !== servedKey));
 }
 
-/** Quarantine every OPEN ask of ONE waiting conversation served again and again without a reply
- *  (poisoned message, or turns that end silent) so a poisoned head cannot starve the queue behind
- *  it; only key-matching rows are touched. */
-export function quarantineWaitingConversation(agentId: string, convKey: string): number {
-  const db = getDb();
-  const sessionStart = sessionStartOf(agentId);
-  const rows = db.prepare(
-    `SELECT ${WAITING_COLS}
-       FROM ${WAITING_HUMAN_CANDIDATE_FROM}
-      WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}`,
-  ).all({ agentId, sessionStart }) as Array<WaitingConversation['latest']>;
-  let n = 0;
-  for (const r of rows) {
-    const o = originOfCandidate(r);
-    if (o.kind !== 'user' || !o.authorized) continue;
-    if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
-    // `by: 'agent'`, not `'engine'`: an engine transition must point at a real occurrence; this has none.
-    const res = transition(r.work_id, {
-      to: 'abandoned', by: 'agent', actorId: agentId,
-      // The reason line may state only what is true on every path: served again and again, never answered.
-      reason: 'quarantined: this conversation was served again and again and never produced a reply '
-        + '(a poisoned message, or turns that finish without answering), and it was starving the '
-        + 'queue behind it',
-    });
-    if (res.kind === 'applied') n++;
-  }
-  return n;
+/** The message an ask was opened for, with its conversation key, its ask's state and whether the owner wrote it:
+ *  an ask-rooted event and a parked job rank with their request, and a job turn is addressed from it. */
+export function askRoot(agentId: string, messageId: string): { row: WaitingConversation['latest']; key: string; owner: boolean; state: string } | null {
+  const r = getDb().prepare(`SELECT ${WAITING_COLS}, w.state AS state FROM ${WAITING_HUMAN_CANDIDATE_FROM} WHERE w.id = ? AND w.agent_id = ?`)
+    .get(askIdForMessage(messageId), agentId) as (WaitingConversation['latest'] & { state: string }) | undefined;
+  if (!r) return null;
+  const o = originOfCandidate(r);
+  return { row: r, key: conversationKey(o.channel, o.senderId, o.senderName, o.threadId), owner: o.relation === 'owner', state: r.state };
 }
 
 /** THE ASSEMBLED-CONTEXT SET: asks in front of the model when this turn replied; later siblings
@@ -261,6 +257,10 @@ function retireOneEngineEvent(
   }
 }
 
+type EventReferent = { run_id: string | null; task_id: string | null; origin_intent: string | null; root_kind: string | null; root_id: string | null };
+const spentReferent = (ev: EventReferent): ReturnType<typeof spentRun> =>
+  (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.task_id ? spentTask(ev.task_id) : null) ?? spentWakeAsk(ev);
+
 export function retireSpentEngineEvents(agentId: string): number {
   let retired = 0;
   try {
@@ -271,7 +271,7 @@ export function retireSpentEngineEvents(agentId: string): number {
        LIMIT 50`,
     ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; origin_intent: string | null; root_kind: string | null; root_id: string | null; created_at: string }>;
     for (const ev of candidates) {
-      const spent = (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.task_id ? spentTask(ev.task_id) : null) ?? spentWakeAsk(ev);
+      const spent = spentReferent(ev);
       if (spent && retireOneEngineEvent(ev.rowid, spent.reason, {
         taskId: ev.task_id, runId: ev.run_id, createdAt: ev.created_at, referentState: spent.state,
       })) retired++;
@@ -333,23 +333,15 @@ export function expireExhaustedEngineEvents(agentId: string): number {
   return expired;
 }
 
-/** Record one failed/aborted delivery: bumps `delivery_attempts`, schedules per backoff; if the
- *  bump exhausts the lifecycle the event expires loudly RIGHT HERE, not on a later consult. */
-export function recordEngineEventDeliveryFailure(agentId: string, rowid: number): void {
+/** Record one failed/aborted delivery: a spent serve, next due at the later of the backoff and a provider's reset
+ *  (`retryAt`); if it exhausts the lifecycle the event expires loudly here. */
+export function recordEngineEventDeliveryFailure(agentId: string, rowid: number, retryAt: number | null = null): void {
   try {
-    const db = getDb();
-    const cur = db.prepare('SELECT delivery_attempts FROM messages WHERE agent_id = ? AND rowid = ?')
-      .get(agentId, rowid) as { delivery_attempts: number | null } | undefined;
-    if (!cur) return;
-    const attempts = (cur.delivery_attempts ?? 0) + 1;
-    const backoffMin = ENGINE_EVENT_BACKOFF_MINUTES[Math.min(attempts, ENGINE_EVENT_BACKOFF_MINUTES.length) - 1];
-    recordDeliveryAttempt({ agentId, rowid, attempts, backoffMinutes: backoffMin });
-    logger.warn('engine event delivery failed; scheduled retry with backoff', { agentId, rowid, attempts, backoffMin }, agentId);
-    if (attempts >= ENGINE_EVENT_MAX_ATTEMPTS) expireExhaustedEngineEvents(agentId);
+    if (spendServe(agentId, rowid, ENGINE_EVENT_MAX_ATTEMPTS, { minutes: ENGINE_EVENT_BACKOFF_MINUTES, retryAt })) expireExhaustedEngineEvents(agentId);
   } catch { /* best effort, failure bookkeeping must never mask the original abort */ }
 }
 
-/** Earliest FUTURE retry ms among in-lifecycle events, or null; boot re-drain covers crashes. */
+/** Earliest FUTURE retry ms among in-lifecycle events, or null; the owed clock (`owed.ts`) wakes the agent then. */
 export function getNextEngineEventRetryAt(agentId: string): number | null {
   try {
     const db = getDb();
@@ -391,32 +383,48 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
   }
 }
 
-/** Newest never-served terminal-wake A2A row, by unserved-ness, not recency alone; turn-start wake
- *  detection and the runtime turn-end drain both use it. */
+/** How long a helper's result, or another agent's request once served, stays owed. */
+export const TERMINAL_WAKE_WINDOW_MS = 45 * 60_000;
+
+/** A message on thread `m.a2a_thread_id` is for an ended request (the owner's Stop, or any abandon): this agent's
+ *  NEWEST piece on the thread is abandoned, and so is its parent ask; a later request has a newer, live piece. */
+export const RESULT_FOR_ENDED_REQUEST = (m: string): string => `EXISTS (SELECT 1 FROM work p JOIN work a ON a.id = p.parent_id
+  WHERE p.id = (SELECT n.id FROM work n WHERE n.agent_id = ${m}.agent_id AND n.root_kind = 'a2a_thread'
+                  AND n.root_id = ${m}.a2a_thread_id AND n.parent_id IS NOT NULL ORDER BY n.opened_at DESC LIMIT 1)
+    AND p.state = 'abandoned' AND a.state = 'abandoned')`;
+export const resultForEndedRequest = (agentId: string, threadId: string): boolean => !!getDb().prepare(
+  `SELECT 1 FROM (SELECT ? AS agent_id, ? AS a2a_thread_id) m WHERE ${RESULT_FOR_ENDED_REQUEST('m')}`).get(agentId, threadId);
+
+/** Newest never-served terminal-wake A2A row, by unserved-ness, not recency alone; the owed items (`owed.ts`)
+ *  read it. */
 export function findUnservedTerminalWake(agentId: string): { rowid: number } | null {
   const db = getDb();
   // AGE-BOUNDED on purpose: an unbounded finder frames turns on stale rows, and those turns create
   // REAL new threads, so the storm feeds itself; "unserved" means `served_by_turn IS NULL` only.
   const row = db.prepare(`
-    SELECT seq AS rowid FROM messages
-     WHERE agent_id = @agentId AND role = 'user'
+    SELECT m.seq AS rowid FROM messages m
+     WHERE m.agent_id = @agentId AND role = 'user'
        AND lane <> 'events'
        AND a2a_thread_id IS NOT NULL
        AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
        AND a2a_requires_response = 1
        AND served_by_turn IS NULL AND swept_at IS NULL
-       AND created_at >= (unixepoch('now', '-45 minutes') * 1000)
-    ORDER BY created_at DESC, rowid DESC LIMIT 1
+       AND created_at >= (unixepoch('now') * 1000 - ${TERMINAL_WAKE_WINDOW_MS}) AND NOT ${RESULT_FOR_ENDED_REQUEST('m')}
+    ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1
   `).get({ agentId }) as { rowid: number } | undefined;
   return row ? { rowid: row.rowid } : null;
 }
 
-export function getPendingEngineEvent(agentId: string): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null; rootKind: string | null; rootId: string | null } | null {
+/** The next deliverable engine event. `pure` writes nothing: instead of expiring and retiring first, it skips an
+ *  event whose referent is spent (the clock's read). */
+export function getPendingEngineEvent(agentId: string, opts: { pure?: true } = {}): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null; rootKind: string | null; rootId: string | null } | null {
   const db = getDb();
-  // Dispose exhausted/overdue events LOUDLY first, so every eligibility consumer drives the notice.
-  expireExhaustedEngineEvents(agentId);
-  // Premise re-check BEFORE eligibility, at the single choke point every consumer funnels through.
-  retireSpentEngineEvents(agentId);
+  if (!opts.pure) {
+    // Dispose exhausted/overdue events LOUDLY first, so every eligibility consumer drives the notice.
+    expireExhaustedEngineEvents(agentId);
+    // Premise re-check BEFORE eligibility, at the single choke point every consumer funnels through.
+    retireSpentEngineEvents(agentId);
+  }
   const sessionStart = sessionStartOf(agentId);
   // Clock order with the INSERTION key as tiebreak: `created_at` is second-granular, rowid breaks ties.
   const engineGates =
@@ -424,11 +432,12 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; id: str
      AND created_at >= (unixepoch('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours') * 1000)
      AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
      AND (next_attempt_at IS NULL OR next_attempt_at <= (unixepoch('now') * 1000))`;
-  const row = db.prepare(
+  const rows = db.prepare(
     `SELECT seq AS rowid, id, task_id, run_id, content, origin_intent, root_kind, root_id FROM messages
        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
-     ORDER BY created_at ASC, rowid ASC LIMIT 1`,
-  ).get({ agentId, sessionStart }) as { rowid: number; id: string; task_id: string | null; run_id: string | null; content: string; origin_intent: string | null; root_kind: string | null; root_id: string | null } | undefined;
+     ORDER BY created_at ASC, rowid ASC LIMIT ${opts.pure ? 50 : 1}`,
+  ).all({ agentId, sessionStart }) as Array<EventReferent & { rowid: number; id: string; content: string }>;
+  const row = opts.pure ? rows.find((r) => spentReferent(r) === null) : rows[0];
   // The 6-hour horizon bounds the lifecycle: historical unstamped rows must not return as pending.
   return row ? { rowid: row.rowid, id: row.id, taskId: row.task_id, runId: row.run_id, content: row.content, originIntent: row.origin_intent, rootKind: row.root_kind, rootId: row.root_id } : null;
 }

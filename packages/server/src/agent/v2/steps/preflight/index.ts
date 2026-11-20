@@ -7,7 +7,7 @@ import type { AgentStatus, DisplayKind } from '@dojo/shared';
 import type { TurnContext } from '../../../turn-context.js';
 import type { InboundChannel } from '../../inbound-channel.js';
 import type { TurnCounterparty, WaitingConversation } from '../../counterparty.js';
-import type { UnrepliedAssign } from '../../../a2a-replies.js';
+import type { AgentRequest } from '../../owed.js';
 import { preflightProceed, type PreflightOutcome } from '../step-outcome.js';
 import { runTurnTrigger } from './turn-trigger.js';
 import { turnAnswersSpokenRequest } from '../../../../memory/served-ask.js';
@@ -35,7 +35,7 @@ export interface PreflightContext {
 
 /** Mutable scratch shared by this step's sections, living for one `runPreflight` call. */
 export interface PreflightScratch {
-  /** Set at the engine-event pickup when this turn wins the CAS; the abort revert releases exactly it. */
+  /** Set at the engine-event pickup when this turn wins the CAS; finalize hands back exactly it. */
   claimedEngineEvent: { rowid: number; turnNumber: number } | null;
   /** The event this turn intends to claim; it becomes `claimedEngineEvent` only if the CAS wins. */
   pendingEngineClaim: { rowid: number } | null;
@@ -65,7 +65,7 @@ export interface PreflightOutputs {
   readonly latestUserSource: 'voice' | 'text' | null;
   readonly latestTtsEngine: 'local' | 'cloud' | null;
   readonly inboundChannel: InboundChannel;
-  readonly unrepliedAssign: UnrepliedAssign | null;
+  readonly unrepliedAssign: AgentRequest | null;
   // What kind of turn this is.
   readonly mostRecentInbound: {
     rowid: number; content: string; lane: string; origin_intent: string | null;
@@ -87,9 +87,7 @@ export interface PreflightOutputs {
   readonly turnStartedAt: string;
   // The turn's closures.
   readonly reArmIfStrandedNoAnswer: () => void;
-  readonly stashContinuationIfHuman: () => void;
   readonly persistRoutingMarker: (label: string) => void;
-  readonly persistAndBroadcastSystemRow: (content: string) => string;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly refusedOnceSigs: Set<string>;
   readonly deliverEngineUserAck: (
@@ -125,19 +123,17 @@ export async function runPreflight(
   if (trigger.directive === 'abandon') return trigger;
   const {
     db, agent, configuredModelId, isAutoRouted, contextModelId, contextWindow,
-    waitingConvs, openHumanWorkAtTurnStart, continuation, isHumanContinuation,
+    waitingConvs, openHumanWorkAtTurnStart, item, jobRow, isHumanContinuation,
     chosenConvKey, chosenConversationId, triggerRow, lastUserMessageContent,
     lastUserMessageId, triggerWorkId, triggerConversationId,
   } = trigger.outputs;
 
   const {
-    revertTriggerStampOnAbort, triggeredByIMessage,
-    inboundChannel, inboundContext, unrepliedAssign,
-  } = runInboundAndAbort(turnCtx, ctx, sc, { triggerRow, triggerWorkId, lastUserMessageContent });
+    revertTriggerStampOnAbort, triggeredByIMessage, inboundChannel, inboundContext,
+  } = runInboundAndAbort(turnCtx, ctx, { triggerRow, jobRow, lastUserMessageContent });
 
   const classified = await runTurnClassification(turnCtx, ctx, sc, {
-    db, waitingConvs, openHumanWorkAtTurnStart, triggerRow, chosenConvKey,
-    lastUserMessageContent, unrepliedAssign,
+    db, waitingConvs, openHumanWorkAtTurnStart, item, triggerRow, chosenConvKey, lastUserMessageContent,
   });
   if (classified.directive === 'abandon') return classified;
   // Roots are final here: whether the request this turn answers was spoken picks the voice-conduct block, the
@@ -148,12 +144,12 @@ export async function runPreflight(
   const {
     mostRecentInbound, mostRecentIsA2A, terminalWakeA2A, hasUnansweredUser, isA2ATurn,
     terminalWakeDrivesTurn, pendingEngineEvent, isEngineTurn, settledContextWakeTurn,
-    isNotificationTurn, a2aReplyContext, a2aReplyAssignMessageId, a2aCounterpartyIdentity,
+    isNotificationTurn, a2aReplyContext, a2aReplyAssignMessageId, a2aCounterpartyIdentity, unrepliedAssign,
   } = classified.outputs;
 
   // The state is born here, and from this statement on it lives on the turn's bag.
   const { counterparty, turnNumber, turnStartedAt } = await runCounterpartyAndRecord(turnCtx, ctx, sc, {
-    isHumanContinuation, continuation, a2aCounterpartyIdentity, lastUserMessageContent,
+    isHumanContinuation, jobRow, a2aCounterpartyIdentity, lastUserMessageContent,
     lastUserMessageId, triggerRow, triggerWorkId, chosenConvKey, inboundChannel,
     inboundContext, latestUserSource, triggeredByIMessage, isA2ATurn, isEngineTurn,
     terminalWakeA2A, terminalWakeDrivesTurn, pendingEngineEvent, a2aReplyContext,
@@ -161,11 +157,10 @@ export async function runPreflight(
   });
 
   const {
-    reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer,
+    reArmIfStrandedNoAnswer, persistRoutingMarker, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
   } = runTurnClosures(turnCtx, ctx, sc, {
-    counterparty, chosenConvKey, chosenConversationId, turnNumber, revertTriggerStampOnAbort,
+    counterparty, turnNumber, revertTriggerStampOnAbort,
   });
 
   const {
@@ -183,7 +178,7 @@ export async function runPreflight(
     chosenConversationId, turnStartedAt, settledContextWakeTurn, isA2ATurn, isEngineTurn,
     triggerWorkId, inboundChannel, inboundContext, contextWindow, contextModelId,
     configuredModelId, isAutoRouted, noteTerminalAnswer, persistRoutingMarker,
-    reArmIfStrandedNoAnswer, stashContinuationIfHuman,
+    reArmIfStrandedNoAnswer,
   });
 
   return preflightProceed({
@@ -196,8 +191,7 @@ export async function runPreflight(
     isEngineTurn, settledContextWakeTurn, isNotificationTurn, a2aReplyContext,
     a2aReplyAssignMessageId,
     counterparty, turnNumber, turnStartedAt,
-    reArmIfStrandedNoAnswer, stashContinuationIfHuman, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer,
+    reArmIfStrandedNoAnswer, persistRoutingMarker, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
     counterpartyIsAgentSender, startAckArmed, startAckArmedAtMs, startAckRepliedNow,
     fireStartAckIfOwed,

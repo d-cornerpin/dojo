@@ -39,6 +39,7 @@ import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 import { servedRowsOutOfView } from '../served-ask.js';
 import { assembleContext } from '../assembler.js';
 import { runTurnClassification } from '../../agent/v2/steps/preflight/turn-classification.js';
+import { nextOwed } from '../../agent/v2/owed.js';
 import type { PreflightContext, PreflightScratch } from '../../agent/v2/steps/preflight/index.js';
 import type { TurnContext } from '../../agent/turn-context.js';
 
@@ -192,7 +193,7 @@ describe('t207 D8 — the claim records the trigger', () => {
     const turnCtx = {} as unknown as TurnContext;
     const scratch: PreflightScratch = { claimedEngineEvent: null, pendingEngineClaim: null, terminalAnswerRowId: null };
     const out = await runTurnClassification(turnCtx, preflightCtx(), scratch, {
-      db: mockDb.current!, waitingConvs: [], openHumanWorkAtTurnStart: false, triggerRow: null,
+      db: mockDb.current!, waitingConvs: [], openHumanWorkAtTurnStart: false, item: nextOwed(AGENT)[0], triggerRow: null,
       chosenConvKey: '', lastUserMessageContent: '', unrepliedAssign: null,
     });
     if (out.directive !== 'proceed') throw new Error(`expected proceed, got ${out.reason}`);

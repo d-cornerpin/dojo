@@ -1,23 +1,14 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// t173b — EVERY PARK DOOR'S CONTINUATION INHERITS THE JOB'S ORIGIN (t173's gap).
+// EVERY PARK DOOR HANDS THE JOB'S ORIGIN TO ITS NEXT TURN, FROM THE JOB'S TASK ROW.
 //
-// THE MEASURED GAP (run 11, S1 variant B, the dev box's own rows and log, 2026-10-15). A manager that
-// is the PM assigned a ledger audit over an A2A thread, so the engine opened NO task for it (the PM's
-// ASSIGN never does); the worker opened its own, on its first A2A turn. A later turn (a forced A2A
-// retry on another thread) hit the 15-minute budget and parked. Its continuation recorded kind NULL,
-// subject `none`, no root, and logged the zero-messages fallback three times; the close-out gate, on
-// that same turn, refused its file_read because the audited task was "dangling".
-// Why: a park carries the tasks the PARKING turn names (`turnWorkIds`: its served task, its ask, its
-// thread's tasks, tasks opened on it). That turn named none (the task was opened on an earlier turn, on
-// another thread's turn), so `carryJobWork` had nothing to carry and made no job at all: the wake was a
-// plain wake, `runCarriesJob` was false, and t173's origin read (from the job's carried ids) found nothing.
-// The fix is at the one seam, `parkJob`: the job's origin is read there, from the work the turn names
-// first and from the task the agent is most recently working second, and carried on the job record with
-// the ids and asks (it never shields those tasks from the PM or the close-out gate: t143 round 2).
+// A park dates ONE task: the one linked to the request the parking turn serves, else one the turn worked, else an
+// engine task opened for that request (`work/job-continuation.ts`). The job's own next turn is served from that
+// row and rooted where the task says the job started (`preflight/turn-trigger.ts`, `work/job-origin.ts`): another
+// agent's thread, or a person's request. A park on a turn that serves no request and names no task continues
+// nothing; the agent's open task is left to the PM's ladder and never shielded.
 //
-// One clause per park door: the checkpoint window (by steps and by time), both recovery compactions. Every door is driven
-// through the engine's real turn entry. (t194: the context gate's two arms, and so its two park doors,
-// are DELETED — a full view is condensed, never surrendered — and their three clauses with them.)
+// One clause per park door: the checkpoint window (by steps and by time), both recovery compactions. Every door is
+// driven through the engine's real turn entry.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -106,10 +97,10 @@ vi.mock('../../memory/compaction.js', async () => {
   };
 });
 // Which door parked: the one definition of "park" is recorded as it runs (it still runs, whole).
-const parks: Array<{ reason: string; how: string }> = [];
+const parks: Array<{ reason: string }> = [];
 vi.mock('../job-continuation.js', async () => {
   const actual = await vi.importActual<typeof import('../job-continuation.js')>('../job-continuation.js');
-  return { ...actual, parkJob: (...a: Parameters<typeof actual.parkJob>) => { parks.push({ reason: a[1], how: a[2] ?? 'drain' }); return actual.parkJob(...a); } };
+  return { ...actual, parkJob: (...a: Parameters<typeof actual.parkJob>) => { parks.push({ reason: a[1] }); return actual.parkJob(...a); } };
 });
 vi.mock('../../config/platform.js', () => ({
   clearPlatformConfigCache: vi.fn(),
@@ -173,13 +164,9 @@ vi.mock('../../logger.js', () => ({
 
 import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
-import { insertMessage, insertEngineEvent } from '../../memory/message-store.js';
+import { insertMessage, insertEngineEvent, sweepById } from '../../memory/message-store.js';
 import { stoppedAgents, pendingWakeups, doomedPrefillCompactionSpent } from '../../agent/shared-state.js';
-import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
-import { recordA2AReply } from '../../agent/a2a-replies.js';
-import { beginJobRun, endJobRun, endJobCarry, jobCarriedIds } from '../task-freshness.js';
-import { jobOrigin } from '../job-origin.js';
 import { __resetBrakesForTests } from '../../memory/compaction-brakes.js';
 import { AgentError } from '../../agent/errors.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../../agent/stream-patience.js';
@@ -233,7 +220,6 @@ beforeEach(() => {
   loggerErrorSpy.mockReset();
   stoppedAgents.clear();
   pendingWakeups.clear();
-  continuationContext.clear();
   doomedPrefillCompactionSpent.clear();
   __resetBrakesForTests();
   parks.length = 0;
@@ -241,7 +227,6 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  endJobCarry(WORKER);
   // A harness may never abort a turn silently: a turn that died on an exception is recorded with one of these exits.
   // (A recovery door's turn ends `unknown` or `stream_idle` BY DESIGN: it threw, recovery parked the job.)
   const died = recoveryDoor ? [] : mockDb.current!.prepare("SELECT turn_number, exit_reason FROM turns WHERE exit_reason IN ('unknown', 'provider_error', 'abort', 'terminated')").all();
@@ -300,8 +285,10 @@ async function pmJob(thread = THREAD, text = ASSIGN_TEXT, title = 'Supplier ledg
   const task = tasks[0];
   expect(task.a2a_thread_id, 'premise: a task the model opens is tied to no thread by its columns').toBeNull();
   expect(task.state).toBe('claimed');
-  const assignId = (db.prepare("SELECT id FROM messages WHERE agent_id = ? AND a2a_intent = 'ASSIGN' AND a2a_thread_id = ?").get(WORKER, thread) as { id: string }).id;
-  recordA2AReply({ assignMessageId: assignId, agentId: WORKER, threadId: thread, replyIntent: 'ANSWER' });   // the first reply went out
+  insertMessage({   // the first reply went out: it lands in the PM's store, as the transport writes it
+    agentId: PM, role: 'user', lane: 'a2a', sourceAgentId: WORKER, a2aThreadId: thread, a2aIntent: 'ANSWER',
+    content: `[A2A:ANSWER thread:${thread.slice(0, 8)} from:Worker] on it`,
+  });
   return { taskId: task.id };
 }
 
@@ -313,154 +300,137 @@ function anUnrelatedNotice(id: string): void {
   });
 }
 
-/** The park's continuation, started the way the runtime starts it: from the wake the park registered. */
-async function continuationTurn(): Promise<{ turn: number; firstCall: number }> {
-  expect(beginJobRun(WORKER, 'drain') || beginJobRun(WORKER, 'drain'), 'the park registered its own wake, and the run carries the job').toBe(true);
+/** The tasks with a due time: what a park dated. */
+const dated = (): Array<{ id: string; thread: string | null }> => mockDb.current!.prepare(
+  "SELECT id, a2a_thread_id AS thread FROM work WHERE kind = 'task' AND agent_id = ? AND next_attempt_at IS NOT NULL").all(WORKER) as never;
+
+/** The PM's ASSIGN arrives and its own turn runs `turn` (the engine opens no task for the PM's ASSIGN). */
+async function theAssignsOwnTurn(turn: () => Promise<void>): Promise<number> {
+  const r = await deliverA2AMessage({ intent: 'ASSIGN', threadId: THREAD, requiresResponse: true, payload: ASSIGN_TEXT, toAgent: WORKER, fromAgent: PM });
+  expect(r.delivered).toBe(true);
+  await turn();
+  return lastTurnNumber();
+}
+
+/** The job's own next turn, as the one clock starts it: served from the task the park dated. */
+async function theJobsTurn(): Promise<{ turn: number; firstCall: number }> {
+  expect(dated(), 'the park dated one task').toHaveLength(1);
   const firstCall = callModelSpy.mock.calls.length;
   script({ reads: 0 });
-  try { await runV2Turn(WORKER); } finally { endJobRun(WORKER); }
+  await runV2Turn(WORKER);
+  expect(dated(), 'the job turn picked its task up').toEqual([]);
   return { turn: lastTurnNumber(), firstCall };
 }
 
-/** The assertions every door owes: the continuation is the turn of the job's request. */
-async function expectTheContinuationHoldsTheOrigin(parkedTurn: number, door: { reason: string; how: 'drain' | 'timer' }, exit?: string): Promise<void> {
-  expect(parks, 'premise: the job was parked by exactly this door').toEqual([door]);
+/** The assertions every door owes: the job's next turn is the turn of the job's request. */
+async function expectTheJobsTurnHoldsTheOrigin(parkedTurn: number, reason: string, exit?: string): Promise<void> {
+  expect(parks, 'premise: the job was parked by exactly this door').toEqual([{ reason }]);
   if (exit) expect(turnRow(parkedTurn).exit_reason, 'premise: the parking turn left by this door').toBe(exit);
   loggerErrorSpy.mockClear();
-  const { turn, firstCall } = await continuationTurn();
+  const { turn, firstCall } = await theJobsTurn();
   const rec = turnRow(turn);
   expect(rec.kind).toBe('a2a');
   expect(rec.subject_kind).toBe('a2a_thread');
   expect(rec.subject_id).toBe(THREAD);
   expect(rec.root_kind).toBe('a2a');
   expect(rec.root_id).toBe(THREAD);
-  const { text } = firstView(firstCall);
-  expect(zeroMessagesLogged(), 'no zero-messages fallback on the continuation').toBe(false);
-  expect(occurrences(text, ASSIGN_TEXT), 'the job\'s request, once').toBe(1);
-  expect(jobCarriedIds(WORKER), 'the origin is carried, the held task is NOT shielded (t143 round 2)').toEqual([]);
+  expect(zeroMessagesLogged(), 'no zero-messages fallback on the job\'s turn').toBe(false);
+  expect(occurrences(firstView(firstCall).text, ASSIGN_TEXT), 'the job\'s request, once').toBe(1);
 }
 
-describe('t173b: the run 11 shape — the parking turn names no task, the task was opened earlier', () => {
-  it('EVIDENCE: a forced A2A retry on another thread parks at the budget; its continuation is the turn of the ASSIGN\'s thread', async () => {
-    await pmJob();
-    // The healer-style retry request on ANOTHER thread, unreplied: the next turn is an A2A turn on it.
+/** The clock moved past a window by each read; the next turn must not look fifteen minutes old. */
+async function aTurnPastTheBudget(reads: number, first?: Step): Promise<void> {
+  const clock = Date.now.bind(Date);
+  const dateSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock() + world.clockMs);
+  world.clockPerTool = BUDGET_MS + 60_000;
+  script({ reads, first });
+  try { await runV2Turn(WORKER); } finally { dateSpy.mockRestore(); world.clockMs = 0; world.clockPerTool = 0; }
+  // A park in that turn was dated on the jumped clock; on real time it is due now.
+  mockDb.current!.prepare('UPDATE work SET next_attempt_at = ? WHERE next_attempt_at IS NOT NULL').run(Date.now());
+}
+
+describe('a park belongs to the request its turn serves, never borrowed from another task', () => {
+  it('a retry request on another thread parks at the budget: its park dates a task for THAT request on its thread; the ASSIGN\'s task is left to the ladder', async () => {
+    const { taskId } = await pmJob();
     const q = await deliverA2AMessage({
       intent: 'QUESTION', threadId: OTHER_THREAD, requiresResponse: true, payload: 'Please retry your task.', toAgent: WORKER, fromAgent: MANAGER,
     });
     expect(q.delivered).toBe(true);
-    const clock = Date.now.bind(Date);
-    const dateSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock() + world.clockMs);
-    world.clockPerTool = BUDGET_MS + 60_000;
-    script({ reads: 5 });
-    try { await runV2Turn(WORKER); } finally { dateSpy.mockRestore(); world.clockMs = 0; }   // the next turn must not look fifteen minutes old
-    const parked = lastTurnNumber();
-    expect(turnRow(parked).subject_id, 'premise: the parking turn served the OTHER thread').not.toBe(THREAD);
-    // What the runtime did at that instant on the box: the retry budget spent, a synthetic reply recorded.
-    const questionId = (mockDb.current!.prepare("SELECT id FROM messages WHERE agent_id = ? AND a2a_intent = 'QUESTION'").get(WORKER) as { id: string }).id;
-    recordA2AReply({ assignMessageId: questionId, agentId: WORKER, threadId: OTHER_THREAD, replyIntent: 'ABANDONED' });
-    world.clockPerTool = 0;
-    await expectTheContinuationHoldsTheOrigin(parked, { reason: 'turn-budget-continuation', how: 'drain' }, 'iteration_cap');
+    await aTurnPastTheBudget(5);
+    expect(turnRow(lastTurnNumber()).subject_id, 'premise: the parking turn served the OTHER thread').not.toBe(THREAD);
+    expect(parks).toEqual([{ reason: 'turn-budget-continuation' }]);
+    expect(dated().map((t) => t.thread)).toEqual([OTHER_THREAD]);
+    expect(dated().map((t) => t.id)).not.toContain(taskId);
   });
 });
 
-describe('t173b: EVERY park door hands the job\'s origin to its continuation', () => {
+describe('EVERY park door hands the job\'s origin to the job\'s next turn', () => {
   it('door 1, a still window of 75 steps', async () => {
-    await pmJob();
-    anUnrelatedNotice('notice-loop');
-    script({ reads: 80 });
-    await runV2Turn(WORKER);
-    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'turn-budget-continuation', how: 'drain' }, 'iteration_cap');
+    // The task opened in the first window is movement, so the first window renews once; the second parks.
+    const parked = await theAssignsOwnTurn(async () => { script({ reads: 160, first: openTaskStep }); await runV2Turn(WORKER); });
+    await expectTheJobsTurnHoldsTheOrigin(parked, 'turn-budget-continuation', 'iteration_cap');
   });
 
   it('door 2, a still window of 15 minutes', async () => {
-    await pmJob();
-    anUnrelatedNotice('notice-budget');
-    const clock = Date.now.bind(Date);
-    const dateSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock() + world.clockMs);
-    world.clockPerTool = BUDGET_MS + 60_000;
-    script({ reads: 5 });
-    try { await runV2Turn(WORKER); } finally { dateSpy.mockRestore(); world.clockMs = 0; world.clockPerTool = 0; }   // the next turn must not look fifteen minutes old
-    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'turn-budget-continuation', how: 'drain' }, 'iteration_cap');
+    const parked = await theAssignsOwnTurn(() => aTurnPastTheBudget(5, openTaskStep));
+    await expectTheJobsTurnHoldsTheOrigin(parked, 'turn-budget-continuation', 'iteration_cap');
   });
 
   it('door 5, error recovery\'s forced compaction after a context overflow', async () => {
-    await pmJob();
-    anUnrelatedNotice('notice-overflow');
     recoveryDoor = true;
-    callModelSpy.mockImplementation(async () => { throw new AgentError('prompt is too long: context_length_exceeded', WORKER, { code: 'CONTEXT_OVERFLOW' }); });
-    await runV2Turn(WORKER);
-    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'recovery-forced-compaction', how: 'drain' });
+    const parked = await theAssignsOwnTurn(async () => {
+      callModelSpy.mockImplementation(async () => { throw new AgentError('prompt is too long: context_length_exceeded', WORKER, { code: 'CONTEXT_OVERFLOW' }); });
+      await runV2Turn(WORKER);
+    });
+    expect(dated().map((t) => t.thread), 'no task yet: the park opened one for the request, on its thread').toEqual([THREAD]);
+    await expectTheJobsTurnHoldsTheOrigin(parked, 'recovery-forced-compaction');
   });
 
   it('door 6, error recovery\'s compaction after a declared-patience exhaustion', async () => {
-    await pmJob();
-    anUnrelatedNotice('notice-patience');
     recoveryDoor = true;
-    callModelSpy.mockImplementation(async () => {
-      throw new AgentError('declared bound exceeded', WORKER, { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false, preDialRefusal: true });
+    const parked = await theAssignsOwnTurn(async () => {
+      callModelSpy.mockImplementation(async () => {
+        throw new AgentError('declared bound exceeded', WORKER, { code: DECLARED_PATIENCE_EXCEEDED_CODE, retryable: false, preDialRefusal: true });
+      });
+      await runV2Turn(WORKER);
     });
-    await runV2Turn(WORKER);
-    await expectTheContinuationHoldsTheOrigin(lastTurnNumber(), { reason: 'recovery-doomed-prefill-compaction', how: 'drain' });
+    await expectTheJobsTurnHoldsTheOrigin(parked, 'recovery-doomed-prefill-compaction');
   });
 });
 
-describe('t173b amendment: the origin a park borrows is never a guess', () => {
-  it('an OWNER-ask turn parks while a peer\'s job is claimed: the continuation keeps the owner\'s ask, not the peer\'s thread', async () => {
+describe('the origin a park hands on is never a guess', () => {
+  it('an OWNER-ask turn parks while a peer\'s job is claimed: the job\'s turn keeps the owner\'s ask, not the peer\'s thread', async () => {
     await pmJob();   // the agent also holds a claimed job from a peer's ASSIGN
     insertMessage({
       id: 'owner-ask', agentId: WORKER, role: 'user', content: OWNER_ASK, turnNumber: 1,
       channel: 'dashboard', senderId: 'owner', conversationId: 'conv-dash',
       inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
     });
-    script({ reads: 80 });
+    script({ reads: 160 });   // the floor opens this request's own task at the sixth call, which renews the first window once
     await runV2Turn(WORKER);
-    const parked = lastTurnNumber();
-    expect(turnRow(parked).exit_reason).toBe('iteration_cap');
-    expect(parks).toEqual([{ reason: 'turn-budget-continuation', how: 'drain' }]);
-
-    expect(beginJobRun(WORKER, 'drain'), 'the park carried the job').toBe(true);
-    expect(jobOrigin(WORKER), 'the origin is the owner\'s ask').toEqual({ kind: 'ask', messageId: 'owner-ask' });
-    const firstCall = callModelSpy.mock.calls.length;
-    script({ reads: 0 });
-    try { await runV2Turn(WORKER); } finally { endJobRun(WORKER); }
-    const rec = turnRow(lastTurnNumber());
+    expect(turnRow(lastTurnNumber()).exit_reason).toBe('iteration_cap');
+    expect(parks).toEqual([{ reason: 'turn-budget-continuation' }]);
+    const { turn, firstCall } = await theJobsTurn();
+    const rec = turnRow(turn);
     expect(rec.subject_kind, 'not the peer\'s thread').not.toBe('a2a_thread');
-    expect(rec.root_kind).not.toBe('a2a');
+    expect(rec.root_kind).toBe('ask');
+    expect(rec.root_id).toBe('owner-ask');
     expect(occurrences(firstView(firstCall).text, OWNER_ASK), 'the owner\'s question is in view').toBeGreaterThanOrEqual(1);
   });
 
-  it('TWO claimed tasks from two different requests: a park that serves no person borrows nothing', async () => {
+  it('TWO claimed tasks from two different requests: a park on a turn that serves no request continues nothing', async () => {
     await pmJob();
     await pmJob(OTHER_THREAD, 'Please also reconcile the second supplier ledger and list its closing code.', 'Second ledger reconciliation');
     anUnrelatedNotice('notice-two');
     script({ reads: 80 });
     await runV2Turn(WORKER);
     expect(turnRow(lastTurnNumber()).exit_reason).toBe('iteration_cap');
-    expect(parks).toEqual([{ reason: 'turn-budget-continuation', how: 'drain' }]);
-
-    // Nothing was named and nothing was guessed, so no job was registered: the existing behaviour stands.
-    expect(beginJobRun(WORKER, 'drain'), 'no job: nothing to continue but a plain wake').toBe(false);
-    expect(jobOrigin(WORKER)).toBeNull();
+    expect(parks).toEqual([{ reason: 'turn-budget-continuation' }]);
+    expect(dated(), 'nothing was named and nothing is guessed: no task is dated').toEqual([]);
     script({ reads: 0 });
     await runV2Turn(WORKER);
     const rec = turnRow(lastTurnNumber());
     expect(rec.subject_kind).not.toBe('a2a_thread');
     expect(rec.root_kind).toBeNull();
-  });
-
-  it('TWO claimed tasks that point at the SAME request are not a guess: the origin is borrowed', async () => {
-    await pmJob();
-    // A second task the worker opened on the same ASSIGN thread (a later turn on it).
-    const db = mockDb.current!;
-    const first = db.prepare("SELECT * FROM work WHERE kind = 'task' AND agent_id = ?").get(WORKER) as Record<string, unknown>;
-    const cols = Object.keys(first);
-    const copy = { ...first, id: 'task-twin', opened_at: (first.opened_at as number) + 1 };
-    db.prepare(`INSERT INTO work (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`).run(...cols.map((c) => copy[c]));
-    anUnrelatedNotice('notice-same');
-    script({ reads: 80 });
-    await runV2Turn(WORKER);
-    expect(beginJobRun(WORKER, 'drain')).toBe(true);
-    expect(jobOrigin(WORKER)).toMatchObject({ kind: 'a2a', threadId: THREAD });
-    endJobRun(WORKER);
   });
 });

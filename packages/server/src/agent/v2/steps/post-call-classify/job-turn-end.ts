@@ -1,16 +1,12 @@
-// Where a measured job stands at the end of a pass: one reading, shared by terminal-text.ts,
-// closeout-floors.ts and job-continues.ts, which must agree within a pass.
+// Where a measured job stands at the end of a pass: one reading, shared by the close-out floors, the job's
+// continuation and the checkpoint window, which must agree within a pass.
 
 import type { Database } from 'better-sqlite3';
 import { getDb } from '../../../../db/connection.js';
 import { taskScope, workingTaskOrder } from '../../../../work/tracker-view.js';
 import { parseMeasure, type Measure } from '../../../../work/measure.js';
 import { ledgerNewItemsSince, recordMeasured } from '../../../../work/ledger-store.js';
-import { jobCarriedIds, runCarriesJob } from '../../../../work/task-freshness.js';
-import { lastTurnEnd } from '../../../../work/job-momentum.js';
 import { freshResults } from '../../identical-call-brake.js';
-import { toolOpKey } from '../../../../tools/work-verbs.js';
-import { normalizeTaskStatus } from '../../../../tracker/task-status-words.js';
 import type { AgentTurnState } from '../../state.js';
 import type { PostCallClassifyContext } from './index.js';
 import { heldExpr, workingExpr } from '../../../../work/done/hold.js';
@@ -30,16 +26,15 @@ export interface JobAtPassEnd {
 
 type TaskRow = { id: string; measureJson: string | null; stored: number | null };
 
-/** The job's task: the park's carried task on its own wake run, else the claimed unpaused task being worked. */
+/** The job's task: on a job turn the task it was started from, else the claimed unpaused task being worked. */
 export function jobTaskOf(agentId: string, db: Database): TaskRow | null {
-  const carried = runCarriesJob(agentId) ? jobCarriedIds(agentId) : null;
-  if (carried && carried.length === 0) return null;
-  const only = carried ? `AND w.id IN (${carried.map(() => '?').join(', ')})` : '';
+  const served = turnContext(agentId)?.servedJob;
+  const only = served ? 'AND w.id = ?' : '';
   return (db.prepare(`
     SELECT w.id AS id, w.measure_json AS measureJson, w.measure_remaining AS stored FROM work w
     WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND w.is_paused = 0 AND NOT ${heldExpr('w')} ${only}
     ORDER BY ${workingTaskOrder('w')} LIMIT 1
-  `).get(agentId, ...(carried ?? [])) as TaskRow | undefined) ?? null;
+  `).get(agentId, ...(served ? [served] : [])) as TaskRow | undefined) ?? null;
 }
 
 function measureOf(json: string | null): Measure | null {
@@ -61,23 +56,36 @@ function storedFacts(state: AgentTurnState, agentId: string, db: Database): JobA
   };
 }
 
-/** The job's momentum as one count that only grows within a turn. A continuation whose job carries no task is
+/** The job's momentum as one count that only grows within a turn. A job turn whose task is no longer working is
  *  measured by the repeat rule's own count; any other task-less turn has no measure and checkpoints as before. */
 export function jobProgressMark(state: AgentTurnState, agentId: string, db: Database): number {
   const f = storedFacts(state, agentId, db);
   if (f) return f.touchedThisTurn + f.novelCallsThisTurn + (f.openedThisTurn ? 1 : 0);
-  return runCarriesJob(agentId) ? freshResults(agentId, turnContext(agentId)) : 0;
+  return turnContext(agentId)?.servedJob ? freshResults(agentId, turnContext(agentId)) : 0;
+}
+
+/** Did this stretch of the turn move the job (the progress test the window renews on)? */
+export function stretchMoved(state: AgentTurnState, agentId: string): boolean {
+  return jobProgressMark(state, agentId, getDb()) > (state.checkpointWindow?.mark ?? 0);
 }
 
 /** May the turn take pass `loopCount + ahead`? Open inside the window (75 passes, 15 minutes); at its end it
  *  renews if the job moved and no person waits behind this turn, else the turn checkpoints, as it always
- *  does after 200 tool calls or 500 passes. */
+ *  does after 200 tool calls or 500 passes. A job's own turn, or one serving no person, ends its stretch at
+ *  the next step when a person waits behind it. */
 export function turnWindow(state: AgentTurnState, agentId: string, ahead = 0): 'open' | 'renew' | 'checkpoint' {
   const w = state.checkpointWindow ?? { atLoop: 0, atMs: state.turnStartMs, mark: 0 };
   if (state.toolCallsExecutedThisTurn >= 200 || state.loopCount + ahead > 500) return 'checkpoint';
+  if (personWaitsBehind(agentId)) return 'checkpoint';
   if (state.loopCount + ahead - w.atLoop <= 75 && Date.now() - w.atMs <= 15 * 60_000) return 'open';
+  return jobProgressMark(state, agentId, getDb()) > w.mark && !personWaitsBehind(agentId, true) ? 'renew' : 'checkpoint';
+}
+
+/** A person wrote since this turn's pickup, behind a job's own turn or a turn serving no person (`anyTurn`: behind
+ *  any turn); its stretch ends at the next step. */
+export function personWaitsBehind(agentId: string, anyTurn = false): boolean {
   const turn = turnContext(agentId);
-  return jobProgressMark(state, agentId, getDb()) > w.mark && !personArrivedSince(agentId, turn?.pickupSeq ?? 0, turn?.convKey ?? null) ? 'renew' : 'checkpoint';
+  return (anyTurn || !turn?.convKey || !!turn.servedJob) && personArrivedSince(agentId, turn?.pickupSeq ?? 0, turn?.convKey ?? null);
 }
 
 const memo = new Map<string, { key: string; facts: JobAtPassEnd | null }>();
@@ -98,33 +106,4 @@ export async function readJobAtPassEnd(state: AgentTurnState, ctx: Pick<PostCall
   }
   memo.set(ctx.agentId, { key: passKey(state), facts });
   return facts;
-}
-
-/** This pass's reading if it was taken, else the records (never a count). */
-export function jobAtPassEndNow(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db'>): JobAtPassEnd | null {
-  const hit = memo.get(ctx.agentId);
-  return hit?.key === passKey(state) ? hit.facts : storedFacts(state, ctx.agentId, ctx.db);
-}
-
-/** A status call that is a door to the owner: "paused" (waiting on him) or "blocked", on ANY task. */
-const isDoorCall = (tc: { name: string; arguments?: Record<string, unknown> }): boolean =>
-  toolOpKey(tc.name, tc.arguments) === 'work_update:status'
-  && ['paused', 'blocked'].includes(normalizeTaskStatus((tc.arguments as { status?: unknown } | undefined)?.status) ?? '');
-
-/** Does this turn speak to the owner whatever the job does: a waiting person, a door call on this pass
- *  (judged before it runs), or a door call an earlier pass of this turn made that succeeded? */
-function speaksThisTurn(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'turnNumber' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
-  if (ctx.hasUnansweredUser || ctx.triggerRow) return true;
-  if ((ctx.result?.toolCalls ?? []).some(isDoorCall)) return true;
-  return state.toolResults.some((tr) => !tr.isError && isDoorCall(tr));
-}
-
-/** Is this pass the engine's continuation of a measured job with items left and nothing the owner must
- *  hear? While it is, the pass's text is plain progress and stays on the record. */
-export function continuedJobStillGoing(state: AgentTurnState, ctx: Pick<PostCallClassifyContext, 'agentId' | 'db' | 'turnNumber' | 'hasUnansweredUser' | 'triggerRow' | 'result'>): boolean {
-  if (!runCarriesJob(ctx.agentId)) return false;   // only the run the park's own wake started
-  if (speaksThisTurn(state, ctx)) return false;
-  const job = jobAtPassEndNow(state, ctx);
-  if (!job?.measure || job.remaining === null || job.remaining <= 0) return false;
-  return lastTurnEnd(job.taskId)?.kind === 'continued';
 }

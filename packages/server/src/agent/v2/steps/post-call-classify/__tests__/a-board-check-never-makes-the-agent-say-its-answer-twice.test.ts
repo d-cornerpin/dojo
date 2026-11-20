@@ -18,7 +18,7 @@
 // tell the user only the correction.
 //
 // THESE TESTS DRIVE THE REAL STEPS (`runPostCallClassify`, one model call at a time, in the
-// order the loop runs them) on a real in-memory database, the way the ghosted-ask suite does,
+// order the loop runs them) on a real in-memory database,
 // then write the turn record off whatever the truthful-answer key was given and ask the real
 // draft re-classifier and the real ask-settlement authority for their verdicts.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -86,7 +86,7 @@ const turnCtxFor = (): Bag => ({
   root: { kind: 'ask', id: 'm-ask', conversationId: CONV }, servedWork: undefined,
   turnNumber: TURN,
   deferredUserReplyWithTools: null, deferredDeliveredByAck: false,
-  engineStartAckDeliveredThisTurn: false, startAckPromotedRowId: null,
+  engineStartAckDeliveredThisTurn: false,
   startAckSteerArmedThisTurn: false, startAckSteerRequested: false,
   startAckSteersInjected: 0, startAckSteerInjectedAtLoop: null,
   inboundClassifiedAsWork: true,
@@ -95,7 +95,6 @@ const turnCtxFor = (): Bag => ({
 /** The truthful-answer key, as `turn-closures.ts` keeps it: ONE setter, last write wins. */
 let answerKey: string | null;
 const noteTerminalAnswer = vi.fn((rowId: string) => { answerKey = rowId; });
-const persistAndBroadcastSystemRow = vi.fn();
 const deliverEngineUserAck = vi.fn(async () => undefined);
 
 const modelResult = (content: string, toolCalls: ToolCall[] = []): PostCallClassifyContext['result'] => ({
@@ -120,7 +119,7 @@ function ctxFor(turnCtx: Bag, messageId: string, content: string): PostCallClass
     result: modelResult(content),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer,
     deliverEngineUserAck: deliverEngineUserAck as never,
-    persistAndBroadcastSystemRow, startAckRepliedNow: () => false,
+    startAckRepliedNow: () => false,
   } as unknown as PostCallClassifyContext;
 }
 
@@ -225,10 +224,8 @@ describe('t158 A (i): the board matches, so the model ends with [no-reply] and t
     const last = await speak(turnCtx, 'msg-last', '[no-reply]');
     expect(last.directive, 'the turn ends; no further round is granted').toBe('exit');
 
-    // The key still names the FIRST reply, and the ghosted-ask machinery did not wake.
+    // The key still names the FIRST reply.
     expect(answerKey).toBe('msg-first');
-    expect(steersOf('ghosted-ask')).toHaveLength(0);
-    expect(steersOf('ghosted-ask-answer')).toHaveLength(0);
 
     // The turn record, the draft re-classifier and the ask authority, all real.
     finalizeTurnRecord();

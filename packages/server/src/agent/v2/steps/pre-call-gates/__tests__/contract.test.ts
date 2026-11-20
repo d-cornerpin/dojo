@@ -31,7 +31,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { WsEvent } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
-import { stoppedAgents, preemptedAgents, pendingWakeups, backgroundDrains } from '../../../../shared-state.js';
+import { stoppedAgents, preemptedAgents, backgroundDrains } from '../../../../shared-state.js';
 import {
   runPreCallGates,
   PRE_CALL_GATES_PHASE,
@@ -77,7 +77,7 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   insertEngineEventIfAbsent: (...a: unknown[]) => insertEngineEventIfAbsentSpy(...(a as [])),
 }));
 
-// `getDb` throws: a unit test must not open the dev database. (t137: the one test block that
+// `getDb` is a fake with no rows: a unit test must not open the dev database. (t137: the one test block that
 // handed this a fake provider row went with the per-provider continuation cap it measured.)
 const getDbSpy = vi.fn(() => { throw new Error('no database in a contract test'); });
 vi.mock('../../../../../db/connection.js', () => ({
@@ -96,6 +96,9 @@ vi.mock('../../../../../work/tracker-store.js', async (importOriginal) => ({
 // try/catch. (t137: the trip's PM hand-off and the circling line that rode the park message
 // are gone with the cap and the park row, so neither is mocked here any more.)
 const noteEngineCheckpointSpy = vi.fn(() => 0);
+// The park itself is the job's own door (`work/job-continuation.ts`): this contract asserts the step calls it.
+const parkJobSpy = vi.fn((..._a: unknown[]) => true);
+vi.mock('../../../../../work/job-continuation.js', () => ({ parkJob: (...a: unknown[]) => parkJobSpy(...a) }));
 // t137 round 2: the checkpoint hands a pending circling verdict to the agent through this door.
 vi.mock('../../../../../work/engine-checkpoint-note.js', () => ({
   noteEngineCheckpoint: (...a: unknown[]) => noteEngineCheckpointSpy(...(a as [string, string])),
@@ -140,7 +143,6 @@ function makeCtx(overrides: Partial<PreCallGatesContext> = {}): PreCallGatesCont
     deferredDeliveredByAck: false,
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
-    stashContinuationIfHuman: vi.fn(),
     ...overrides,
   } as PreCallGatesContext;
   return Object.assign(ctx, { events });
@@ -149,8 +151,8 @@ function makeCtx(overrides: Partial<PreCallGatesContext> = {}): PreCallGatesCont
 beforeEach(() => {
   stoppedAgents.clear();
   preemptedAgents.clear();
-  pendingWakeups.clear();
   backgroundDrains.clear();
+  parkJobSpy.mockClear();
   checkAndCompactSpy.mockClear();
   // T79b: a pre-existing gap — this spy's DEFAULT implementation (unlike its siblings below)
   // was never re-armed here, only its call history cleared. "the background gap-drain stays
@@ -169,11 +171,11 @@ beforeEach(() => {
   insertEngineEventIfAbsentSpy.mockClear();
   noteEngineCheckpointSpy.mockClear();
   getDbSpy.mockReset();
-  getDbSpy.mockImplementation(() => { throw new Error('no database in a contract test'); });
+  noJob();   // the window asks whether a person waits behind a turn serving none: nobody does
 });
 
-/** At a window's end the gate reads the job's record; this turn has no job. */
-const noJob = (): void => { getDbSpy.mockImplementation((() => ({ prepare: () => ({ get: () => undefined, all: () => [] }) })) as never); };
+/** The records the gate reads (the job's, the waiting people): empty. Never the dev database. */
+function noJob(): void { getDbSpy.mockImplementation((() => ({ prepare: () => ({ get: () => undefined, all: () => [] }) })) as never); }
 
 /** Drive the step with a view that WANTS `pct` of its room (over 1: the trim is cutting). */
 function atUtilisation(pct: number): void {
@@ -250,7 +252,7 @@ describe('the exit-request channel — seven ways out, each with a name', () => 
     expect(checkAndCompactSpy).not.toHaveBeenCalledWith(AGENT, expect.any(String), 200000, expect.objectContaining({ force: true }));
     expect(insertMessageIfAbsentSpy).not.toHaveBeenCalled();
     expect(ctx.events.some((e) => (e as { code?: string }).code === 'CONTEXT_HIGH')).toBe(false);
-    expect(pendingWakeups.has(AGENT)).toBe(false);
+    expect(parkJobSpy).not.toHaveBeenCalled();
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON — every way out of this step carries one', async () => {
@@ -329,8 +331,8 @@ describe('the numbers this tranche must not move (bounds copied verbatim)', () =
       const later = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
       expect(later).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
       expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
-      expect(pendingWakeups.has(AGENT)).toBe(true);
-      pendingWakeups.clear();
+      expect(parkJobSpy).toHaveBeenCalledWith(AGENT, 'turn-budget-continuation', expect.any(Number));
+      parkJobSpy.mockClear();
     }
   });
 });
@@ -373,7 +375,7 @@ describe('the background condense stays fire-and-forget', () => {
 // `agent/v2/__tests__/t137-long-jobs-are-left-alone.test.ts`.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t137 — the 15-minute park writes nothing and rings nobody', () => {
-  it('a park inserts no message row and broadcasts nothing; it squares the tracker and queues the continuation', async () => {
+  it('a park inserts no message row and broadcasts nothing; it squares the tracker and parks the job', async () => {
     const ctx = makeCtx();
     noJob();
     const out = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), ctx);
@@ -382,8 +384,7 @@ describe('t137 — the 15-minute park writes nothing and rings nobody', () => {
     expect(insertMessageIfAbsentSpy).not.toHaveBeenCalled();
     expect(ctx.events).toEqual([]);
     expect(noteEngineCheckpointSpy.mock.calls).toEqual([[AGENT, 'turn-budget']]);
-    expect(ctx.stashContinuationIfHuman).toHaveBeenCalledTimes(1);
-    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(parkJobSpy).toHaveBeenCalledTimes(1);
   });
 
 });

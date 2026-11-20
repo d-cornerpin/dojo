@@ -30,10 +30,8 @@ const WAITS_MS = [30_000, 120_000, 600_000, 1_800_000];
 const LEASE_MS = 600_000;
 /** A start line goes on its first try within this long of being written, or not at all. */
 const START_LINE_FRESH_MS = 60_000;
-const MAX_TIMER_MS = 2_147_483_647;
 
 const midTry = new Set<string>();
-let timer: ReturnType<typeof setTimeout> | null = null;
 
 /** A verdict with the kind of refusal the sender found before any send, which the owner and the agent are told. */
 type Verdict = FoldedVerdict & { refusal?: RefusalKind };
@@ -126,17 +124,6 @@ export function nextReplyDueAt(): number | null {
   ).get() as { due: number | null }).due;
 }
 
-/** The sender's one timer, set to the next due reply. Unref'd: it never holds the process open. */
-export function armSenderTimer(): void {
-  if (timer) clearTimeout(timer);
-  timer = null;
-  let due: number | null;
-  try { due = nextReplyDueAt(); } catch { return; }
-  if (due === null) return;
-  timer = setTimeout(() => { timer = null; void deliverDueReplies(Date.now()); }, Math.min(Math.max(0, due - Date.now()), MAX_TIMER_MS));
-  timer.unref?.();
-}
-
 /** Tries every reply due at `now`: each conversation's rows in the order written, stopping at its first failure. */
 export async function deliverDueReplies(now: number): Promise<void> {
   // A try's lease and wait run from when it starts: `now` plus the time this pass has already spent.
@@ -161,7 +148,7 @@ export async function deliverDueReplies(now: number): Promise<void> {
   } catch (err) {
     logger.error('a pass of the reply sender failed', { error: err instanceof Error ? err.message : String(err) });
   }
-  armSenderTimer();
+  (await import('./owed.js')).armOwedClock();
 }
 
 /** One try. The lease is taken first, so a row a crash leaves behind is due again only after it. True if delivered. */

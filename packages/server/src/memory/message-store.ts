@@ -356,8 +356,12 @@ export function insertEngineEvent(e: EngineEventInput): Persisted {
   return insertMessage(engineRow(e));
 }
 
-export function insertEngineEventIfAbsent(e: EngineEventInput): Persisted | null {
-  return insertMessageIfAbsent(engineRow(e));
+/** `notBefore` (epoch ms): the event is not served before then; absent, it may be served at once. */
+export function insertEngineEventIfAbsent(e: EngineEventInput & { notBefore?: number }): Persisted | null {
+  const { notBefore, ...event } = e;
+  const row = insertMessageIfAbsent(engineRow(event));
+  if (row && notBefore !== undefined) recordDeliveryAttempt({ agentId: e.agentId, rowid: row.seq, notBefore });
+  return row;
 }
 
 // `chat_messages` stays the only human-facing accessor; anything rendered to a person reads the view.
@@ -539,11 +543,6 @@ export function reclassifyDraftsAsWorkingNotes(
   })();
 }
 
-/** `param` is a SQLite modifier this module's callers supply ('+5 minutes'), never user input. */
-function nowPlusExpr(param: string): string {
-  return `(CAST(strftime('%s','now', ${param}) AS INTEGER) * 1000)`;
-}
-
 /** `requireUnclaimed`: a row already claimed by a turn is not ours to sweep. */
 export function sweepByRowid(
   p: { rowid: number; agentId?: string; requireUnclaimed?: boolean },
@@ -581,15 +580,10 @@ export function retireById(id: string): number {
     .run(id).changes;
 }
 
-export function recordDeliveryAttempt(
-  p: { agentId: string; rowid: number; attempts: number; backoffMinutes: number },
-): number {
-  const db = getDb();
-  return db.prepare(
-    `UPDATE messages SET delivery_attempts = @attempts,
-        next_attempt_at = ${nowPlusExpr('@offset')}
-      WHERE agent_id = @agentId AND rowid = @rowid`,
-  ).run({ agentId: p.agentId, rowid: p.rowid, attempts: p.attempts, offset: `+${p.backoffMinutes} minutes` }).changes;
+/** When a row may be served again (`notBefore`, epoch ms) and, when given, its failed-delivery count (else unchanged). */
+export function recordDeliveryAttempt(p: { agentId: string; rowid: number; notBefore: number; attempts?: number }): number {
+  return getDb().prepare('UPDATE messages SET next_attempt_at = ?, delivery_attempts = COALESCE(?, delivery_attempts) WHERE agent_id = ? AND rowid = ?')
+    .run(p.notBefore, p.attempts ?? null, p.agentId, p.rowid).changes;
 }
 
 /** `eligibleWhere` is the constant `DELIVERABLE_ENGINE_EVENT_WHERE` (agent/v2/counterparty.ts), never user
@@ -650,6 +644,11 @@ export function repliesSince(askerId: string, threadId: string, sinceMs: number)
        AND created_at >= ?
      ORDER BY rowid
   `).all(askerId, threadId, askerId, sinceMs) as ThreadReply[];
+}
+
+/** Did `fromAgentId` write on `threadId` to `askerId` at or after `sinceMs`? The one "replied" reader. */
+export function repliedOnThread(fromAgentId: string, askerId: string, threadId: string, sinceMs: number): boolean {
+  return repliesSince(askerId, threadId, sinceMs).some((r) => r.from === fromAgentId);
 }
 
 // Add no by-agent conversation wipe: `deleteAllForAgent` is for teardown only, where erasing everything is meant.

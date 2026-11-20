@@ -9,7 +9,7 @@ function statusOf(agentId: string): string | undefined {
   return (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
 }
 
-/** The same question the Stop route asks, kept in step with it, so an idle agent gets no stop marker. */
+/** Is anything running: a turn, background work, a queued reply or a run unwinding. The owner's Stop asks it too. */
 export function runIsLive(agentId: string): boolean {
   return statusOf(agentId) === 'working' || hasLiveWork(liveWork(agentId)) || isRunUnwinding(agentId);
 }

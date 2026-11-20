@@ -140,7 +140,6 @@ function makeCtx(events: WsEvent[]): PreCallGatesContext {
     // A realistic overhead from the last assembly: the system prompt plus the tools/output reserve.
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
-    stashContinuationIfHuman: vi.fn(),
   } as unknown as PreCallGatesContext;
 }
 

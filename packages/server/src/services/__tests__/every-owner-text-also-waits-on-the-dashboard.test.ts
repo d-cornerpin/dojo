@@ -408,9 +408,8 @@ describe('one alert = one card: every "tell him again?" rule decides the card to
     expect(cards()).toHaveLength(1);
   });
 
-  it('what never reaches the phone makes no card either (the "will retry" rate-limit notice)', async () => {
-    const { errors, bridge } = await boot();
-    errors.notifyRateLimitHit('ag', 'rate_limit');
+  it('what never reaches the phone makes no card either', async () => {
+    const { bridge } = await boot();
     await bridge.sendAlert('An informational line.', 'info', { kind: 'broken-agent' });
     expect(texts()).toHaveLength(0);
     expect(cards()).toHaveLength(0);

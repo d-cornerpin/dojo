@@ -34,9 +34,9 @@ describe('an upgraded box keeps every standing owner card', () => {
   it('each store\'s card stands after 901 in its words; the dismissed one stays dismissed; nothing is pushed', () => {
     upgrade();
     const cards = Object.fromEntries(standingOwnerNotices().map((c) => [c.cardKey, c.words]));
+    expect(cards, 'a rate-limited agent is idle after the update, so its card no longer stands').not.toHaveProperty(`ratelimit:${HELPER}`);
     expect(cards).toEqual({
       'signin:google:g-1': 'The Google sign-in expired.',
-      [`ratelimit:${HELPER}`]: 'Rate-limited for six hours.',
       [`broken:${MAIN}`]: 'It stopped: the key was refused.',
       [`silent:${MAIN}`]: 'It has been quiet past its window.',
       [`paused:${SENSEI}`]: `${SENSEI} has been paused after repeated errors. Open the Vitals page to investigate, or resume it from its detail page.`,

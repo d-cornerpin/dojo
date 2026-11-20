@@ -26,6 +26,8 @@ import type { ToolCall } from '@dojo/shared';
 // for the duration of these tests.
 
 const mockDb = { current: null as Database.Database | null };
+/** A park dates the job's task row: that due is the continuation. */
+const jobParked = (): boolean => !!mockDb.current!.prepare("SELECT 1 FROM work WHERE agent_id = 'primary' AND kind = 'task' AND next_attempt_at IS NOT NULL").get();
 const broadcastSpy = vi.fn();
 const callModelSpy = vi.fn();
 const executeToolSpy = vi.fn();
@@ -364,7 +366,6 @@ import {
   stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
-import { continuationContext } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import path from 'node:path';
@@ -428,7 +429,6 @@ beforeEach(() => {
   doomedPrefillCompactionSpent.clear();
   declaredPatienceHonestFailTurn.clear();
   pendingWakeups.clear();
-  continuationContext.clear();
 });
 
 import { queueCanvasDoc } from '../../pending-attachments.js';
@@ -507,7 +507,7 @@ describe('t159 G (i): a still window parks the job: nothing reaches the owner, n
     await runV2Turn('primary');
 
     // Positive controls: the turn really parked, and the file really was queued.
-    expect(continuationContext.has('primary')).toBe(true);
+    expect(jobParked()).toBe(true);
     expect(turnRows()).toEqual([expect.objectContaining({ turn_number: 1, exit_reason: 'iteration_cap' })]);
     expect(artifactRows()).toEqual([expect.objectContaining({ kind: 'canvas', path: FILE })]);
 
@@ -583,7 +583,7 @@ describe('t159 G (iii): a turn that ends (no park) with queued files and no repl
     scriptTheJob({ rounds: 3, after: { content: '' } });
     await runV2Turn('primary');
 
-    expect(continuationContext.has('primary')).toBe(false);   // positive control: this turn did not park
+    expect(jobParked()).toBe(false);   // positive control: this turn did not park
     const surfaced = assistantRows().filter((m) => (m.attachments ?? '').includes('ledger-audit-notes.txt'));
     expect(surfaced).toHaveLength(1);
     expect(artifactRows().map((a) => a.delivered_at)).not.toContain(null);
@@ -595,20 +595,24 @@ describe('t159 G (iii): a turn that ends (no park) with queued files and no repl
 // turn that it parked, and `turnParkedTheJob` reads that and the stop fence and nothing else.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the stop fence', () => {
-  it('false until parkJob runs on the turn; true after, by either wake; false for a stop; false on the next turn', () => {
-    continuationContext.clear();
-    openTurnContext('primary');
+  it('false until parkJob runs on the turn; true after, by either wait; false for a stop; false on the next turn', () => {
+    const serving = (): void => {
+      const bag = openTurnContext('primary');
+      bag.turnNumber = 1;
+      bag.root = { kind: 'ask', id: 'msg-user-1', sourceMessageId: 'msg-user-1' };
+    };
+    serving();
     expect(turnParkedTheJob('primary')).toBe(false);
-    expect(parkJob('primary', 'door-a')).toBe(true);
+    expect(parkJob('primary', 'door-a', Date.now())).toBe(true);
     expect(turnParkedTheJob('primary')).toBe(true);
     stoppedAgents.add('primary');
     expect(turnParkedTheJob('primary'), 'a stop refuses the wake').toBe(false);
     stoppedAgents.clear();
     endTurnContext('primary');
     expect(turnParkedTheJob('primary'), 'no turn, no park').toBe(false);
-    openTurnContext('primary');
+    serving();
     expect(turnParkedTheJob('primary'), 'a new turn parked nothing').toBe(false);
-    expect(parkJob('primary', 'door-b', 'timer')).toBe(true);   // the tool-loop park's own timer wake
+    expect(parkJob('primary', 'door-b', 'event', Promise.resolve())).toBe(true);   // a wait for an event
     expect(turnParkedTheJob('primary')).toBe(true);
     endTurnContext('primary');
   });

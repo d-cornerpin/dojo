@@ -11,7 +11,7 @@ import { turnStamp } from '../agent/turn-context.js';
 import { noteReceiptForOutbound } from '../agent/v2/outbound.js';
 
 // Bounds the sent_text copy (the pending-question header displays 300 chars).
-const SENT_TEXT_MAX_CHARS = 500;
+export const SENT_TEXT_MAX_CHARS = 500;
 
 const logger = createLogger('receipts');
 

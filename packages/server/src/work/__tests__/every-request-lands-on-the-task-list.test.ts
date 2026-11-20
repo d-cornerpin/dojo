@@ -200,7 +200,6 @@ import { composeTurnDeliverySummary } from '../../tracker/task-stamps.js';
 import { renderMessageTimeStamp } from '../../memory/message-stamp.js';
 import { setHold, holdOf } from '../done/hold.js';
 import { stoppedAgents, pendingWakeups } from '../../agent/shared-state.js';
-import { continuationContext } from '../../agent/turn-state.js';
 import { deliverA2AMessage } from '../../agent/a2a-transport.js';
 
 const PRIMARY = 'primary';
@@ -448,10 +447,8 @@ describe('t139 — every multi-step request lands on the task list with its word
   });
 
   it('started on a continuation (the task is opened on the turn after a budget park): linked to the ask that started it', async () => {
-    // MEASURED, and stated so the clause says what it proves: at this base a budget park hands
-    // the owner's ask back, so the continuation turn RE-SERVES the same ask (its turn record
-    // names it) and the link comes from that served row. The clause holds the outcome the
-    // owner sees — the task opened after the park carries his words — whichever way it is served.
+    // A budget park dates the request's task (opening one linked to the ask when the turn has none), and the
+    // job's next turn is rooted in that ask (its turn record names it), so a task opened there is linked too.
     const ask = longAsk(1200, 'CONTINUED');
     ownerSays('msg-cont', ask);
     // Turn 1 works for longer than the turn budget, so the engine parks it and carries the
@@ -473,9 +470,9 @@ describe('t139 — every multi-step request lands on the task list with its word
         return { content: 'unreachable', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
       });
       await runV2Turn(PRIMARY);
-      offset = 0;                                             // the continuation starts a fresh turn clock
-      expect(openTasks().length).toBe(0);                     // nothing opened on turn 1
-      expect(continuationContext.has(PRIMARY)).toBe(true);    // the park carried the conversation
+      offset = 0;                                             // the next turn starts a fresh turn clock
+      parkedDueNow();
+      expect(openTasks().map((t) => t.source_message_id), 'the park opened the request\'s own task').toEqual(['msg-cont']);
 
       // Turn 2: the continuation. The model opens the task here.
       script([
@@ -492,8 +489,8 @@ describe('t139 — every multi-step request lands on the task list with its word
     ).get(PRIMARY) as { source_message_id: string | null };
     expect(turn2.source_message_id).toBe('msg-cont');
     const rows = openTasks();
-    expect(rows.length).toBe(1);
-    expect(rows[0].source_message_id).toBe('msg-cont');
+    expect(rows.length).toBe(2);
+    expect(rows.every((t) => t.source_message_id === 'msg-cont'), 'every task of the job is linked to the ask').toBe(true);
     expect(await taskList()).toContain(ask);
   });
 
@@ -504,6 +501,8 @@ describe('t139 — every multi-step request lands on the task list with its word
   // line it held back ("On it.", text that rode with a tool call) is not the ask's answer, so the
   // ask stays owed for the continuation and closes when the continuation delivers. A turn that
   // genuinely ends settles exactly as before.
+  /** A park dated the job's task on the test's jumped clock; on real time it is due now. */
+  function parkedDueNow(): void { mockDb.current!.prepare('UPDATE work SET next_attempt_at = ? WHERE next_attempt_at IS NOT NULL').run(Date.now()); }
   const askStateOf = (msgId: string): string =>
     (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(`ask:${msgId}`) as { state: string }).state;
 
@@ -531,7 +530,8 @@ describe('t139 — every multi-step request lands on the task list with its word
       'SELECT exit_reason FROM turns WHERE agent_id = ? AND turn_number = 1',
     ).get(PRIMARY) as { exit_reason: string };
     expect(parked.exit_reason).toBe('iteration_cap');    // the engine continued the work
-    expect(askStateOf('msg-parked')).not.toBe('done');   // "On it." was not the answer
+    expect(askStateOf('msg-parked')).toBe('blocked');    // "On it." was not the answer: the request is held on its job
+    parkedDueNow();
 
     script([{ content: 'Here is the venue comparison: Dock 700, Ferry 640, Elm Hall 850 — Ferry is cheapest.' }]);
     await runV2Turn(PRIMARY);
@@ -566,6 +566,7 @@ describe('t139 — every multi-step request lands on the task list with its word
       "SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND role = 'assistant' AND display_kind = 'agent-text' AND content = ?",
     ).get(PRIMARY, text) as { n: number }).n;
     expect(visible(line)).toBe(0);                       // no bubble made of the narration at the park
+    parkedDueNow();
 
     const answer = 'All five pages checked: two wrong lines, on pages 3 and 5.';
     script([{ content: answer }]);

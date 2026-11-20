@@ -26,7 +26,7 @@ const one = <T>(sql: string, ...args: unknown[]): T | undefined => getDb().prepa
 const live = (id: string): boolean => !!one(`SELECT 1 FROM agents WHERE id = ? AND status != 'terminated'`, id);
 const action = (stands: (id: string) => boolean, more: Partial<Kind> = {}): Kind => ({ cls: () => 'action', stands, ...more });
 const informational: Kind = { cls: () => 'informational' };
-const agentNotice = (col: 'rate_limit_notice' | 'broken_notice' | 'silent_notice', where: string) => (id: string): boolean =>
+const agentNotice = (col: 'broken_notice' | 'silent_notice', where: string) => (id: string): boolean =>
   !!one(`SELECT 1 FROM agents WHERE id = ? AND ${col} IS NOT NULL AND ${where}`, id);
 
 const KINDS: Record<string, Kind> = {
@@ -43,7 +43,6 @@ const KINDS: Record<string, Kind> = {
   balance: action((latchKey) => !!one('SELECT 1 FROM config WHERE key = ?', latchKey)),
   paused: action((id) => !!one(`SELECT 1 FROM error_loop_state e JOIN agents a ON a.id = e.agent_id WHERE e.agent_id = ? AND e.kind = 'paused'
     AND a.status = 'paused' AND e.owner_card_closed_at IS NULL`, id)),
-  ratelimit: action(agentNotice('rate_limit_notice', "status = 'rate_limited'"), { critical: true }),
   broken: action(agentNotice('broken_notice', "status != 'terminated'")),
   silent: action(agentNotice('silent_notice', "status != 'terminated'")),
   undelivered: action(() => true),
@@ -60,6 +59,7 @@ const KINDS: Record<string, Kind> = {
   smallmodel: { cls: (key) => (key === 'smallmodel:stuck' ? 'action' : 'informational'), stands: () => true },
   projectend: { cls: () => 'informational', stands: () => true },
   missedruns: { cls: () => 'informational', stands: () => true },
+  bootdropped: { cls: () => 'informational', stands: () => true },
   fitunchecked: informational,
   lessons: informational,
 };

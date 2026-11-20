@@ -12,11 +12,8 @@ export interface A2AReplyEnforcerInput {
   intent?: string;
   threadShort?: string;
   fromName?: string;
-  /** Prior reply on this thread: avoids the nudge claiming the receiver got nothing. */
+  /** A reply from this agent on the thread in the asker's store: avoids the nudge claiming the receiver got nothing. */
   priorReplyOnSameThread?: boolean;
-  /** The engine's own verified send receipt: the same fact, for when an
-   *  a2a_replies row is missing because the sender omitted thread_id. */
-  verifiedSendReceiptOnThread?: boolean;
 }
 
 export type A2AReplyDecision =
@@ -41,9 +38,9 @@ export function a2aReplyEnforcer(input: A2AReplyEnforcerInput): A2AReplyDecision
   const threadShort = input.threadShort ?? 'unknown';
 
   let nudgeText: string;
-  // Either record of a reply takes this branch; the fresh-miss text below is
-  // reachable only with no record at all, the sole state where "got nothing" is true.
-  if (input.priorReplyOnSameThread || input.verifiedSendReceiptOnThread) {
+  // A reply on record takes this branch; the fresh-miss text below is reachable only with none,
+  // the sole state where "got nothing" is true.
+  if (input.priorReplyOnSameThread) {
     nudgeText = (
       `[System: You already replied to ${fromName}'s [A2A:${intent}] on thread ${threadShort} ` +
       `via send_to_agent in an earlier turn — ${fromName} has the message. ` +

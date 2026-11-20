@@ -1,13 +1,9 @@
 import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
-import { getAgentRuntime } from '../../agent/runtime.js';
-import { liveWork, hasLiveWork, announceLiveWork } from '../../agent/live-work.js';
-// The third fact the stop door asks: a run still unwinding, when neither other fact can answer.
-import { isRunUnwinding } from '../../agent/shared-state.js';
+import { getAgentRuntime, stopByOwner } from '../../agent/runtime.js';
+import { liveWork } from '../../agent/live-work.js';
 import { terminateAgent } from '../../agent/spawner.js';
-import { stopByOwner } from '../../agent/runtime.js';
-import { noteOwnerStop } from '../../migration/import-agents.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
@@ -493,31 +489,16 @@ agentsRouter.post('/:id/stop', (c) => {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
 
-  // Stop applies to anything the agent is doing: a working turn, live background work, or a run still
-  // unwinding (teardown writes `idle` before the turn record is finalized, and the abort registration is
-  // released early). Refuse only an agent with none of the three, so a stop marker is never left pending
-  // on a turn that never happened.
   const live = liveWork(id);
-  if (agent.status !== 'working' && !hasLiveWork(live) && !isRunUnwinding(id)) {
-    return c.json({ ok: false, error: 'Agent is not currently working and has no background jobs running' }, 400);
-  }
-
-  const { repliesNotSent } = stopByOwner(id);
-  noteOwnerStop(id);   // a failed import in flight must not lift the owner's own stop
-
-  // Report what actually happened rather than asserting an outcome: `stopAgent` writes idle only when no
-  // run is in flight, otherwise the row stays `working` and it broadcasts `stopping: true`. The zero is
-  // announced here, not waited for: a job's own exit edge can land a tick later, and this frame is the one
-  // that takes the stop control away.
-  announceLiveWork(id);
-
+  const { ended, repliesNotSent, nothingRunning } = stopByOwner(id);
+  if (nothingRunning) return c.json({ ok: false, error: 'Agent is not currently working and has no background jobs running' }, 400);
   const after = db.prepare('SELECT status FROM agents WHERE id = ?').get(id) as { status: string };
   logger.info('Agent stopped via dashboard', {
     agentId: id, statusAfter: after.status, cutTurn: live.turn, cutBackground: live.background,
   });
   // The counts were read before the stop (what it was asked to cut); the payload reports what is left.
   return c.json({ ok: true, data: {
-    agentId: id, status: after.status, stopping: after.status === 'working', inFlight: liveWork(id), repliesNotSent,
+    agentId: id, status: after.status, stopping: after.status === 'working', inFlight: liveWork(id), ended, repliesNotSent,
   } });
 });
 

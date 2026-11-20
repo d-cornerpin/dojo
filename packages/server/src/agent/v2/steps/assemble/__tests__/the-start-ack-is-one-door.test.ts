@@ -28,10 +28,14 @@ vi.mock('../../../../../memory/message-store.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   insertMessageIfAbsent: vi.fn(),
 }));
+const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 0 }) };
+vi.mock('../../../../../db/connection.js', () => ({ getDb: () => ({ prepare: () => emptyStmt }) }));
+vi.mock('../../../classifiers/inbound-routing.js', () => ({ inboundIsWork: async () => true }));
 
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runSteerCheckpoint } from '../steer-checkpoint.js';
 import { START_ACK_STEER_TEXT } from '../start-ack-door.js';
+import { detectMultistepAndScaffold } from '../multistep-detection.js';
 import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 const AGENT = FXID.n4;
 
@@ -148,5 +152,24 @@ describe('§3 the reminder is rung 2 of the same ladder, and it stops at two', (
     });
     expect(second.turnCtx.startAckSteersInjected).toBe(1);
     expect(fired(second.state).map((e) => e.floor)).toEqual(['start-ack']);
+  });
+});
+
+describe('the work opener says the start line once', () => {
+  it('on the first loop only, once per turn, and not when one was already delivered', async () => {
+    const opened = async (turnCtx: Bag, loopCount: number, delivered = false): Promise<string[]> => (await detectMultistepAndScaffold(
+      advance(initState({ agentId: AGENT } as Parameters<typeof initState>[0]), { loopCount }), {
+        agentId: AGENT, turnNumber: 9, turnCtx: turnCtx as never, db: {} as never,
+        counterparty: {
+          kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null,
+        } as never,
+        counterpartyIsAgentSender: false, lastUserMessageContent: 'Book the flights for Friday.',
+        engineStartAckDeliveredThisTurn: delivered, staleTaskWindowMinutes: 45,
+      })).steerQueue.pending.map((e) => e.floor);
+    expect(await opened(bag(), 2)).toEqual([]);
+    const turnCtx = bag();
+    expect(await opened(turnCtx, 1)).toEqual(['start-ack']);
+    expect(await opened(turnCtx, 1)).toEqual([]);
+    expect(await opened(bag(), 1, true)).toEqual([]);
   });
 });

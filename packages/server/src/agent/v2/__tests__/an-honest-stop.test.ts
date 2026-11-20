@@ -383,7 +383,7 @@ import {
   stoppedAgents, recoveryRunStreak, pendingWakeups,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
-import { continuationContext, MAX_DRAIN_STUCK } from '../../turn-state.js';
+import { dueOf } from '../owed.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { checkBudget } from '../../../costs/budget.js';
@@ -398,7 +398,6 @@ import { agentsRouter } from '../../../gateway/routes/agents.js';
 import { standingOwnerNotices } from '../../../healer/owner-notice-kinds.js';
 /** The standing cards a stop raises (the budget's crossing card is its own). */
 const stopCards = (): ReturnType<typeof standingOwnerNotices> => standingOwnerNotices().filter((c) => !c.cardKey.startsWith('budget:'));
-import { handleIMCommand } from '../../../services/imessage-commands.js';
 import { releaseClearedBudgetStops } from '../honest-stop-lock.js';
 import { configRouter } from '../../../gateway/routes/config.js';
 import { updateRateLimits, clearRateLimits } from '../../../router/rate-limits.js';
@@ -477,7 +476,7 @@ beforeEach(async () => {
   recordErrorMock.mockImplementation(() => false);
   toolPayload.tokens = 2_000;
   stoppedAgents.clear(); recoveryRunStreak.clear(); doomedPrefillCompactionSpent.clear();
-  declaredPatienceHonestFailTurn.clear(); pendingWakeups.clear(); continuationContext.clear();
+  declaredPatienceHonestFailTurn.clear(); pendingWakeups.clear();
   // The scripted provider. The REAL wall in `callModel` decides first: while the limit stands it
   // throws exactly what it throws on a user's box; past it, the provider answers.
   callModelSpy.mockImplementation(async (p: { agentId: string; modelId: string }) => {
@@ -544,17 +543,14 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expectAnHonestStop(/cannot hold a conversation/i);
   });
 
-  it('the stop is told ONCE: the runtime drain does not serve the stopped message back into the same stop', async () => {
+  it('the stop is told ONCE: the clock does not serve the stopped message back into the same stop', async () => {
     noFreeModel();
     budget(1.00, 2.00);
     await runV2Turn(AGENT);
-    // What the runtime's human drain does next (runtime.ts, "Human conversation drain"): while the
-    // agent is not in a stop state and a person's ask is waiting, serve it again — up to
-    // MAX_DRAIN_STUCK passes, after which the ask is set aside as poisoned.
-    const drainWouldServe = (): boolean => !['error', 'paused', 'terminated'].includes(status())
-      && getWaitingHumanConversations(AGENT).length > 0;
+    // What the one clock does next (owed.ts): it wakes an agent not in a stop state that is owed something now.
+    const clockWouldServe = (): boolean => !['error', 'paused', 'terminated'].includes(status()) && dueOf(AGENT).now;
     let reServed = 0;
-    for (let pass = 1; pass < MAX_DRAIN_STUCK && drainWouldServe(); pass++) { reServed++; await runV2Turn(AGENT); }
+    for (let pass = 1; pass < 4 && clockWouldServe(); pass++) { reServed++; await runV2Turn(AGENT); }
     expect(notices(), 'one notice, naming the true cause').toEqual([expect.stringMatching(/spending limit/i)]);
     expect(reServed, 'nothing re-served into a stop that still stands').toBe(0);
     expect(['done', 'abandoned']).not.toContain(ask());
@@ -593,7 +589,7 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
     expect(callModelSpy, 'the stop came from the router: no model was dialed').not.toHaveBeenCalled();
     expect(status()).toBe('paused');
     expect(ask(), 'the message is still the owner\'s open ask, not handed back through a settlement rung').toBe('open');
-    // The drain stands down for the lock, so nothing re-serves it and nothing is said again.
+    // The clock skips a stopped agent, so nothing re-serves it and nothing is said again.
     expect(['error', 'paused', 'terminated']).toContain(status());
     expect(getWaitingHumanConversations(AGENT).length).toBeGreaterThan(0);
     expect(notices().length, 'told once').toBe(1);
@@ -696,19 +692,7 @@ describe('t148 — a turn stopped by the money guardrail, or by no model that ca
 
   // ══ ROUND 4 (review t148-review.md) ══
 
-  // I1 — a park is identified by its own record; the owner's pause, or any other pause, wins.
-  it('I1: the owner\'s texted pause on a parked agent wins: the limit being raised does NOT run it', async () => {
-    noFreeModel();
-    budget(1.00, 2.00);
-    await runV2Turn(AGENT);
-    expect(status()).toBe('paused');
-    expect(await handleIMCommand('pause', 'owner')).toMatch(/paused/i);
-    handleMessageSpy.mockClear();
-    await costsRouter.request('/budget/global', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ limitUsd: 10 }) });
-    expect(status(), 'the owner said pause; it stays paused').toBe('paused');
-    expect(handleMessageSpy, 'and it is not woken').not.toHaveBeenCalled();
-  });
-
+  // I1: a park is identified by its own record; any other pause wins.
   it('I1: any other pause (the error loop\'s writer) over a retry turn\'s kept tag is not released by the park\'s paths either', async () => {
     noFreeModel();
     budget(1.00, 2.00);

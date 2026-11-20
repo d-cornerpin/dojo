@@ -13,12 +13,6 @@ export { pausedWords };
 
 const logger = createLogger('agent-errors');
 
-// Track rate limit notifications per-agent so we don't spam iMessage
-// but also don't miss alerts for different agents
-const lastRateLimitAlerts = new Map<string, number>();
-const RATE_LIMIT_ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between alerts per agent
-
-
 export class AgentError extends Error {
   public readonly agentId: string;
   public readonly retryable: boolean;
@@ -89,26 +83,6 @@ export function clearErrors(agentId: string): void {
   closePausedCards(agentId); // a clean turn: the agent works again, so the owner's card for the trip ends
   endNotice(agentId, 'broken_notice'); // and a BROKEN incident is over: the next one is told again
   ownerConditionsOnHealthyWork(agentId); // and if it is the Healer, "Healer broken" ends
-}
-
-/** Tell the owner via iMessage about a rate limit or overloaded error, one alert per cooldown. */
-export function notifyRateLimitHit(agentId: string, errorType: 'rate_limit' | 'overloaded'): void {
-  const now = Date.now();
-  const lastAlert = lastRateLimitAlerts.get(agentId) ?? 0;
-  if (now - lastAlert < RATE_LIMIT_ALERT_COOLDOWN_MS) return;
-  lastRateLimitAlerts.set(agentId, now);
-
-  try {
-    const db = getDb();
-    const agent = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-    const name = agent?.name ?? agentId;
-    const msg = errorType === 'rate_limit'
-      ? `${name} hit an API rate limit. Requests are being throttled. The agent will retry automatically.`
-      : `${name} got an API overloaded error. Anthropic's servers are at capacity. The agent will retry automatically.`;
-    void sendAlert(msg, 'warning', { kind: 'broken-agent' }); // no blocker; the dashboard shows it
-  } catch (err) {
-    logger.warn('Failed to send rate limit iMessage alert', { agentId, error: err instanceof Error ? err.message : String(err) });
-  }
 }
 
 function pauseAgent(agentId: string): void {

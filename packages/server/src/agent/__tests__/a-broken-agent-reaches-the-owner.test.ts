@@ -68,7 +68,7 @@ import { runMigrations } from '../../db/migrations.js';
 // full migration chain; that is an import cost, not a timing assertion, and on a box shared by
 // many suites it can pass the 30 s default. Nothing here measures time.
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
-import { recordError, notifyRateLimitHit } from '../errors.js';
+import { recordError } from '../errors.js';
 
 const OWNER = 'owner@example.test';
 const db = (): Database.Database => mockDb.current!;
@@ -114,14 +114,3 @@ describe('BROKEN: an agent paused after repeated errors', () => {
   });
 });
 
-describe('NOT A BLOCKER: the strike-3 rate-limit notice (fix round 1, ruling R-V333-4)', () => {
-  // "… will retry automatically" asks nothing of the owner, so it stays off the phone (the
-  // owner's v2.3.19 request: true blockers only). The dashboard already shows the agent as
-  // rate-limited (rate-limit-retry.ts writes the status and broadcasts it); "retries exhausted"
-  // stays on the phone at `critical`.
-  it('never reaches the phone', async () => {
-    notifyRateLimitHit('ag', 'rate_limit');
-    expect((await settled(ownerOutbounds))).toBe(0);
-    expect(sent()).toHaveLength(0);
-  });
-});

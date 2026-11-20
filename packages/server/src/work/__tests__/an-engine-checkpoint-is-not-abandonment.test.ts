@@ -25,7 +25,6 @@ import { runMigrations } from '../../db/migrations.js';
 import { listTaskLog, writeTaskLog } from '../../tracker/task-log.js';
 import { noteEngineCheckpoint } from '../engine-checkpoint-note.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
-import { endJobCarry, beginJobRun, endJobRun, registerTimerWake } from '../task-freshness.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** t143 round 2: a park happens INSIDE a turn, and touches only the work that turn's trigger names.
@@ -34,8 +33,11 @@ function park(reason: 'turn-budget', turnNumber = 5, ask: string | null = 'msg-j
   const tc = openTurnContext(AGENT);
   tc.turnNumber = turnNumber;
   tc.root = ask ? { kind: 'ask', id: ask, sourceMessageId: ask } : null;
-  if (!ask) beginJobRun(AGENT, 'timer');   // a trigger-less park here is the continuation the previous park's own wake started
-  try { const n = noteEngineCheckpoint(AGENT, reason); registerTimerWake(AGENT); return n; } finally { endTurnContext(AGENT); endJobRun(AGENT); }
+  if (!ask) {   // a trigger-less park here is the job's own turn, started from its task
+    tc.servedJob = 'w-job';
+    tc.servedWork = { taskId: 'w-job', runId: null, taskKind: null, originConvKey: null };
+  }
+  try { return noteEngineCheckpoint(AGENT, reason); } finally { endTurnContext(AGENT); }
 }
 
 const AGENT = FXID.n4;
@@ -65,7 +67,6 @@ const moved = (id: string): number => (mockDb.current!.prepare('SELECT updated_a
 const notes = (id: string): number => listTaskLog(id, { kinds: ['observation'] }).length;
 
 beforeEach(() => {
-  endJobCarry(AGENT);   // the job carry is process memory: no test inherits another's
   const db = new Database(':memory:');
   mockDb.current = db;
   runMigrations();
@@ -89,19 +90,19 @@ describe('an engine checkpoint carries the job and notes it, without moving it',
     expect([notes('w-job'), notes('w-other-agent'), notes('w-abandoned-same-conv')]).toEqual([1, 0, 0]);
   });
 
-  it('t143 r3 (C1): the continuation the park queues inherits the job however many other turns ran first; a turn with its own trigger never does', () => {
+  it('the job\'s own turn names the job however many other turns ran first; a turn with its own trigger never does', () => {
     const now = Date.now();
     const stale = now - 15 * 60_000;
     seedWork('w-job', { updated_at: stale, source_message_id: 'msg-job' });
     expect(park('turn-budget', 7)).toBe(1);
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
     expect(park('turn-budget', 8, 'msg-other')).toBe(0); // an unrelated ask takes the next turn: it names other work
-    expect(park('turn-budget', 9, null)).toBe(1); // the continuation (empty trigger) still carries the job
+    expect(park('turn-budget', 9, null)).toBe(1); // the job's own turn (empty trigger) still names the job
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
     expect(park('turn-budget', 12, null)).toBe(1); // and again, turns later
   });
 
-  it('t143 r4 (M1): a trigger-less turn that is not the continuation (a scheduler wake) does not consume the carry', async () => {
+  it('a trigger-less turn that is not the job\'s (a scheduler wake) takes nothing from the job', async () => {
     const now = Date.now();
     const stale = now - 15 * 60_000;
     seedWork('w-job', { updated_at: stale, source_message_id: 'msg-job' });
@@ -113,7 +114,7 @@ describe('an engine checkpoint carries the job and notes it, without moving it',
     stampTasksAtTurnFinalize({ agentId: AGENT, turnNumber: 8, outcome: 'answered', answerMessageId: null, rootSourceMessageId: null, convKey: null, servedTaskId: null });
     endTurnContext(AGENT);
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
-    expect(park('turn-budget', 9, null)).toBe(1); // the real continuation still carries the job
+    expect(park('turn-budget', 9, null)).toBe(1); // the job's own turn still names the job
   });
 
   it('returns 0 and writes nothing when the agent has no in-flight work', () => {

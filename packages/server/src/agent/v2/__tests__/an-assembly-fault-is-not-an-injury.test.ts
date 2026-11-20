@@ -52,6 +52,8 @@ vi.mock('../../runtime.js', () => ({
     handleMessage: vi.fn(async () => { seen.reruns++; }),
   }),
 }));
+// The one clock is not driven here: the park's due time on the job's task row is what each case reads.
+vi.mock('../owed.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), armOwedClock: () => undefined }));
 vi.mock('../../../services/imessage-bridge.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   sendAlert: (words: string) => { seen.texts.push(words); },
@@ -79,7 +81,7 @@ import { runMigrations } from '../../../db/migrations.js';
 import { recoverFromError } from '../recovery.js';
 import { initState, advance } from '../state.js';
 import { clearErrors } from '../../errors.js';
-import { pendingWakeups } from '../../shared-state.js';
+import { openTurnContext, endTurnContext } from '../../turn-context.js';
 import { compactionBrakeMsLeft } from '../../../memory/compaction-brakes.js';
 import {
   validateAtProviderBoundary, AssemblyValidationError, assemblyTokens, type ValidatedMessage,
@@ -118,7 +120,6 @@ beforeEach(async () => {
   seen.progress = true;
   seen.toolPayload = 0;
   coldImport1.__resetBrakesForTests();
-  pendingWakeups.clear();
   __resetStarvedWindowsForTests();
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
 });
@@ -152,7 +153,19 @@ async function boundaryRefusal(): Promise<AssemblyValidationError> {
   throw new Error('the boundary did not refuse; the witness is gone');
 }
 
+/** A wake due now: a park dated the job's task for now; the job turn's pickup clears it. */
+const jobDueNow = (): boolean => !!db().prepare("SELECT 1 FROM work WHERE agent_id = ? AND kind = 'task' AND next_attempt_at <= ?").get(AGENT, Date.now());
+const jobPickedUp = (): void => { db().prepare("UPDATE work SET next_attempt_at = NULL WHERE agent_id = ?").run(AGENT); };
+
+/** One turn's recovery; the turn serves the owner's request, so its park has a task to date. */
 async function recover(error: unknown, turnNumber: number, loopCount = 1): Promise<void> {
+  const bag = openTurnContext(AGENT);
+  bag.turnNumber = turnNumber;
+  bag.root = { kind: 'ask', id: 'm-keep-counting', sourceMessageId: 'm-keep-counting' };
+  try { await recoverOnce(error, turnNumber, loopCount); } finally { endTurnContext(AGENT); }
+}
+
+async function recoverOnce(error: unknown, turnNumber: number, loopCount: number): Promise<void> {
   const state = advance(initState({
     agentId: AGENT, contextWindow: WINDOW, isAutoRouted: false, configuredModelId: MODEL,
     turnNumber, triggeredByIMessage: false, triggeredByA2AReplyIntent: null,
@@ -171,7 +184,7 @@ describe('D18: the first over-budget refusal condenses and re-assembles once; it
     await recover(await boundaryRefusal(), 7);
     expect(seen.condenses, 'the boundary condensed for the dialed window').toBe(1);
     expect(agent().status, 'an engine refusal is not an injury').not.toBe('error');
-    expect(pendingWakeups.has(AGENT), 'one wake: the re-assembly').toBe(true);
+    expect(jobDueNow(), 'one wake: the re-assembly').toBe(true);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(seen.reruns, 'no auto-wake re-ran the identical assembly').toBe(0);
     expect(agent().recovery_attempts ?? 0, 'the Healer\'s counter is untouched').toBe(0);
@@ -183,12 +196,12 @@ describe('D18: the first over-budget refusal condenses and re-assembles once; it
 describe('D18 fix round 1: the woken re-assembly still over while instructions and tools fit', () => {
   it('a pass that made progress: the full-context-wait park again, one wake — never the card, never paused, never a text', async () => {
     await recover(await boundaryRefusal(), 7);
-    pendingWakeups.clear();   // the drain served the wake: turn 8 is the re-assembly
+    jobPickedUp();   // the drain served the wake: turn 8 is the re-assembly
     await recover(await boundaryRefusal(), 8);
     expect(windowCards(), 'the instructions and tools fit: the card would be false').toEqual([]);
     expect(agent().status).not.toBe('paused');
     expect(agent().status).not.toBe('error');
-    expect(pendingWakeups.has(AGENT), 'one more wake: the next re-assembly').toBe(true);
+    expect(jobDueNow(), 'one more wake: the next re-assembly').toBe(true);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(seen.reruns, 'no Healer auto-wake').toBe(0);
     expect(seen.texts, 'no owner text of any kind').toEqual([]);
@@ -201,7 +214,7 @@ describe('D18 fix round 1: the woken re-assembly still over while instructions a
     seen.progress = false;
     await recover(await boundaryRefusal(), 7);
     expect(compactionBrakeMsLeft(AGENT), 'the brake is on').not.toBeNull();
-    expect(pendingWakeups.has(AGENT), 'no wake at once into the same refusal').toBe(false);
+    expect(jobDueNow(), 'no wake at once into the same refusal').toBe(false);
     expect(windowCards()).toEqual([]);
     expect(seen.texts).toEqual([]);
   });
@@ -213,7 +226,7 @@ describe('D18 fix round 1: the woken re-assembly still over while instructions a
     expect(agent().status).not.toBe('paused');
     expect(agent().status).not.toBe('error');
     expect(compactionBrakeMsLeft(AGENT)).not.toBeNull();
-    expect(pendingWakeups.has(AGENT)).toBe(false);
+    expect(jobDueNow()).toBe(false);
     expect(seen.texts).toEqual([]);
   });
 });
@@ -228,7 +241,7 @@ describe('D18 fix round 1: instructions and tools truly overflow the window', ()
     expect(windowCards(), 'the owner is told what to change').toHaveLength(1);
     expect(agent().status, 'paused, never error').toBe('paused');
     expect(agent().last_error ?? '').toMatch(/^\[no_model_fits\]/);
-    expect(pendingWakeups.has(AGENT), 'no wake after the stop').toBe(false);
+    expect(jobDueNow(), 'no wake after the stop').toBe(false);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(seen.reruns, 'zero re-runs').toBe(0);
     expect(stuckTexts(), 'no "stuck" text').toEqual([]);

@@ -169,8 +169,6 @@ const seedSideRows = (id: string): void => {
              VALUES (?, ?, 1, 'condensed', 'sum', 10,
                      datetime('now'), datetime('now'), datetime('now'))`)
     .run(`sum-${id}`, id);
-  d.prepare(`INSERT INTO drain_state (agent_id, drain, head, stuck, updated_at)
-             VALUES (?, 'unserved_wake', '', 0, ?)`).run(id, NOW);
 };
 
 /**

@@ -14,9 +14,7 @@ import { stillCompileOwed } from '../../compile-owed-gate.js';
 import { outputPersistenceClassifier } from '../../classifiers/output.js';
 import { stripLeadingTimeStamp } from '../../../../memory/message-stamp.js';
 import { answersALiveAsk, deliverAsAnswerToLiveAsk } from './answer-to-a-live-ask.js';
-import { continuedJobStillGoing, readJobAtPassEnd } from './job-turn-end.js';
 import { DELIVERABLE_OWING_TASK_KINDS } from '../../../../work/deliverable-declaration.js';
-import { runCarriesJob } from '../../../../work/task-freshness.js';
 import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -34,7 +32,6 @@ export async function runTerminalText(
     messageId, noteTerminalAnswer, result, startAckRepliedNow, turnCtx, turnNumber,
   } = ctx;
   const { interAgentTurn } = sc;
-  const jobStillGoing = (await readJobAtPassEnd(state, ctx), continuedJobStillGoing(state, ctx));   // read once per pass
   const persistenceDecision = outputPersistenceClassifier({
     responseText: result.content ?? null,
     toolCallsThisTurn: result.toolCalls,
@@ -83,7 +80,7 @@ export async function runTerminalText(
         ? stillCompileOwed(state.compileOwedAskIds)
         : [];
     const answersLiveAsk = answersALiveAsk({
-      interAgentTurn, isHumanContinuation, jobStillGoing,
+      interAgentTurn, isHumanContinuation,
       surfacedReplyThisTurn: state.surfacedReplyThisTurn, startAckRepliedNow,
     });
     if ((hasUnansweredUser || userDeliverableRunTurn || compileOwedNow.length > 0 || answersLiveAsk) && !interAgentTurn) {
@@ -123,12 +120,10 @@ export async function runTerminalText(
         turnCtx.deferredUserReplyWithTools = null;
         turnCtx.deferredDeliveredByAck = true;
         // Stamped as a start line so settlement refuses it as a receipt; 'agent-text' too, or origin_intent
-        // alone shows it as fallback. Row id minted here so no-reply.ts can name it; not demoted below.
-        const startAckRowId = uuidv4();
-        await deliverEngineUserAck(startLine, START_ACK_ORIGIN_INTENT, startAckRowId, 'agent-text');
-        turnCtx.startAckPromotedRowId = startAckRowId;
-        logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack (streamed bubble promoted in place)', {
-          agentId, turnNumber, preview: startLine.slice(0, 60), rowId: startAckRowId,
+        // alone shows it as fallback.
+        await deliverEngineUserAck(startLine, START_ACK_ORIGIN_INTENT, null, 'agent-text');
+        logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack', {
+          agentId, turnNumber, preview: startLine.slice(0, 60),
           owedVia: turnCtx.startAckSteerArmedThisTurn ? 'steer-armed' : 'threshold-owed',
         }, agentId);
       } else if (answersLiveAsk && turnCtx.deferredUserReplyWithTools) {
@@ -136,7 +131,7 @@ export async function runTerminalText(
         turnCtx.deferredUserReplyWithTools = null;
         deliveredAsAnswerToLiveAsk = true;
         state = (await deliverAsAnswerToLiveAsk(state, {
-          interAgentTurn, isHumanContinuation, jobStillGoing,
+          interAgentTurn, isHumanContinuation,
           surfacedReplyThisTurn: state.surfacedReplyThisTurn, startAckRepliedNow,
           agentId, turnNumber, answer, deliverEngineUserAck, noteTerminalAnswer,
         })).state;
@@ -149,7 +144,7 @@ export async function runTerminalText(
         const noteId = uuidv4();
         // A routed-channel note was never delivered there, so it is internal (hidden by default).
         const routedHumanChannel = isRoutedHumanCounterparty(counterparty);
-        const agentOnly = routedHumanChannel || runCarriesJob(agentId) || !(hasUnansweredUser || userDeliverableRunTurn);
+        const agentOnly = routedHumanChannel || !!turnCtx.servedJob || !(hasUnansweredUser || userDeliverableRunTurn);
         const notePrefix = agentOnly ? INTERNAL_WORKING_NOTE_PREFIX : WORKING_NOTE_PREFIX;
         // No origin stamp: an engine-stamped row would be inter-agent-shaped and belongs in the store.
         insertMessageIfAbsent({

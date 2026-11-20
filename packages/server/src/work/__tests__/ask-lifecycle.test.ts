@@ -1,7 +1,8 @@
 // PHASE-2 T3 Step 1 — every ask is a ticket, and a claim is a STATE.
 //
-// The four properties this task exists to make true, each proven with a negative control
-// beside a positive control of the same shape (a guard that never bit is not a guard):
+// The properties this file makes true, each proven with a negative control beside a positive
+// control of the same shape (a guard that never bit is not a guard). An abort's hand-back is
+// settled at finalize by the turn's exit (`handBackAsk`), so it is proven there, not here:
 //
 //   1. An inbound owner message creates `work(kind='ask', state='open')` in the SAME
 //      TRANSACTION as the message INSERT. Atomicity is proven by making the ask insert
@@ -9,14 +10,8 @@
 //   2. Turn pickup is a compare-and-swap `open -> claimed` carrying `claimed_by_turn`.
 //      A second process losing the race gets `conflict`, which is the D-2 bail
 //      (requirement preserved: cross-process race -> exactly one winner).
-//   3. An abort with ZERO effectful calls reverts the claim to `open` — the ask returns
-//      to the waiting set and is re-served.
-//   4. An abort WITH effectful calls NEVER re-fires (P6b). `turns.effectful_calls` is the
-//      counted input, and it is DURABLE mid-turn, because the crash case is the whole
-//      point: a turn that died after sending an email has no chance to write its count at
-//      the end.
 //
-// Plus the two consequences those four have: a quick ask closes when its delivery records,
+// Plus the two consequences they have: a quick ask closes when its delivery records,
 // and an orphaned claim left by a killed process is re-armed at boot without duplicating
 // an effect (crash test B's mechanical half).
 
@@ -40,7 +35,7 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  transition, askIdForMessage, claimAsk, stampClaimingTurn, revertAskClaimOnAbort, openAsk,
+  transition, askIdForMessage, claimAsk, stampClaimingTurn, openAsk,
 } from '../store.js';
 // SWEEP-A TB1: the send-time close and the boot reconcile are INVOCATIONS of the one
 // settlement authority now (`work/ask-settlement.ts`). The requirements below are unchanged
@@ -243,34 +238,6 @@ describe('turn pickup = CAS open -> claimed', () => {
     // ...and it never overwrites a claim that already named its turn.
     expect(stampClaimingTurn(askIdForMessage('m-1'), 10)).toBe(0);
     expect(workFor('m-1')!.claimed_by_turn).toBe(9);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// 3 + 4. ABORT: RE-ARM WHEN NOTHING HAPPENED, NEVER RE-FIRE WHEN IT DID (P6b)
-// ════════════════════════════════════════════════════════════════════════
-
-describe('abort semantics (P6b — the counted input is turns.effectful_calls)', () => {
-  beforeEach(() => {
-    insertMessage(ownerInbound({ id: 'm-1' }) as never);
-    claimAsk(askIdForMessage('m-1'), AGENT);
-    stampClaimingTurn(askIdForMessage('m-1'), 4);
-  });
-
-  it('ZERO effectful calls: the claim reverts and the ask is served again', () => {
-    const r = revertAskClaimOnAbort(askIdForMessage('m-1'), 0, 'model call exhausted retries');
-    expect(r?.kind).toBe('applied');
-    expect(workFor('m-1')!.state).toBe('open');
-    expect(workFor('m-1')!.claimed_by_turn).toBeNull();
-    expect(getWaitingHumanConversations(AGENT).map((w) => w.oldest.id)).toEqual(['m-1']);
-  });
-
-  it('EFFECTFUL calls: the claim STANDS, and the refusal is recorded rather than silent', () => {
-    const r = revertAskClaimOnAbort(askIdForMessage('m-1'), 2, 'aborted after sending an email');
-    expect(r).toBeNull();
-    expect(workFor('m-1')!.state).toBe('claimed');
-    expect(getWaitingHumanConversations(AGENT)).toEqual([]);
-    expect(eventsFor(askIdForMessage('m-1')).map((e) => e.kind)).toContain('rearm_refused');
   });
 });
 

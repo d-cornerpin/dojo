@@ -79,8 +79,8 @@ vi.mock('../../config/platform.js', () => ({
 }));
 const sendIM = vi.hoisted(() => vi.fn(async () => true));
 vi.mock('../../services/imessage-bridge.js', () => ({ sendIMessage: sendIM }));
-// The reply sender's own timer stays off: what is queued is read from the ledger.
-vi.mock('../v2/channel-sender.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), armSenderTimer: () => {} }));
+// The owed clock stays off: what is queued is read from the ledger.
+vi.mock('../v2/owed.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), armOwedClock: () => {} }));
 vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn(async () => {}) }) }));
 
 import { runMigrations } from '../../db/migrations.js';

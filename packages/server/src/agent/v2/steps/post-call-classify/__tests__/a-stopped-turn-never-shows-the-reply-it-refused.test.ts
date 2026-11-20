@@ -115,7 +115,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     result: modelResult(),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer,
     deliverEngineUserAck: vi.fn(),
-    persistAndBroadcastSystemRow: vi.fn(),
     startAckRepliedNow: () => false,
     ...over,
   } as unknown as PostCallClassifyContext;
@@ -187,8 +186,7 @@ describe('§1 a reply the owner refused is neither stored nor shown', () => {
   it('the bubble the live chunks already painted is RETRACTED, not left orphaned on screen', async () => {
     // Suppressing the row silently would be its own defect: `onChunk` frames may have already
     // drawn a partial bubble, and a bubble with no row behind it is the one shape that makes
-    // "every bubble has a row" unstateable. Same two frames, same order, as the established
-    // idiom in `no-reply.ts`'s ghosted-ask arm and `closeout-floors.ts`'s closeout arm.
+    // "every bubble has a row" unstateable. Same two frames, same order, as `no-reply.ts` uses.
     stoppedAgents.add(AGENT);
 
     await persist();

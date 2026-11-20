@@ -2,34 +2,21 @@
 //
 // ── THE DEFECT, AND WHY IT RAN IN BOTH DIRECTIONS AT ONCE ──
 //
-// A marker carries eight characters of a thread id. Three readers had to decide "does this
-// token identify that stored FULL id?", and all three answered it by hand. Re-derived at this
-// head before anything moved (G11), by reading:
-//
-//   agent/a2a-replies.ts:229          `match[2] !== threadShort`  (threadShort = id.slice(0,8))
-//   agent/a2a-replies.ts:294          `substr(thread_id, 1, 8) = ?`
-//   agent/v2/outbound-ledger.ts:231   `substr(thread_id, 1, 8) = ?`
-//
-// All three are the LEGACY front slice. For an id `makeThreadId` mints — `thread-<hash>-<seed>`
-// — the front eight characters are `thread-` plus ONE hash character: about 36 buckets across
-// every named thread on the box. So the slice was a false-POSITIVE magnet (collision class
-// FA-C2, already fixed in the authoritative queries sitting directly above these three). Then
-// t109 moved the PRODUCER to the varying region, and the same three comparisons became false
-// NEGATIVES for every marker written since — a current token never equals the front slice of a
-// named id. The cost of the negative is a dropped nudge: the enforcer asks "did this agent
-// already reply on this thread?", gets `false` where the truth is `true`, and says the wrong
-// thing to the agent.
+// A marker carries eight characters of a thread id, and a reader must decide "does this token
+// identify that stored FULL id?". The live readers: `agent/a2a-own-turn.ts` asks it in JavaScript
+// (`a2aThreadTokenMatches`), and `work/done/who-decides.ts` asks it in SQL (`a2aThreadTokenMatchesSql`).
+// The front eight characters of an id `makeThreadId` mints (`thread-<hash>-<seed>`) are `thread-` plus
+// one hash character, so a front-slice compare is wrong both ways: many named ids share a slice, and a
+// current token never equals one. A wrong answer drops a nudge or says the wrong thing to the agent.
 //
 // t109 handed up the one-line fix and named `a2aThreadTokenMatches` as the one answer. Two of
 // the three sites are SQL and cannot call a JS function, so `@dojo/shared` now carries the SQL
 // twin, `a2aThreadTokenMatchesSql`, beside the JS one. A twin is only ONE answer for as long as
 // the two halves agree, and §1 is what holds them together.
 //
-// Two further sites of the same hand-rolled shape turned up in this lane's own census.
-// `a2a-replies.ts:164`'s `threadId.slice(0, 8)` — the key for the genuinely-short legacy row
-// query — is fixed here, byte-identically, as `a2aThreadShortLegacy(threadId)`: named, so a
-// reader can tell WHICH era's token the line means. `a2a-transport.ts:1770`'s second `IN`
-// member is the same shape and is HANDED UP, not fixed: the live lane `t114-flat-timers` holds
+// The genuinely-short legacy row key is named `a2aThreadShortLegacy(threadId)` (read today by
+// `agent/a2a-transport.ts`), so a reader can tell WHICH era's token the line means.
+// `a2a-transport.ts:1770`'s second `IN` member is the same shape and is HANDED UP, not fixed: the live lane `t114-flat-timers` holds
 // that file and a rehearsed `git merge-tree` CONFLICTED on the shared import line. Nothing is
 // wrong there today — both `IN` members are exact, never prefixes — see the clause below.
 //

@@ -65,10 +65,6 @@ export function answerReceiptForAsk(messageId: string | null | undefined): Answe
   };
 }
 
-export function owesAnswer(messageId: string | null | undefined): boolean {
-  return !answerReceiptForAsk(messageId).answered;
-}
-
 /** PRE-SPINE FALLBACK with no birthing ask: a substantive MODEL-AUTHORED reply since this
  *  instant? Exclusions are recorded facts (a2a, `[{`, `origin_intent`, under 40 chars).
  *  The boundary is ms both sides: an INTEGER ms column vs a TEXT datetime matches nothing. */
@@ -85,24 +81,6 @@ export function substantiveReplySince(agentId: string, sinceMs: number): boolean
 }
 
 // Every read below that LISTS or QUOTES a settled ask first asks `answerStillStands`.
-
-/** The agent's OWN recorded answer, newest settled ask only, IN THE CURRENT SESSION; the engine QUOTES it.
- *  A reset or withdrawal returns null and never falls back to an OLDER answer (never on offer). */
-export function recordedAnswerInConversation(agentId: string, conversationId: string): string | null {
-  const session = withSessionBoundary(agentId, 'm1.created_at');
-  const r = getDb().prepare(
-    `SELECT m2.content AS answer, m1.seq AS ask_seq, m2.id AS ans_id
-       FROM messages m1 JOIN messages m2 ON m2.id = m1.answer_message_id
-      WHERE m1.agent_id = ? AND m1.role = 'user' AND m1.conversation_id = ?
-        AND m1.answer_message_id IS NOT NULL AND m2.role = 'assistant'${session.sql}
-      ORDER BY m1.created_at DESC LIMIT 1`,
-  ).get(agentId, conversationId, ...session.params) as
-    | { answer: string; ask_seq: number; ans_id: string }
-    | undefined;
-  if (!r) return null;
-  if (!answerStillStands(agentId, r.ask_seq, r.ans_id)) return null;
-  return r.answer;
-}
 
 // The prompt-assembly reads of this edge; the epoch-ms date type is handled ONCE, here.
 
@@ -240,29 +218,6 @@ export function terminalDeliveryForTurn(
 }
 
 
-export interface ClosedWithoutDelivery {
-  workId: string;
-  kind: string;
-  title: string | null;
-  rootId: string;
-  state: string;
-  conversationId: string | null;
-}
-
-/** Nothing delivered for it: only `failed`/`abandoned` close silently (DDL CHECK). */
-export function closedWithoutDelivery(
-  agentId: string, sinceMs: number, limit = 5,
-): ClosedWithoutDelivery[] {
-  return getDb().prepare(
-    `SELECT id AS workId, kind, title, root_id AS rootId, state, conversation_id AS conversationId
-       FROM work
-      WHERE agent_id = ? AND state IN ('done','failed','abandoned')
-        AND closed_at >= ? AND result_delivery_id IS NULL
-      ORDER BY closed_at ASC LIMIT ?`,
-  ).all(agentId, sinceMs, limit) as ClosedWithoutDelivery[];
-}
-
-
 export interface ClaimedWork {
   workId: string;
   kind: string;
@@ -290,20 +245,6 @@ export function stillClaimedWork(
       WHERE agent_id = ? AND state = 'claimed' ${clause}
       ORDER BY opened_at ASC LIMIT ?`,
   ).all(...params) as ClaimedWork[];
-}
-
-
-/** Scope `kind='ask'` deliberately: an ask is a person waiting, a task is work owed to self,
- *  and widening to every open row would silence the settled-context hint on any box with a
- *  backlog. The `messages` JOIN is load-bearing: an ask whose root row is gone can never serve. */
-export function hasOpenHumanWork(agentId: string): boolean {
-  const hit = getDb().prepare(
-    `SELECT 1 AS ok
-       FROM work w JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
-      WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'open' AND w.requester = 'owner'
-      LIMIT 1`,
-  ).get(agentId) as { ok: number } | undefined;
-  return hit !== undefined;
 }
 
 

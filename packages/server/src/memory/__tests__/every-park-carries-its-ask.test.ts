@@ -1,13 +1,8 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// t145 group A, round 6 — EVERY WAKE THAT RESUMES A JOB CARRIES ITS ASK.
-//
-// Round 5 put the served ask on t143's job record, but only the turn-budget and tool-loop parks wrote
-// it. Four other wakes resume a job and called a bare `queueSelfWake`: the emergency compaction and the
-// context-full block (`context-gates.ts`) and the two forced compactions of error recovery
-// (`recovery.ts`). On a job with no task and no earlier park, the first turn's compaction folds the
-// ask, and the continuation then saw nothing. ONE helper, `parkJob` (`work/job-continuation.ts`), is
-// the single definition of "park": carry the job's work and served asks, then queue the wake. All six
-// sites go through it.
+// EVERY PARK THAT RESUMES A JOB CARRIES ITS ASK. ONE helper, `parkJob` (`work/job-continuation.ts`), is the
+// single definition of "park": it dates the job's task, opening one linked to the request when the turn has
+// none, and the job's own turn is rooted in that request (`preflight/turn-trigger.ts`). On a job with no task
+// and no earlier park, the first turn's compaction folds the ask; the job's own turn still holds it verbatim.
 //
 // The sequence the gates run is driven for real below: the forced fold that takes the ask behind the
 // boundary, then the park, then the continuation. One recovery site is driven through the real
@@ -39,8 +34,6 @@ import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { assembleContext } from '../assembler.js';
 import { servedOwnerMessageIds } from '../served-ask.js';
 import { parkJob } from '../../work/job-continuation.js';
-import { beginJobRun, endJobRun, endJobCarry } from '../../work/task-freshness.js';
-import { pendingWakeups } from '../../agent/shared-state.js';
 import { recoverFromError } from '../../agent/v2/recovery.js';
 import { initState } from '../../agent/v2/state.js';
 import { AgentError } from '../../agent/errors.js';
@@ -84,9 +77,8 @@ beforeEach(() => {
               VALUES ('conv-dash', 'primary', 'dashboard', NULL, 'owner', datetime('now'))`).run();
   n = 0;
   __resetBrakesForTests();
-  pendingWakeups.clear();
 });
-afterEach(() => { endTurnContext(AGENT); endJobCarry(AGENT); pendingWakeups.clear(); mockDb.current?.close(); mockDb.current = null; });
+afterEach(() => { endTurnContext(AGENT); mockDb.current?.close(); mockDb.current = null; });
 
 /** The FIRST turn of a job: older talk, the owner's long ask (claimed), then 70 rows of the turn's own work. No task, no earlier park. */
 function firstTurnOfAJob(): void {
@@ -95,16 +87,23 @@ function firstTurnOfAJob(): void {
   expect(claimAsk('ask:ask-row', AGENT).kind).toBe('applied');
   // t194: the turn's work is heavy (an overflow is what forces these passes), so the ask lies before the
   // protected recent part, which is sized in tokens now rather than the 40-row rung.
-  for (let i = 0; i < 70; i++) say(i % 2 === 0 ? 'assistant' : 'user', `turn row ${i} ${'w'.repeat(1_200)}`);
+  for (let i = 0; i < 70; i++) say('assistant', `turn row ${i} ${'w'.repeat(1_200)}`);
   const bag = openTurnContext(AGENT);
+  bag.turnNumber = 1;
   bag.root = { kind: 'ask', id: 'ask-row', sourceMessageId: 'ask-row' };
   bag.conversationId = 'conv-dash';
 }
-/** The run the drain starts from the park's wake: no trigger of its own. */
-function continuationRun(): void {
+/** The job's own turn, as the preflight picks up its parked task: rooted in the request the task names. */
+async function continuationRun(): Promise<void> {
   endTurnContext(AGENT);
-  expect(beginJobRun(AGENT, 'drain'), 'the park registered a wake the drain serves').toBe(true);
-  openTurnContext(AGENT).conversationId = 'conv-dash';
+  const { nextOwed } = await import('../../agent/v2/owed.js');
+  const item = nextOwed(AGENT).find((i) => i.kind === 'job');
+  expect(item, 'the park dated a task the clock serves').toBeDefined();
+  const bag = openTurnContext(AGENT);
+  bag.servedJob = item!.ref;
+  bag.conversationId = 'conv-dash';
+  const r = item!.job!.ask!.row;
+  bag.root = { kind: 'ask', id: r.id, sourceMessageId: r.id, conversationId: r.conversation_id };
 }
 const foldedIntoNote = (): boolean => (mockDb.current!.prepare("SELECT COUNT(*) AS n FROM summary_messages WHERE message_id = 'ask-row'").get() as { n: number }).n > 0;
 const wire = async (): Promise<string> => JSON.stringify((await assembleContext(AGENT, 'm')).messages);
@@ -115,24 +114,21 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
     const out = await checkAndCompact(AGENT, 'm', WINDOW, { force: true });   // what the gate runs
     expect(out.leafCreated).toBeGreaterThan(0);
     expect(foldedIntoNote(), 'premise: the compaction took the ask behind the boundary').toBe(true);
-    expect(parkJob(AGENT, 'context-gate-rebuild')).toBe(true);                       // what the gate then queues
-    continuationRun();
+    expect(parkJob(AGENT, 'context-gate-rebuild', Date.now())).toBe(true);           // what the gate then parks
+    await continuationRun();
     expect(servedOwnerMessageIds(AGENT)).toEqual(['ask-row']);
     const text = await wire();
     expect(count(text, LABEL)).toBe(1);
     expect(count(text, ASK.trim())).toBe(1);
   });
 
-  it('CONTROL: an unrelated wake after that carries nothing', async () => {
+  it('CONTROL: an unrelated turn after that carries nothing', async () => {
     firstTurnOfAJob();
     await checkAndCompact(AGENT, 'm', WINDOW, { force: true });
-    parkJob(AGENT, 'context-gate-rebuild');
-    continuationRun();
-    endTurnContext(AGENT);
-    endJobRun(AGENT);                                          // the continuation ended
-    pendingWakeups.add(AGENT);                                 // some other wake (a scheduler tick, an A2A) is queued
-    expect(beginJobRun(AGENT, 'drain'), 'no job wake is registered any more').toBe(false);
-    openTurnContext(AGENT).conversationId = 'conv-dash';
+    parkJob(AGENT, 'context-gate-rebuild', Date.now());
+    await continuationRun();
+    endTurnContext(AGENT);                                     // the job's turn ended
+    openTurnContext(AGENT).conversationId = 'conv-dash';       // some other turn (a scheduler tick, an A2A) runs
     expect(servedOwnerMessageIds(AGENT)).toEqual([]);
     expect(await wire()).not.toContain(LABEL);
   });
@@ -146,7 +142,7 @@ describe('t145 R6 — a park that is not the turn-budget or tool-loop park still
     });
     await recoverFromError(state, new AgentError('prompt is too long: context_length_exceeded', AGENT, { code: 'CONTEXT_OVERFLOW' }), { isUserFacingTurn: true });
     expect(foldedIntoNote(), 'premise: the recovery\'s forced compaction took the ask behind the boundary').toBe(true);
-    continuationRun();
+    await continuationRun();
     expect(servedOwnerMessageIds(AGENT)).toEqual(['ask-row']);
     const text = await wire();
     expect(count(text, LABEL)).toBe(1);

@@ -1,7 +1,6 @@
 // The v2 dispatch shell, helpers re-exported via getAgentRuntime, and run lifecycle state shared with v2.
 import { orphanedModelRepairText } from './engine-lines.js';
 import { tellAgentWhatDojoSent } from './dojo-voice.js';
-import { beginContinuationRun, beginJobRun, deferTimerWake, endJobRun, dropDrainJobWake, endJobCarry } from '../work/task-freshness.js';
 import fs from 'node:fs';
 import { v4 as uuidv4 } from 'uuid';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -14,16 +13,15 @@ import { broadcast } from '../gateway/ws.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { cancelAgentGenerationJobs } from '../services/generation-jobs.js';
 import { notifyUserStop } from './stop-waiters.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { insertMessageIfAbsent, sweepByRowid } from '../memory/message-store.js';
 import { tagMessageLane } from '../memory/message-lane-tag.js';
 import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
-import { selfWakeStandDown } from '../work/work-reaper.js';
 import { handBackOrphansOf } from '../work/orphaned-claims.js';
-import { transition } from '../work/store.js';
-import { withUnit } from '../db/unit.js';
+import { transition, joinPieces, isTerminal } from '../work/store.js';
+import { withUnit, afterCommit } from '../db/unit.js';
 import { suppressQueuedReplies } from './v2/deliveries.js';
 import { setAgentModel } from './model-switch.js';
 
@@ -284,7 +282,7 @@ const logger = createLogger('runtime');
 
 // Shared with v2; canonical defs live in agent/shared-state.ts; runtime still owns the run lifecycle.
 import {
-  activeRuns,
+  activeRuns, isRunUnwinding,
   pendingWakeups,
   stoppedAgents,
   preemptedAgents,
@@ -309,17 +307,18 @@ import {
 } from './shared-state.js';
 import { currentTurnNumber, markTurnsTerminated } from './v2/turn-record.js';
 
-import { turnBoundary, forceA2ATurn, a2aTurnRetries, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
-import { a2aRetryBudgetFor } from './a2a-patience.js';
-import { bumpDrainLadder, clearDrainLadder, DRAIN_LADDER_UNREADABLE } from './drain-state.js';
-import { contextOverflowSince } from '../memory/compaction.js';
+import { turnBoundary } from './turn-state.js';
 import { replacePlaceholdersInBackground } from '../memory/out-of-view.js';
-import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
+import { armOwedClock, stoppedRequestsOf, type StoppedRequests } from './v2/owed.js';
+import { runIsLive } from './ended-mid-run.js';
+import { announceLiveWork } from './live-work.js';
+import { noteOwnerStop } from '../migration/import-agents.js';
+import { serveLater } from './v2/serve-later.js';
+import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
-import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
 import { userWords, currentAddress } from './v2/turn-address.js';
-import { workingExpr } from '../work/done/hold.js';
+import { workingExpr, setHold } from '../work/done/hold.js';
 
 
 export function stopStatusHeartbeat(agentId: string): void {
@@ -338,7 +337,7 @@ export function stopAgent(agentId: string): void {
   const runInFlight = activeRuns.has(agentId);
   if (runInFlight) stopFencedRuns.set(agentId, Date.now());
   // Clear any queued wakeup so the agent doesn't immediately restart after stopping
-  pendingWakeups.delete(agentId); endJobCarry(agentId); // a stopped agent's job has no continuation coming
+  pendingWakeups.delete(agentId);
   // Abort EVERY in-flight call: model.ts's one dial door (openAgentCall) covers compaction, brief, media.
   // scope:'all' is said in ONLY TWO places; the engine narrows to 'turn' so a barge-in spares a render.
   const cut = abortInFlight(agentId, 'user-stop', { scope: 'all' });
@@ -357,14 +356,14 @@ export function stopAgent(agentId: string): void {
   // THE STATUS DOES NOT LIE: idle only when nothing is in flight; stopping: true is broadcast-only,
   // the CHECK stays unwidened; the unwinding run keeps 'working' plus heartbeat, safe from the reaper.
   try {
+    const status = (getDb().prepare('SELECT status FROM agents WHERE id = ?')
+      .get(agentId) as { status?: string } | undefined)?.status ?? 'working';
     if (runInFlight) {
-      const status = (getDb().prepare('SELECT status FROM agents WHERE id = ?')
-        .get(agentId) as { status?: string } | undefined)?.status ?? 'working';
       broadcast({ type: 'agent:status', agentId, status: status as AgentStatus, stopping: true });
     } else {
       stopStatusHeartbeat(agentId);
-      writeAgentStatus(agentId, 'idle');
-      broadcast({ type: 'agent:status', agentId, status: 'idle' });
+      // Only a working agent goes idle; a paused or errored one keeps its status.
+      if (status === 'working') { writeAgentStatus(agentId, 'idle'); broadcast({ type: 'agent:status', agentId, status: 'idle' }); }
     }
   } catch { /* best effort */ }
 
@@ -384,23 +383,59 @@ export function stopAgent(agentId: string): void {
   logger.info('Agent stop requested', { runInFlight, callsAborted: cut }, agentId);
 }
 
-/** The owner's Stop: replies still waiting to go are dropped and the requests they answered end as called off
- *  by him, in one transaction; then the agent stops, whatever the drop did. Import and terminate call `stopAgent` alone. */
-export function stopByOwner(agentId: string): { repliesNotSent: number } {
+/** The owner's Stop ends the request being served (`stoppedRequestsOf`) in one transaction: its unsent replies, its
+ *  pieces, the request, its job tasks (no due; held unless a schedule); then the agent stops, whatever that did, and
+ *  the run is settled. Nothing running and nothing to end: nothing is done. What the Stop button does, for every door;
+ *  import and terminate call `stopAgent`. */
+export function stopByOwner(agentId: string): { ended: number; repliesNotSent: number; nothingRunning?: true } {
+  let s: StoppedRequests = { liveRun: false, asks: [], runTasks: [], requests: [], jobs: [] };
+  try {
+    s = stoppedRequestsOf(agentId);
+  } catch (err) {
+    logger.error('stop: the request being served could not be read', { error: String(err) }, agentId);
+  }
+  const toEnd = s.asks.length + s.runTasks.length + s.requests.length;
+  if (toEnd === 0 && !runIsLive(agentId)) return { ended: 0, repliesNotSent: 0, nothingRunning: true };
   try {
     return withUnit(() => {
-      const dropped = suppressQueuedReplies(agentId);
-      for (const id of dropped.askIds) {
+      // With a run live or unwinding only the stopped request's replies go; with none, every queued reply is what runs.
+      const dropped = suppressQueuedReplies(agentId, s.liveRun || isRunUnwinding(agentId) ? s.asks : undefined);
+      let ended = s.requests.length + s.runTasks.length;
+      for (const id of new Set([...s.asks, ...dropped.askIds])) {
+        for (const p of joinPieces(id)) {
+          if (isTerminal(p.state)) continue;
+          transition(p.childId, { to: 'abandoned', by: 'owner', reason: 'the owner stopped the request this piece was for' });
+        }
         const r = transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop' });
-        if (r.kind !== 'applied') logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
+        if (r.kind === 'applied') ended++;
+        else logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
       }
-      return { repliesNotSent: dropped.repliesNotSent };
+      for (const r of s.requests) sweepByRowid({ rowid: r.rowid, agentId });
+      for (const t of s.jobs) {
+        serveLater({ kind: 'task', id: t }, null, 'owner stop');
+        const schedule = getDb().prepare('SELECT 1 FROM work WHERE id = ? AND schedule_status IS NOT NULL').get(t);
+        if (!schedule) setHold(t, 'paused', 'stopped by you', 'owner');
+      }
+      afterCommit(() => void Promise.all([import('../scheduler/runner.js'), import('./a2a-transport.js')])
+        .then(async ([runner, transport]) => {
+          for (const t of s.runTasks) await runner.onTaskRunComplete(t, 'skipped', 'stopped by the owner');
+          for (const r of s.requests) {
+            const thread = r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH);
+            await transport.failJoinPieceForAbandonedAsk(r.messageId, thread, agentId, 'the owner stopped this work');
+          }
+        })
+        .catch((err: unknown) => logger.warn('stop: its run or the asker was not settled', { error: String(err) }, agentId)));
+      return { ended, repliesNotSent: dropped.repliesNotSent };
     });
   } catch (err) {
-    logger.error('stop: queued replies could not be dropped; the agent is stopped anyway', { error: err instanceof Error ? err.message : String(err) }, agentId);
-    return { repliesNotSent: 0 };
+    logger.error('stop: the request could not be ended; the agent is stopped anyway', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return { ended: 0, repliesNotSent: 0 };
   } finally {
     stopAgent(agentId);
+    noteOwnerStop(agentId);   // a failed import in flight must not lift the owner's own stop
+    announceLiveWork(agentId);   // the frame that takes the stop control away, not waited for
   }
 }
 
@@ -498,7 +533,7 @@ class AgentRuntime {
     });
   }
 
-  async handleMessage(agentId: string, _content: string, opts?: { job?: boolean; drained?: boolean }): Promise<RunOutcome> {   // opts = the park's own timer wake (job) / the queued-wakeup drain (drained): only these can carry the job
+  async handleMessage(agentId: string, _content: string): Promise<RunOutcome> {
     // Never run a terminated agent: boot re-drain or an A2A kick could otherwise emit a zombie reply.
     const st = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined;
     if (st?.status === 'terminated') {
@@ -510,7 +545,7 @@ class AgentRuntime {
     // Busy: the ONE direct add. A user stop must not eat an inbound; self-wakes use queueSelfWake only.
     if (activeRuns.has(agentId)) {
       logger.info('Agent busy, queuing wakeup for after current run', { agentId }, agentId);
-      pendingWakeups.add(agentId); if (opts?.job) deferTimerWake(agentId); // the park's own wake, now queued on the shared set
+      pendingWakeups.add(agentId);
       noteArrivalWhileBusy(agentId);   // a command waiting on "your messages come first" is told
       return 'queued';
     }
@@ -520,8 +555,7 @@ class AgentRuntime {
     if (!stopFencedRuns.has(agentId)) stoppedAgents.delete(agentId);
     const servedWaiters = queuedRunWaiters.get(agentId) ?? [];
     queuedRunWaiters.delete(agentId);
-    agentStartTimes.set(agentId, Date.now()); if (opts?.job || opts?.drained) beginJobRun(agentId, opts.job ? 'timer' : 'drain');
-    if (opts?.drained && !opts.job) beginContinuationRun(agentId, () => getWaitingHumanConversations(agentId).slice(0, 1).map((w) => w.oldest.id));   // one waiting human conversation is drained as a continuation
+    agentStartTimes.set(agentId, Date.now());
 
     try {
       // v2 is the only runtime; it owns its recovery cascade, so escaping here is a cascade bug.
@@ -575,7 +609,7 @@ class AgentRuntime {
     } finally {
       activeRuns.delete(agentId);
       // STAMP it: this finally releases activeRuns, then awaits a long tail; isRunUnwinding reads it.
-      lastRunEndedAt.set(agentId, Date.now()); endJobRun(agentId, pendingWakeups.has(agentId)); // the carrying run ends; a wake of its own queued becomes the job's continuation
+      lastRunEndedAt.set(agentId, Date.now());
       replacePlaceholdersInBackground(agentId);   // the background folder yielded to this turn; it resumes now
       // Safety net: any throwing or early-return path still stops the heartbeat; the stop is idempotent.
       stopStatusHeartbeat(agentId);
@@ -583,64 +617,6 @@ class AgentRuntime {
       // A delegated answer that arrived mid-turn goes out now: this finally is where every exit lands.
       try { await (await import('./a2a-transport.js')).releaseDeferredJoinRelays(agentId); } catch (err) {
         logger.warn('deferred join relay not released; the join reaper and boot re-drain still find it', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-      }
-
-      // An unreplied wake-intent A2A gets its OWN turn, never a fold into a user reply (that makes
-      // stripping safe); past a2aRetryBudgetFor a synthetic reply settles the enforcer, no infinite spin.
-      try {
-        const status = (getDb()
-          .prepare('SELECT status FROM agents WHERE id = ?')
-          .get(agentId) as { status?: string } | undefined)?.status;
-        if (status !== 'terminated') {
-          const owed = findUnrepliedAssignForAgent(agentId);
-          const wasA2ATurn = lastTurnWasA2A.has(agentId);
-          lastTurnWasA2A.delete(agentId);
-          if (owed) {
-            if (wasA2ATurn) {
-              // A dedicated A2A turn ran and cleared nothing: a genuine failure, counted against the cap.
-              const tries = (a2aTurnRetries.get(agentId) ?? 0) + 1;
-              // Cap is the RECIPIENT's, floored by one call on its provider (a2a-patience.ts); else plain max.
-              const budget = a2aRetryBudgetFor(agentId);
-              if (tries <= budget.turns) {
-                a2aTurnRetries.set(agentId, tries);
-                forceA2ATurn.add(agentId);
-                queueSelfWake(agentId, 'a2a-retrigger-retry');
-                logger.info('Retrying dedicated A2A turn for unreplied inbound', {
-                  agentId, intent: owed.intent, thread: owed.threadShort, attempt: tries,
-                }, agentId);
-              } else {
-                logger.warn('A2A reply gave up after max dedicated turns, recording synthetic reply', {
-                  agentId, intent: owed.intent, thread: owed.threadShort, from: owed.fromName,
-                  // The spent budget and its basis: a bare "max" could not tell a slow box from a dead one.
-                  turnsAllowed: budget.turns, patienceFloorSeconds: budget.floorSeconds,
-                  patienceBasis: budget.basis,
-                }, agentId);
-                recordA2AReply({ assignMessageId: owed.messageId, agentId, threadId: owed.threadShort, replyIntent: 'ABANDONED' });
-                // ABANDONED frees only this agent's enforcer; settle the asker's join piece now so an empty
-                // join tells the owner at once. Fire-and-forget, TTL backstops; dynamic: a2a-transport imports us.
-                import('./a2a-transport.js')
-                  .then((m) => m.failJoinPieceForAbandonedAsk(owed.messageId, owed.threadShort, agentId))
-                  .catch(() => { /* best effort, TTL sweep backstops */ });
-                a2aTurnRetries.delete(agentId);
-                forceA2ATurn.delete(agentId);
-              }
-            } else {
-              // A deferred A2A gets its own turn, no penalty: it has not yet had a turn it could fail.
-              forceA2ATurn.add(agentId);
-              queueSelfWake(agentId, 'a2a-retrigger-deferred');
-              logger.info('Queuing dedicated A2A turn for deferred inbound', {
-                agentId, intent: owed.intent, thread: owed.threadShort,
-              }, agentId);
-            }
-          } else {
-            a2aTurnRetries.delete(agentId);
-            forceA2ATurn.delete(agentId);
-          }
-        }
-      } catch (err) {
-        logger.warn('A2A re-trigger check failed', {
-          agentId, error: err instanceof Error ? err.message : String(err),
-        }, agentId);
       }
 
       // Clear a stale preempt flag: a mid-stream abort can skip the loop's own check, and a left-over
@@ -652,7 +628,7 @@ class AgentRuntime {
         const { resolveCompilePendingJoins } = await import('./a2a-transport.js');
         const drive = await resolveCompilePendingJoins(agentId);
         // The compile order is only a rider, never a turn's own reason, so without a wakeup it is never seen:
-        // queue one like the drains below (same guards; the storm law and a ladder of three bound it).
+        // queue one (the storm law and a ladder of three bound it).
         if (drive.wakeWanted) {
           queueSelfWake(agentId, 'compile-drive');
           logger.info('compile drive: queued a wakeup so the re-driven agent actually sees the owed step', {
@@ -660,108 +636,6 @@ class AgentRuntime {
           }, agentId);
         }
       } catch { /* best effort; the TTL sweep backstops */ }
-
-      // Unserved-wake drain: N causes collapse into ONE wakeup serving ONE trigger; a still-unserved
-      // terminal wake or engine event would wait on a slow periodic: re-queue now, bounded like the drains.
-      try {
-        const wdStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
-        if (!isSelfResumeBlockedStatus(wdStatus)) {
-          // OWNER FIRST: while ANY human conversation waits this drain queues NOTHING; the human's
-          // own trigger runs the next turn, where leftover wakes are re-checked. Never compete.
-          // The count is taken ONCE and carried on every log line: the storm invariant needs a
-          // number on the record, and it must match selfWakeStandDown's own read (work rows,
-          // kind='ask', state='open'). An unreadable spine (-1) stands down: not knowing is never
-          // nobody waiting. tiers says WHO waits (user, safe senders, agents), a count cannot.
-          const { standDown, humanAsksOpen: openAsks, tiers } = selfWakeStandDown(agentId);
-          if (standDown) {
-            clearDrainLadder(agentId, 'unserved_wake');
-            logger.info('unserved-wake drain: standing down, a human is waiting', {
-              agentId, humanAsksOpen: openAsks, waitingTiers: tiers,
-            }, agentId);
-            throw { __skipWakeDrain: true };
-          }
-          const { findUnservedTerminalWake, getPendingEngineEvent } = await import('./v2/counterparty.js');
-          const leftoverWake = findUnservedTerminalWake(agentId);
-          const leftoverEngine = leftoverWake ? null : getPendingEngineEvent(agentId);
-          const head = leftoverWake ? `w:${leftoverWake.rowid}` : (leftoverEngine ? `e:${leftoverEngine.rowid}` : null);
-          if (head) {
-            // Counts CONSECUTIVE passes seeing the same head; endedTurnsSince would start past
-            // the bound (human turns run before the drain's first look). The ladder is durable
-            // drain_state, not a Map: a Map resets on boot, so a crash loop self-spins a stuck head.
-            const stuck = bumpDrainLadder(agentId, 'unserved_wake', head);
-            if (stuck < 2) {
-              queueSelfWake(agentId, 'unserved-wake-drain');
-              logger.info('unserved-wake drain: leftover wake/engine event after turn end; queuing immediate re-run', {
-                agentId, head, stuck, humanAsksOpen: openAsks,
-              }, agentId);
-            } else {
-              logger.warn('unserved-wake drain: head not advancing after re-runs; standing down to the periodics', {
-                agentId, head, stuck, humanAsksOpen: openAsks,
-              }, agentId);
-            }
-          } else {
-            clearDrainLadder(agentId, 'unserved_wake');
-          }
-        }
-      } catch (err) {
-        if (!(err && typeof err === 'object' && '__skipWakeDrain' in (err as object))) {
-          logger.warn('unserved-wake drain check failed (non-fatal)', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        }
-      }
-
-      // Human drain: a turn serves ONE counterparty, so other conversations get a wakeup, not stranding.
-      // Bounded by MAX_DRAIN_STUCK: a head that cannot advance stops the self-spin and idles till inbound.
-      try {
-        const drainStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
-        // Stop states hold: waiting messages are persisted and served on the next inbound or resume.
-        if (!isSelfResumeBlockedStatus(drainStatus)) {
-          const waiting = getWaitingHumanConversations(agentId);
-          if (waiting.length > 0) {
-            const head = waiting[0].oldestWaitingRowid;
-            // A FORCED-pass run failed on its window, not this message, so it is not counted; an unreadable
-            // ladder stands down too: no count, no self-wake (the overflow park re-drives), no quarantine.
-            const overflowed = contextOverflowSince(agentId, agentStartTimes.get(agentId) ?? Date.now());
-            const stuck = overflowed ? DRAIN_LADDER_UNREADABLE : bumpDrainLadder(agentId, 'human_conversation', String(head));
-            if (stuck === DRAIN_LADDER_UNREADABLE) {
-              logger.warn('drain: standing down; this pass does not count against the waiting message', { agentId, headRowid: head, cause: overflowed ? 'context-overflow' : 'ladder-unreadable' }, agentId);
-            } else if (stuck < MAX_DRAIN_STUCK) {
-              // Cap self-re-triggers; a real new inbound still wakes it.
-              if (underWakeBudget(agentId)) queueSelfWake(agentId, 'human-conversation-drain');
-            } else {
-              // The head failed every serve with room left: the message is bad; quarantine, never drop.
-              const poisoned = waiting[0];
-              const quarantined = quarantineWaitingConversation(agentId, poisoned.key);
-              const exitReasons = (getDb().prepare('SELECT exit_reason AS r FROM turns WHERE agent_id = ? AND conv_key = ? ORDER BY turn_number DESC LIMIT ?')
-                .all(agentId, poisoned.key, MAX_DRAIN_STUCK + 1) as Array<{ r: string | null }>).map((t) => t.r);
-              logger.error('drain: quarantined a poisoned conversation after repeated failed serves; serving the next instead', { agentId, convKey: poisoned.key, rowsQuarantined: quarantined, headRowid: head, exitReasons }, agentId);
-              try {
-                broadcast({ type: 'chat:error', cardClass: 'informational', agentId, error: `Couldn't process a message from ${poisoned.key} after several tries, set it aside so your other messages get through.`, code: 'STUCK_REPEATING', severity: 'warning', retryable: false });
-              } catch { /* best effort */ }
-              clearDrainLadder(agentId, 'human_conversation');
-              const remaining = getWaitingHumanConversations(agentId);
-              if (remaining.length > 0 && underWakeBudget(agentId)) queueSelfWake(agentId, 'human-conversation-drain-after-quarantine');
-            }
-          } else if (getPendingEngineEvent(agentId)) {
-            // No human waits but an engine event (scheduler/reminder/tracker/healer) is unprocessed:
-            // out-raced by a human it would starve. Served-stamped at pickup: once per event, no spin.
-            clearDrainLadder(agentId, 'human_conversation');
-            if (underWakeBudget(agentId)) queueSelfWake(agentId, 'pending-engine-event');
-          } else {
-            clearDrainLadder(agentId, 'human_conversation');
-            // An engine event on backoff is null at pickup; nothing re-fires when it clears: arm a
-            // one-shot for the earliest retry; the crash-durable boot re-drain backstops a crash before it.
-            scheduleEngineEventRetryWake(agentId, (id) => {
-              this.handleMessage(id, '').catch((err) => {
-                logger.error('Engine-event retry wake failed', { agentId: id, error: err instanceof Error ? err.message : String(err) }, id);
-              });
-            });
-          }
-        }
-      } catch (err) {
-        logger.warn('drain re-trigger check failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-      }
 
       if (pendingWakeups.has(agentId)) {
         pendingWakeups.delete(agentId);
@@ -779,8 +653,8 @@ class AgentRuntime {
             return;
           }
           // A stop landing while this timer is armed is still a stop: it fires 500 ms later, finds
-          // pendingWakeups already consumed, nothing left for stopAgent to clear. Same gate the
-          // drains use; a NEW message arrives via handleMessage's own door, ungated.
+          // pendingWakeups already consumed, nothing left for stopAgent to clear. Same gate as
+          // queueSelfWake; a NEW message arrives via handleMessage's own door, ungated.
           if (isStopFenced(agentId)) {
             logger.info('Queued wakeup declined: the user stopped this agent', { agentId }, agentId);
             declineQueuedWaiters(agentId);
@@ -794,11 +668,11 @@ class AgentRuntime {
           if (isSelfResumeBlockedStatus(status)) {
             logger.info('Skipping queued wakeup, agent is in a stop state', { agentId, status }, agentId);
             declineQueuedWaiters(agentId);
-            dropDrainJobWake(agentId); return; // the park's continuation will never run: its job is over
+            return;
           }
           logger.info('Processing queued wakeup', { agentId }, agentId);
           // Empty content: the wake picks up new messages via context assembly; the param is unused.
-          this.handleMessage(agentId, '', { drained: true }).catch(err => {
+          this.handleMessage(agentId, '').catch(err => {
             logger.error('Queued wakeup failed', {
               agentId,
               error: err instanceof Error ? err.message : String(err),
@@ -811,11 +685,12 @@ class AgentRuntime {
 
       // THE ONE OWNER OF THE STOP FLAG'S CLEAR: a checkpoint that sees the stop honours it (pre-call
       // gate, model-call catch, executor); only this finally retires it, at the end of the run it stopped.
-      // The drains below stand down only while the flag stands; cleared early they would restart the
-      // very request the user stopped. A new run's start lifts a FLAG that has no fence (a stop pressed
-      // while nothing ran); nothing lifts the FENCE elsewhere.
+      // A new run's start lifts a FLAG that has no fence (a stop pressed while nothing ran); nothing lifts
+      // the FENCE elsewhere.
       stoppedAgents.delete(agentId);
       stopFencedRuns.delete(agentId);
+      // The one clock decides when this agent runs next for anything still owed, and sends due replies.
+      armOwedClock();
     }
     for (const w of servedWaiters) w('ran');
     return 'ran';
@@ -1040,77 +915,6 @@ export function injectAttachmentBlocks(
   return freshResizes;
 }
 
-// Circuit breaker on the engine's SELF re-trigger only (never a real inbound): a turn answers the
-// whole backlog but the pickup stamp claims one row served, so N waiting rows each take a full turn.
-const WAKE_BUDGET_WINDOW_MS = 10 * 60 * 1000;
-const WAKE_BUDGET_MAX = 30;
-const wakeupTimes = new Map<string, number[]>();
-const wakeBudgetTripped = new Set<string>();
-
-function underWakeBudget(agentId: string): boolean {
-  const now = Date.now();
-  const cutoff = now - WAKE_BUDGET_WINDOW_MS;
-  const arr = (wakeupTimes.get(agentId) ?? []).filter((t) => t > cutoff);
-  if (arr.length >= WAKE_BUDGET_MAX) {
-    wakeupTimes.set(agentId, arr);
-    if (!wakeBudgetTripped.has(agentId)) {
-      wakeBudgetTripped.add(agentId);
-      logger.error('Wake budget tripped: too many self-wakeups in the window; pausing the self-drain for this agent until it clears (a new inbound still wakes it)', {
-        agentId, wakeupsInWindow: arr.length, windowMinutes: WAKE_BUDGET_WINDOW_MS / 60000,
-      }, agentId);
-      try { broadcast({ type: 'agent:status', agentId, status: 'idle' }); } catch { /* best effort */ }
-      // Idle: nothing re-fires; one-shot resume at the oldest wakeup's age-out; queue only if work is owed.
-      const resumeInMs = Math.max((arr[0] ?? now) + WAKE_BUDGET_WINDOW_MS - now, 5_000);
-      const t = setTimeout(() => {
-        try {
-          if (getWaitingHumanConversations(agentId).length > 0 || getPendingEngineEvent(agentId) !== null) {
-            queueSelfWake(agentId, 'wake-budget-window-cleared');
-            logger.info('Wake budget window cleared; resuming the self-drain for owed work', { agentId }, agentId);
-          }
-        } catch { /* best effort */ }
-      }, resumeInMs);
-      t.unref?.();
-    }
-    return false;
-  }
-  arr.push(now);
-  wakeupTimes.set(agentId, arr);
-  wakeBudgetTripped.delete(agentId);
-  return true;
-}
-
-// Failed engine-event delivery parks on backoff; nothing re-fires it on an idle agent, so arm ONE
-// unref'd timer per agent, re-armed each drain pass (newest schedule wins), each fire re-checking
-// DB truth (terminated skip, wake budget, eligibility). In-memory by design: boot re-drain rescues a crash.
-const engineRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-function scheduleEngineEventRetryWake(agentId: string, wake: (agentId: string) => void): void {
-  try {
-    const existing = engineRetryTimers.get(agentId);
-    if (existing) {
-      clearTimeout(existing);
-      engineRetryTimers.delete(agentId);
-    }
-    const at = getNextEngineEventRetryAt(agentId);
-    if (at == null) return;
-    // +1s grace so next_attempt_at has strictly passed; floor 5s for clock skew, ceiling above max backoff.
-    const delay = Math.min(Math.max(at - Date.now() + 1_000, 5_000), 61 * 60_000);
-    const t = setTimeout(() => {
-      engineRetryTimers.delete(agentId);
-      try {
-        const status = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
-        if (status === 'terminated') return;
-        if (getPendingEngineEvent(agentId) === null) return; // delivered/expired meanwhile
-        if (!underWakeBudget(agentId)) return; // budget breaker's resume re-checks engine events
-        logger.info('Engine-event retry backoff cleared; waking agent to deliver it', { agentId }, agentId);
-        wake(agentId);
-      } catch { /* best effort */ }
-    }, delay);
-    t.unref?.();
-    engineRetryTimers.set(agentId, t);
-  } catch { /* best effort */ }
-}
-
 // Stuck-agent recovery: resets 'working' rows past the threshold (agent/stuck-thresholds.ts owns it).
 const STUCK_AGENT_CHECK_MS = 5 * 60 * 1000;
 
@@ -1133,7 +937,7 @@ function recoverStuckAgents(): string[] {
       }
       writeAgentStatus(agent.id, 'idle');
       activeRuns.delete(agent.id);
-      pendingWakeups.delete(agent.id); endJobCarry(agent.id); // a reaped run's job is dead
+      pendingWakeups.delete(agent.id);
       broadcast({ type: 'agent:status', agentId: agent.id, status: 'idle' });
       // The turn this verdict abandons is CLOSED as `terminated`, by `turn-record.ts` (the module owning
       // `turns`). The stale-row case only; a crash restarted inside the hour is agent-status.ts's boot sweep.
@@ -1161,7 +965,7 @@ function recoverStuckAgents(): string[] {
       stopFencedRuns.delete(agentId);
       stoppedAgents.delete(agentId);
       activeRuns.delete(agentId);
-      pendingWakeups.delete(agentId); endJobCarry(agentId);
+      pendingWakeups.delete(agentId);
       const status = (db.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
       if (status === 'working') {
         writeAgentStatus(agentId, 'idle');

@@ -1,11 +1,10 @@
-// The empty-response ladder: a grind rung for a response cut off at the output cap, then a silent retry,
-// a nudge and a give-up. Work done with nobody waiting is a clean exit, not a failure.
+// The empty-response ladder: a grind rung for a response cut off at the output cap, then a silent retry, then
+// for a person waiting the turn ends into the required reply, and otherwise a nudge and a give-up. Work done with
+// nobody waiting is a clean exit, not a failure.
 
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { contractForConfiguredModel } from '../../../model.js';
-import { askIdForMessage } from '../../../../work/store.js';
-import { recordFloorGhost } from '../../floor-ghost.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { clearSteerQueueFor, steerFired, type SteerFloorId } from '../../steer-queue.js';
@@ -13,6 +12,7 @@ import { outputTruncationClassifier } from '../../classifiers/output.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext } from './index.js';
 import { userWords } from '../../turn-address.js';
+import { replyCanBeRequired } from '../../forced-reply.js';
 
 const logger = createLogger('v2-loop');
 
@@ -77,6 +77,8 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
   }
 
   if (result.toolCalls.length === 0 && (!result.content || result.content.trim().length === 0)) {
+    // The required reply came back empty: no retry, the turn ends and finalize holds the request.
+    if (ctx.turnCtx.forcedReplySpent) return requestExit(state, 'forced-reply-empty');
     // Who is waiting, read once for the whole ladder and for every model, not only reasoning ones.
     const contract = contractForConfiguredModel(ctx.configuredModelId);
     const startAckOwed =
@@ -119,6 +121,11 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       state = advance(state, { retriedEmptyResponse: true });
       return continueLoop(state);
     }
+    // Silence to another Dojo box is an allowed answer: no nudge, no toast; finalize settles its request.
+    if (ctx.counterpartyIsAgentSender) return requestExit(state, 'empty-response-peer-box');
+    // A person still owed is answered by the required reply at the loop's exit, where one follows.
+    const followed = replyCanBeRequired(ctx.latestUserSource, ctx.inboundChannel, ctx.counterpartyIsAgentSender);
+    if (owesAPerson && followed) return requestExit(state, 'empty-response-owed');
     // Then one explicit nudge, as a steer.
     if (!steerFired(state.steerQueue, 'empty-response')) {
       logger.warn('v2: model returned empty after silent retry, nudging', {
@@ -135,31 +142,14 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     }, agentId);
     // Abandon only this ladder's own steers (recorded); other floors' steers stay queued.
     state = advance(state, { steerQueue: clearSteerQueueFor(state.steerQueue, EMPTY_LADDER_FAMILY) });
-    // A person owed a reply gets a durable platform-voice row (`recordFloorGhost`); a toast leaves no row on
-    // reload. Deliberately no `latchEngineCut`: a cut keeps the ask open and uncounted, so it could never
-    // reach `blocked`, the state in which an unanswered question stays visible on open work.
-    if (owesAPerson) {
-      const root = ctx.turnCtx.root;
-      recordFloorGhost({
-        agentId, turnNumber, floor: 'empty-response',
-        workId: root?.kind === 'ask' ? askIdForMessage(root.id) : null,
-        attempts: 1,
-        ownerLine:
-          'your agent returned an empty reply to your last message every time it was asked — '
-          + 'including once after the engine told it to answer — so nothing was sent and the turn '
-          + 'ended with no reply. Your message is still open; send it again to retry.',
-        detail: { conv_key: ctx.chosenConvKey ?? null, model: contract.id },
-      }, { broadcast });
-    } else {
-      broadcast({
-        type: 'chat:error', cardClass: 'informational',
-        agentId,
-        error: 'Agent gave an empty reply. Send your message again to retry.',
-        code: 'MODEL_FAILED',
-        severity: 'warning',
-        retryable: true,
-      });
-    }
+    broadcast({
+      type: 'chat:error', cardClass: 'informational',
+      agentId,
+      error: 'Agent gave an empty reply. Send your message again to retry.',
+      code: 'MODEL_FAILED',
+      severity: 'warning',
+      retryable: true,
+    });
     // Re-arm the human ask so the drain re-serves it; guarded so a turn with any answer or side effect is not.
     reArmIfStrandedNoAnswer();
     return requestExit(state, 'empty-response-gave-up');

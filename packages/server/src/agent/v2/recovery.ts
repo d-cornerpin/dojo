@@ -9,8 +9,9 @@ import { markTurnDied } from './turn-record.js';
 import { broadcast } from '../../gateway/ws.js';
 import { getDb } from '../../db/connection.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
+import { getMessagesByIds } from '../../memory/store.js';
 import { recordError, AgentError, pausedWords } from '../errors.js';
-import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
+import { turnContext } from '../turn-context.js';
 import { classifyRecoverableProviderError, classifyPlatformError, isEngineAssemblyFault } from './classifiers/provider.js';
 import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
 import { DECLARED_PATIENCE_EXCEEDED_CODE } from '../stream-patience.js';
@@ -34,11 +35,6 @@ import {
 } from './error-format.js';
 
 const logger = createLogger('v2-recovery');
-
-// Shared by the two rate-limit paths so the wording lives in one place.
-const RATE_LIMIT_RETRY_NOTE =
-  `[System: The model provider returned a rate limit error. The platform is retrying ` +
-  `automatically. Give it a moment, and tell the person you are talking to there is a short delay if they are waiting.]`;
 
 // A bare system row is hidden in default chat; OWNER_ALERT_DOJO_PREFIX makes it visible with no later
 // turn to relay it. Callers post it only on turns a person is waiting on.
@@ -103,17 +99,12 @@ export async function recoverFromError(
   // What the provider said, read ONCE for every step: the model layer attaches it at raise time.
   const facts = error instanceof AgentError && error.provider ? error.provider : classifyProviderError(error);
 
-  // 0. A rate limit the retry manager owns: the cascade would double-handle it (error-loop count, status
-  //    thrash). Gate on an ACTIVE retry, never the text, so an auto-router exhaustion still degrades loudly.
+  // 0. A rate limit or overload waits on its request's row until the provider's reset; nothing else handles it.
   const rlKind = classifyError(new Error(fullErrText), facts).kind;
-  if ((rlKind === 'rate_limit' || rlKind === 'overloaded') && hasActiveRateLimitRetry(agentId)) {
-    logger.info(
-      'v2: rate limit owned by background retry manager, skipping injury cascade',
-      { agentId, kind: rlKind },
-      agentId,
-    );
-    // Persist the note only: no recordError, no status write, no injury; the manager drives those.
-    persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
+  if (rlKind === 'rate_limit' || rlKind === 'overloaded') {
+    const turnCtx = turnContext(agentId);
+    if (turnCtx) turnCtx.retryAt = Date.now() + Math.max(60, facts.retryAfterSeconds ?? 60) * 1000;
+    logger.info('v2: rate limit or overload: the request waits for the reset', { agentId, kind: rlKind, retryAt: turnCtx?.retryAt }, agentId);
     return;
   }
 
@@ -494,19 +485,19 @@ async function recordInjury(
 
   // ALWAYS persist a chat-history system note FIRST so the agent has context on its next turn;
   // plain language, never raw provider JSON. The provider's own verdict, not this message's digits.
-  const injuryClass = (facts ?? classifyProviderErrorText(message)).class;
-  const isRateLimit =
-    injuryClass === 'rate_limit' || injuryClass === 'quota' || injuryClass === 'overloaded';
+  // A rate limit or overload never reaches here (step 0); out of credit is the owner's to fix.
+  const outOfCredit = (facts ?? classifyProviderErrorText(message)).class === 'quota';
 
   // The patience honest fail has no later turn coming on its own, so on a human-facing turn
   // the generic apology note is REPLACED by one honest in-channel line naming the ask and cause.
   const isDeclaredPatienceHonestFail = code === DECLARED_PATIENCE_EXCEEDED_CODE;
   if (isDeclaredPatienceHonestFail && turnFacing.isUserFacingTurn) {
-    const honestFail = declaredPatienceHonestFailNote(state.lastUserMessageContent, declaredPatienceDidCompact);
+    // A job turn has no fresh trigger: the line names the request its job started from.
+    const root = turnContext(agentId)?.root?.sourceMessageId;
+    const asked = state.lastUserMessageContent ?? (root ? getMessagesByIds([root])[0]?.content : null) ?? null;
+    const honestFail = declaredPatienceHonestFailNote(asked, declaredPatienceDidCompact);
     persistAndBroadcastSystemNote(agentId, honestFail);
     tellAgentWhatDojoSent({ agentId, recipient: 'the person who asked (on the dashboard)', text: honestFail, why: 'because your model could not finish this answer' });
-  } else if (isRateLimit) {
-    persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
   } else {
     persistAndBroadcastSystemNote(
       agentId,
@@ -542,8 +533,8 @@ async function recordInjury(
 
   // Broadcast the plain-English chat:error toast; the system note above is the durable
   // record and this toast the ephemeral signal.
-  const userMsg = isRateLimit
-    ? 'Model is rate-limited. Retrying automatically, give it a moment.'
+  const userMsg = outOfCredit
+    ? 'The AI provider says this account is out of credit. Add credit with the provider, then send the message again.'
     : paused
       ? pausedWords(agentId) // the owner card's words: on this chat the two fold into one
       : 'Agent hit an error and the Healer is looking into it. Send a new message to retry, or check the Vitals page if it keeps failing.';
@@ -551,11 +542,11 @@ async function recordInjury(
     type: 'chat:error',
     agentId,
     error: userMsg,
-    code: isRateLimit ? 'RATE_LIMITED' : paused ? 'ERROR_LOOP' : 'MODEL_FAILED',
+    code: outOfCredit ? 'QUOTA_EXHAUSTED' : paused ? 'ERROR_LOOP' : 'MODEL_FAILED',
     // "the Healer is looking into it" asks nothing of the user: only a paused agent is his.
     severity: paused ? 'error' : 'warning',
     cardClass: paused ? 'action' : 'informational',
-    retryable: isRateLimit,
+    retryable: false,
   });
 }
 

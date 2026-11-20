@@ -23,7 +23,6 @@ import { insertGoogleAccount } from '../../google/accounts.js';
 import { getValidAccessTokenForAccount } from '../../google/auth.js';
 import { maybeAlertOnFailure } from '../../services/watcher-status.js';
 import { onAgentInjured } from '../injury-recovery.js';
-import { noteRateLimitExhausted } from '../../agent/agent-owner-cards.js';
 import { noteBackupStuck, clearImportCard } from '../../migration/import-recovery.js';
 import { budgetStopToTell } from '../../costs/budget-cards.js';
 import { servedOwnerNotices, standingOwnerNotices } from '../owner-notice-kinds.js';
@@ -50,7 +49,6 @@ describe('every raise site records one notice per key', () => {
     vi.unstubAllGlobals();
     maybeAlertOnFailure(failing);
     onAgentInjured('a-2', '[auth_invalid] the key was refused');
-    noteRateLimitExhausted('a-1', 'Helper has been rate-limited for 6 hours.');
     noteBackupStuck('/tmp/example-backup');
     budgetStopToTell(null, () => undefined);
     // the same raise twice records nothing more and pushes nothing more
@@ -61,7 +59,7 @@ describe('every raise site records one notice per key', () => {
 
     const rows = db().prepare("SELECT key, value FROM healer_state WHERE scope = 'owner_told' ORDER BY key").all() as Array<{ key: string; value: string }>;
     expect(rows.map((r) => r.key)).toEqual([
-      'broken:a-2', 'budgetstop:global_daily', 'import-failed-not-running', 'memory-low', 'ratelimit:a-1', `signin:google:${acc.id}`, 'watcher:gmail:g-2',
+      'broken:a-2', 'budgetstop:global_daily', 'import-failed-not-running', 'memory-low', `signin:google:${acc.id}`, 'watcher:gmail:g-2',
     ]);
     for (const r of rows) expect(r.value, r.key).not.toBe('');
     expect(standingOwnerNotices().map((c) => c.cardKey).sort()).toEqual(rows.map((r) => r.key));

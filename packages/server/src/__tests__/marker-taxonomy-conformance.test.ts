@@ -64,7 +64,7 @@ describe('E18 drift 3 — the [System note:] colon-requirement leak', () => {
 
   it('still matches the forms that already worked, in both cases', () => {
     for (const s of ['[System: reset]', '[SYSTEM] x', '[Engine hint: y]', '[CONTINUITY BRIEF]',
-      '[Context note: the user just hit the Stop button]', '[DOJO technique]']) {
+      '[Context note: the owner pressed Stop on your previous work]', '[DOJO technique]']) {
       expect(ENGINE_SCAFFOLD_RE.test(s), `${s} is not recognised`).toBe(true);
     }
   });

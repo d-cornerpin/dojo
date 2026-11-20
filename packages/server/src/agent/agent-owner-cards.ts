@@ -1,14 +1,13 @@
 // The owner's cards for an agent's own trouble: the record IS the incident, the text goes once.
 
-import { endJobCarry } from '../work/task-freshness.js';
 import { getDb } from '../db/connection.js';
 import { ownerConditionCleared, ownerConditionsOnAgentGone, tellOwner } from '../healer/owner-notices.js';
 import { formatErrorForHuman, type ErrorKind } from './v2/error-format.js';
 
 type Notice = { at: number; words: string; since?: number };
-/** The three per-agent incident records an owner text writes. */
-export type NoticeColumn = 'rate_limit_notice' | 'broken_notice' | 'silent_notice';
-const KIND: Record<NoticeColumn, string> = { rate_limit_notice: 'ratelimit', broken_notice: 'broken', silent_notice: 'silent' };
+/** The two per-agent incident records an owner text writes. */
+export type NoticeColumn = 'broken_notice' | 'silent_notice';
+const KIND: Record<NoticeColumn, string> = { broken_notice: 'broken', silent_notice: 'silent' };
 
 const nameOf = (agentId: string): string => {
   try {
@@ -50,15 +49,6 @@ export function noteNoticeOnce(agentId: string, col: NoticeColumn, words: string
   return changed;
 }
 
-/** Retries exhausted and the owner is being told: the record and its card. Returns the words. */
-export function noteRateLimitExhausted(agentId: string, words: string): string {
-  try {
-    getDb().prepare('UPDATE agents SET rate_limit_notice = ? WHERE id = ?').run(JSON.stringify({ at: Date.now(), words }), agentId);
-  } catch { /* the text still goes */ }
-  tellOwner(`ratelimit:${agentId}`, words);
-  return words;
-}
-
 /** The incident is over: forget it, and its card leaves every open dashboard. */
 export function endNotice(agentId: string, col: NoticeColumn): void {
   try {
@@ -88,9 +78,7 @@ export function brokenWords(agentId: string, injury: string): string | null {
 
 // The one status writer moved this agent: incidents whose status it left are over; terminated ends all.
 export function agentStatusMoved(agentId: string, status: string): void {
-  if (['error', 'paused', 'rate_limited', 'terminated'].includes(status)) endJobCarry(agentId); // its job's chain is over
   if (status !== 'paused') closePausedCards(agentId);
-  if (status !== 'rate_limited') endNotice(agentId, 'rate_limit_notice');
   if (status === 'terminated') {
     ownerConditionsOnAgentGone(agentId);
     endNotice(agentId, 'broken_notice');

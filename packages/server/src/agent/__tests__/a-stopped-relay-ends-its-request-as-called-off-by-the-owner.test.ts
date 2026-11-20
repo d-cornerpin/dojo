@@ -19,7 +19,7 @@ beforeEach(() => delegatedTextRequest());
 describe('a stopped relay ends its request as called off by the owner', () => {
   it('the queued relay is dropped, the request is abandoned by the owner, and nothing goes', async () => {
     await helperAnswers('The venue is free on the 14th.');
-    expect(stopByOwner(AGENT)).toEqual({ repliesNotSent: 1 });
+    expect(stopByOwner(AGENT)).toEqual({ ended: 1, repliesNotSent: 1 });
     expect(relayRows().map((r) => r.outcome)).toEqual(['suppressed']);
     expect(requestState()).toBe('abandoned');
     const by = testDb().prepare("SELECT json_extract(payload, '$.by') AS by FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1").get(ASK);

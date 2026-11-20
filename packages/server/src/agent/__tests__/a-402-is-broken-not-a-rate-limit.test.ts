@@ -4,15 +4,14 @@
 // The t143 live walk (item 4) pointed a scratch agent at a provider answering 402 and saw no
 // card, no text, and the chat line "[System: The model provider returned a rate limit error ...
 // retrying automatically]" on every wake. The classifier (`provider-error.ts`) was RIGHT: it says
-// `quota`. The model layer then folded `quota` into "rate limited" (`isRateLimited = rate_limit ||
-// quota`) and armed the 10-second silent retry (`scheduleRateLimitRetry`), whose existence makes the
-// recovery cascade's step 0 hand the error to the retry manager instead of the platform's honest
-// Tier-D path (one text, the card). Waiting never fixes an empty balance.
+// `quota`. Out of credit is not a rate limit: recovery's step 0 makes a rate limit wait for the
+// reset, while out of credit takes the platform's honest Tier-D path (one text, the card). Waiting
+// never fixes an empty balance.
 //
 // Driven through the real model door against a real HTTP server (the idiom of
 // `an-edited-provider-is-the-one-that-gets-called.test.ts`), then through the real recovery door
 // with the error `callModel` actually threw. Two 402 bodies: the one the walk's fake served and the
-// short one a real box logged. CONTROL: a genuine 429 still takes the silent retry.
+// short one a real box logged. CONTROL: a genuine 429 waits on the turn for the provider's reset.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 // RED-FIRST: committed `it.fails` (f9a0de9d; round 2 at its RED commit), flipped with the fixes.
@@ -74,7 +73,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 import { runMigrations } from '../../db/migrations.js';
 import { clearSecretsCache, setProviderCredential } from '../../config/loader.js';
 import { callModel, clearClientCache } from '../model.js';
-import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
+import { openTurnContext, turnContext, endTurnContext } from '../turn-context.js';
 import { recoverFromError, classifyError } from '../v2/recovery.js';
 import { initState } from '../v2/state.js';
 import { AgentError } from '../errors.js';
@@ -86,7 +85,7 @@ vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 const OWNER = 'owner@example.test';
 const db = (): Database.Database => mockDb.current!;
-/** The retry manager is process memory: each clause gets an agent of its own. */
+/** Each clause gets an agent of its own. */
 let AGENT = 'helper';
 let seq = 0;
 
@@ -170,6 +169,12 @@ async function pinnedCall(): Promise<AgentError> {
   throw new Error('the stub provider answered; the call was expected to fail');
 }
 
+/** Recovery inside an open turn: the provider's reset the turn now waits for, or null. */
+async function resetWaitedFor(err: Error): Promise<number | null> {
+  openTurnContext(AGENT);
+  try { await recover(err); return turnContext(AGENT)?.retryAt ?? null; } finally { endTurnContext(AGENT); }
+}
+
 /** The thrown error handed to the real recovery cascade, as the turn's teardown does. */
 async function recover(err: Error): Promise<void> {
   db().prepare("UPDATE agents SET status = 'working' WHERE id = ?").run(AGENT);
@@ -194,7 +199,6 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
       answer.status = 402; answer.body = body;
       const err = await pinnedCall();
       expect(err.provider?.class).toBe('quota');
-      expect(hasActiveRateLimitRetry(AGENT)).toBe(false);
     });
 
     it(`${label}: through the recovery door it is ONE text, the card, the agent in error; no "rate limit" line, no retry`, async () => {
@@ -206,7 +210,6 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
       expect(agent.last_error).toMatch(/^\[quota_exhausted\]/);
       expect(await ownerTexts()).toBe(1);
       expect(cards()).toHaveLength(1);
-      expect(hasActiveRateLimitRetry(AGENT)).toBe(false);
       const said = db().prepare("SELECT content FROM messages WHERE agent_id = ? AND content LIKE '%rate limit%'").all(AGENT);
       expect(said).toHaveLength(0);
     });
@@ -227,11 +230,12 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
     expect(classifyError(new Error('API error 402: {"message":"Insufficient Balance"}')).kind).not.toBe('rate_limit');
   });
 
-  it('CONTROL: a genuine 429 still takes the silent retry (waiting does fix that)', async () => {
+  it('CONTROL: a genuine 429 waits for the reset (waiting does fix that)', async () => {
     answer.status = 429; answer.body = { error: { message: 'Rate limit reached for requests', type: 'rate_limit_error' } };
     const err = await pinnedCall();
     expect(err.provider?.class).toBe('rate_limit');
-    expect(hasActiveRateLimitRetry(AGENT)).toBe(true);
+    expect(await resetWaitedFor(err)).toBeGreaterThan(Date.now());
+    expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).toBe('working');
   });
 });
 
@@ -240,7 +244,7 @@ describe('C — a 402 on a pinned model is the platform\'s honest BROKEN path, n
 const GEMINI_PER_MINUTE = '429 RESOURCE_EXHAUSTED: Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15 per minute';
 
 describe('ROUND 2 — only out-of-credit is `quota`; a per-window "quota exceeded" is a rate limit', () => {
-  it('the Gemini per-minute text is a rate limit, read the same way by the classifier, classifyError and the retry manager', () => {
+  it('the Gemini per-minute text is a rate limit, read the same way by the classifier and classifyError', () => {
     expect(classifyProviderErrorText(GEMINI_PER_MINUTE).class).toBe('rate_limit');
     expect(providerClassOf(new Error(GEMINI_PER_MINUTE))).toBe('rate_limit');
     expect(classifyError(new Error(GEMINI_PER_MINUTE)).kind).toBe('rate_limit');
@@ -255,18 +259,17 @@ describe('ROUND 2 — only out-of-credit is `quota`; a per-window "quota exceede
     expect(cards()).toHaveLength(0);
   });
 
-  it('a 429 whose provider type says "quota" but names no money is a rate limit: the call arms the silent retry', async () => {
+  it('a 429 whose provider type says "quota" but names no money is a rate limit: the turn waits for the reset', async () => {
     answer.status = 429; answer.body = { error: { message: 'Quota exceeded for requests per minute', type: 'quota_exceeded' } };
     const err = await pinnedCall();
     expect(err.provider?.class).toBe('rate_limit');
-    expect(hasActiveRateLimitRetry(AGENT)).toBe(true);
+    expect(await resetWaitedFor(err)).toBeGreaterThan(Date.now());
   });
 
   it('CONTROL: OpenAI\'s 429 insufficient_quota is out of credit: the call is `quota`, no retry, and recovery locks with the card', async () => {
     answer.status = 429; answer.body = { error: { message: 'You exceeded your current quota, please check your plan and billing details.', type: 'insufficient_quota', code: 'insufficient_quota' } };
     const err = await pinnedCall();
     expect(err.provider?.class).toBe('quota');
-    expect(hasActiveRateLimitRetry(AGENT)).toBe(false);
     await recover(err);
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(AGENT) as { status: string }).status).toBe('error');
     expect(await ownerTexts()).toBe(1);

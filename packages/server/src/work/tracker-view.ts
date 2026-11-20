@@ -53,6 +53,8 @@ const ENGINE_SCAFFOLD_ROOT_KIND = 'engine_scaffold';
 const TRACKER_ROOT_KINDS = "('legacy','tracker','engine_scaffold')";
 
 export { ENGINE_SCAFFOLD_ROOT_KIND };
+/** The title of a task a park opens for a request: the agent never heard of it, so the engine hands it in. */
+export const PARKED_JOB_TITLE = 'Long request (opened by the engine)';
 
 export const engineScaffoldScope = (a = 'w'): string =>
   `${a}.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}'`;

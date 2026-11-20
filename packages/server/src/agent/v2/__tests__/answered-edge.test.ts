@@ -13,7 +13,6 @@
 //   1a  did THIS turn already put the result in front of the person?   (receipt, not prose)
 //   1b  did work close WITHOUT a delivery?                             (a join, not a scan)
 //   1c  what work is still claimed by this agent at turn end?          (with identity)
-//   1e  is anything open for a human counterparty right now?           (ONE query)
 //   1g  the delivery reference set only on a genuine user-facing send
 //   2b  `abandoned` reachable from >= 3 causes, single-transition once-guard, re-openable
 //   2c  the retry policy, carried VERBATIM
@@ -47,8 +46,6 @@ vi.mock('../../../db/connection.js', async () => {
 import { runMigrations } from '../../../db/migrations.js';
 import {
   answerReceiptForAsk,
-  closedWithoutDelivery,
-  hasOpenHumanWork,
   pauseDriveWorkWaitingOnOwner,
   stillClaimedWork,
   terminalDeliveryForTurn,
@@ -60,7 +57,6 @@ import {
   ENGINE_EVENT_EXPIRY_HOURS,
   ENGINE_EVENT_MAX_ATTEMPTS,
 } from '../counterparty.js';
-import { getWaitingHumanConversations } from '../counterparty.js';
 import { abandonUnservableAsks, openAsk, transition } from '../../../work/store.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { listTaskLog } from '../../../tracker/task-log.js';
@@ -197,54 +193,6 @@ describe('1a — "did THIS turn already put the result in front of the person" i
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-describe('1b — "did work close without a delivery" is a JOIN, not a status scan', () => {
-  it('work that closed with nothing delivered for it is returned', () => {
-    seedInbound('m-1');
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    transition(askId, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'gave up' });
-    const rows = closedWithoutDelivery(AGENT, Date.now() - 60_000);
-    expect(rows.map((r) => r.workId)).toContain(askId);
-  });
-
-  it('NEGATIVE: work that closed AGAINST a delivery is not owed a closeout', () => {
-    seedInbound('m-1');
-    seedTurn(3);
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    transition(askId, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 3, reason: 'pickup' });
-    seedDelivery('d1', { turn_number: 3 });
-    transition(askId, {
-      to: 'done', by: 'agent', actorId: AGENT, resultDeliveryId: 'd1', reason: 'delivered',
-    });
-    expect(closedWithoutDelivery(AGENT, Date.now() - 60_000).map((r) => r.workId)).not.toContain(askId);
-  });
-
-  it('NEGATIVE: still-open work has not closed and is not in the set', () => {
-    seedInbound('m-1');
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    expect(closedWithoutDelivery(AGENT, Date.now() - 60_000).map((r) => r.workId)).not.toContain(askId);
-  });
-
-  it('the window is honoured: work closed before it is history, not this turn\'s miss', () => {
-    seedInbound('m-1');
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    transition(askId, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'gave up' });
-    expect(closedWithoutDelivery(AGENT, Date.now() + 60_000)).toEqual([]);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
 describe('1c — turn end enumerates still-claimed work, WITH the identity to escalate', () => {
   it('claimed work comes back carrying its conversation and its claiming turn', () => {
     seedInbound('m-1');
@@ -277,67 +225,6 @@ describe('1c — turn end enumerates still-claimed work, WITH the identity to es
     transition(a, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 4, reason: 'pickup' });
     transition(b, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 5, reason: 'pickup' });
     expect(stillClaimedWork(AGENT, { turnNumber: 5 }).map((r) => r.workId)).toEqual([b]);
-  });
-});
-
-// ══════════════════════════════════════════════════════════════════════════════
-describe('1e — "settled" is ONE query: is anything open for a human counterparty', () => {
-  it('an open ask makes the agent un-settled', () => {
-    seedInbound('m-1');
-    openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    expect(hasOpenHumanWork(AGENT)).toBe(true);
-  });
-
-  it('NEGATIVE: once every ask is claimed or settled, the agent is settled', () => {
-    seedInbound('m-1');
-    seedTurn(2);
-    const askId = openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    transition(askId, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 2, reason: 'pickup' });
-    expect(hasOpenHumanWork(AGENT)).toBe(false);
-  });
-
-  it('NEGATIVE: another agent\'s open ask never makes THIS agent un-settled', () => {
-    db().prepare(
-      `INSERT INTO agents (id, name, status, session_started_at)
-       VALUES ('other', 'Other', 'idle', '1970-01-01')`,
-    ).run();
-    seedInbound('m-1', { agent_id: 'other', conversation_id: null });
-    openAsk({
-      agentId: 'other', messageId: 'm-1', conversationId: null, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    expect(hasOpenHumanWork(AGENT)).toBe(false);
-  });
-
-  it('AGREES WITH THE WAITING SET on the same rows — one fact, two shapes', () => {
-    // The one-query read and the array the loop builds must answer the same question at
-    // the same instant. They can only diverge on a ticket whose root message is gone or
-    // one opened for something that is not a person asking, and the loop logs exactly that
-    // disagreement. This pins the agreement half.
-    expect(hasOpenHumanWork(AGENT)).toBe(getWaitingHumanConversations(AGENT).length > 0);
-    seedInbound('m-1');
-    openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    expect(hasOpenHumanWork(AGENT)).toBe(getWaitingHumanConversations(AGENT).length > 0);
-    expect(hasOpenHumanWork(AGENT)).toBe(true);
-  });
-
-  it('NEGATIVE: a ticket whose root message is GONE can never be served, so it is not open work', () => {
-    seedInbound('m-1');
-    openAsk({
-      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
-      openedAt: Date.now(), title: 'roof quote',
-    });
-    db().prepare("DELETE FROM messages WHERE id = 'm-1'").run();
-    expect(hasOpenHumanWork(AGENT)).toBe(false);
   });
 });
 

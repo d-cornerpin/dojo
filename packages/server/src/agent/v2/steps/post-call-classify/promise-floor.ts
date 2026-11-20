@@ -9,6 +9,7 @@ import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFired } from '../../steer-queue.js';
 import { replyClaim } from '../../reply-claims.js';
+import { linkedTaskOf } from '../../../../work/ask-settlement.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { turnWindow } from './job-turn-end.js';
@@ -60,6 +61,10 @@ export function runPromiseFloor(
     const transitionedATaskThisTurn = state.toolResults.some(
       (tr) => !tr.isError && CLOSING_WORK_OPS.has(toolOpKey(tr.name, tr.arguments)),
     );
+    // A promise to start is not pushed past the owner's hold on the task behind this request.
+    const request = ctx.turnCtx.root?.kind === 'ask' ? ctx.turnCtx.root.sourceMessageId : null;
+    const ownerHoldsItsTask = forwardPromise && !!linkedTaskOf(agentId, request)
+      && !linkedTaskOf(agentId, request, { ownerHeldEnds: true });
     // A promise backed by a row this turn opened with a future fire is the scheduler's to keep;
     // `origin_turn` is stamped on every tracker open, and a failed open leaves no row.
     let openedFutureScheduledWorkThisTurn = false;
@@ -87,7 +92,7 @@ export function runPromiseFloor(
       );
     }
     if (!didEffectfulWorkThisTurn && !transitionedATaskThisTurn && !openedFutureScheduledWorkThisTurn
-      && !wroteSomethingDurableThisTurn && !readTheBoardThisTurn) {
+      && !wroteSomethingDurableThisTurn && !readTheBoardThisTurn && !ownerHoldsItsTask) {
       const quoted = persistedContent.replace(/\s+/g, ' ').trim().slice(0, 200);
       if (steerFired(state.steerQueue, 'promise-floor')) {
         logger.warn('promise floor: second promise ending, letting the turn end', {

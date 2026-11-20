@@ -63,7 +63,8 @@ vi.mock('../../../../../config/platform.js', async (importOriginal) => ({
 }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
-import { pendingWakeups, stoppedAgents } from '../../../../shared-state.js';
+import { stoppedAgents } from '../../../../shared-state.js';
+import { openTurnContext, endTurnContext } from '../../../../turn-context.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runTurnTimeBudget } from '../turn-budget.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
@@ -185,10 +186,12 @@ function makeCtx(): PreCallGatesContext & { events: WsEvent[] } {
     counterparty: OWNER,
     engineBlockEscapeHatch: '[escape hatch]',
     broadcast: (event: WsEvent) => { events.push(event); },
-    stashContinuationIfHuman: vi.fn(),
   } as unknown as PreCallGatesContext;
   return Object.assign(ctx, { events });
 }
+
+/** A park dates the job's task row. */
+const jobParked = (): boolean => !!mockDb.current!.prepare('SELECT 1 FROM work WHERE agent_id = ? AND next_attempt_at IS NOT NULL').get(AGENT);
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
@@ -196,7 +199,10 @@ beforeEach(() => {
   // t194: the trigger's budget now comes from the (memoised) gauge, whose key is the message facts —
   // two clauses with identical rows and different provider declarations must not share an answer.
   __resetEstimateCacheForTests();
-  pendingWakeups.clear();
+  // The turn serves the owner's request, so its park has a task to date.
+  const bag = openTurnContext(AGENT);
+  bag.turnNumber = 3;
+  bag.root = { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask' };
   stoppedAgents.clear();
   generateSummarySpy.mockReset();
   generateSummarySpy.mockImplementation(async () => ({ ok: true, text: 'A summary of the older span.', tokenCount: 12 }));
@@ -205,7 +211,7 @@ beforeEach(() => {
 afterEach(() => {
   mockDb.current?.close();
   mockDb.current = null;
-  pendingWakeups.clear();
+  endTurnContext(AGENT);
   vi.clearAllMocks();
 });
 
@@ -234,7 +240,7 @@ describe('T84 — the 15-minute checkpoint compacts only when the token math ask
     // still parks and the wakeup is still queued. (t137: and nobody is told — the park is
     // housekeeping, so it writes no row.)
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
-    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(jobParked()).toBe(true);
     expect(lastSystemMessage()).toBeNull();
   });
 
@@ -265,7 +271,7 @@ describe('T84 — the 15-minute checkpoint compacts only when the token math ask
     expect(generateSummarySpy).not.toHaveBeenCalled();
     expect(rawHistoryIds()).toEqual(before);
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
-    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(jobParked()).toBe(true);
   });
 
   it('THE TOKEN PATH IS UNTOUCHED: genuinely over the provider-aware threshold, the checkpoint still compacts', async () => {
@@ -286,21 +292,23 @@ describe('T84 — the 15-minute checkpoint compacts only when the token math ask
       .prepare(`SELECT content FROM messages WHERE agent_id = ? AND role = 'system'`).all(AGENT) as Array<{ content: string }>;
     expect(sysRows.map((r) => r.content)).toEqual([expect.stringMatching(/^── Memory Compacted/)]);
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
-    expect(pendingWakeups.has(AGENT)).toBe(true);
+    expect(jobParked()).toBe(true);
   });
 
   it('THE CONTINUATION LADDER HAS NO CAP: every park is the same park', async () => {
     // The fix is about WHAT the checkpoint does to the history, never about how many times it
     // may do it — and since t137 (OR-LONG-JOBS) nothing bounds how many times either. The
     // crossing that used to trip the standard 3-continuation cap parks, asks the token math
-    // (which, far under threshold, still declines), and queues its continuation.
+    // (which, far under threshold, still declines), and parks the job.
     seed({ declareCeiling: true, tailTokensEach: UNDER_THRESHOLD_TOKENS_EACH });
 
     for (let n = 1; n <= 5; n++) {
-      pendingWakeups.clear();
+      // Each crossing is a later turn: the job's task was opened before it, so its opening is not this turn's movement.
+      mockDb.current!.prepare("UPDATE work_events SET created_at = 0 WHERE kind = 'opened'").run();
+      mockDb.current!.prepare('UPDATE work SET next_attempt_at = NULL').run();
       const out = await runTurnTimeBudget(stateOverBudget(), makeCtx());
       expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
-      expect(pendingWakeups.has(AGENT)).toBe(true);
+      expect(jobParked()).toBe(true);
     }
     expect(generateSummarySpy).not.toHaveBeenCalled();
     expect(summaryCount()).toBe(0);

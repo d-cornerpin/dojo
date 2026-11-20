@@ -18,7 +18,7 @@ export function latchEngineCut(state: AgentTurnState, reason: EngineCutReason): 
 // Did the turn end by parking the job (`jobParked`)? A park is invisible housekeeping: nothing owner-visible,
 // queued files ride the real final reply. A stop refuses the wake, so a stopped agent parked nothing.
 export function turnParkedTheJob(agentId: string): boolean {
-  return !isStopFenced(agentId) && turnContext(agentId)?.jobParked === true;
+  return !isStopFenced(agentId) && !!turnContext(agentId)?.jobParked;
 }
 
 // Both the code and the phrase: transports differ; declared patience is a local stall, not a provider fault.

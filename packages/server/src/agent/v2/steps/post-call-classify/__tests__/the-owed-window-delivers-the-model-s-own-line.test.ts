@@ -98,7 +98,6 @@ function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): Post
     result: modelResult(),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: deliverAckSpy,
-    persistAndBroadcastSystemRow: vi.fn(),
     startAckRepliedNow: () => false,
     ...over,
   } as unknown as PostCallClassifyContext;
@@ -129,12 +128,8 @@ describe('inside the owed window the person hears the model\'s own words, at the
     await runTerminalText(state, ctxFor(turnCtx), sc);
 
     expect(deliverAckSpy).toHaveBeenCalledTimes(1);
-    // ANSWER-ANYWAY: the row id is MINTED at this site rather than left to the closure, so the
-    // words the person heard can still be named at the turn's end. The other three arguments
-    // are unchanged — the stamp and the explicit display kind still travel together.
-    expect(turnCtx.startAckPromotedRowId).toEqual(expect.any(String));
-    expect(deliverAckSpy.mock.calls[0])
-      .toEqual([MID_WORK_LINE, START_ACK_ORIGIN_INTENT, turnCtx.startAckPromotedRowId, 'agent-text']);
+    // The stamp and the explicit display kind travel together.
+    expect(deliverAckSpy.mock.calls[0]).toEqual([MID_WORK_LINE, START_ACK_ORIGIN_INTENT, null, 'agent-text']);
     expect(turnCtx.engineStartAckDeliveredThisTurn).toBe(true);
     expect(turnCtx.deferredDeliveredByAck).toBe(true);
     // Consumed, so the finalize recovery cannot send the same sentence a second time.

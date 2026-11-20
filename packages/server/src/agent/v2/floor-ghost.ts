@@ -20,9 +20,10 @@ export const MAX_FLOOR_STEER_ATTEMPTS = 2;
 export const OUT_OF_BAND_GHOST_SUBJECTS = [
   'delegated-job-stuck',
   'owner-verdict-unasked',
-  // A scheduled run owed the owner a message and closed unheard; one alert per run, quiet if
-  // reminder-silence already ghosted it.
+  // A scheduled run owed the owner a message and closed unheard; one alert per run.
   'run-undelivered',
+  // A request the agent could not answer after its bound of tries; told once on the request's record.
+  'request-stood-down',
 ] as const;
 
 export type FloorGhostSubject = SteerFloorId | (typeof OUT_OF_BAND_GHOST_SUBJECTS)[number];

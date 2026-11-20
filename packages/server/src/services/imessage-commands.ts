@@ -4,7 +4,6 @@ import os from 'node:os';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { terminateAgent } from '../agent/spawner.js';
-import { writeAgentStatus } from '../agent/agent-status.js';
 import { getPrimaryAgentId, getPrimaryAgentName } from '../config/platform.js';
 import { dojoVoice } from '../agent/dojo-voice.js';
 
@@ -12,29 +11,33 @@ const logger = createLogger('imessage-commands');
 
 import { parseStrictCommand, parseApproveDeny, firstLineOf, type ApproveDenyCommand } from './owner-command-words.js';
 
+const COMMAND_MAX_AGE_MS = 15 * 60_000;
+const OLD_COMMAND_REPLY = 'That command was sent more than 15 minutes ago, so it was not run. Send it again to run it.';
+
 /**
- * Handle an inbound iMessage command from a bridged sender. Every command (status, kill, pause, resume and the
+ * Handle an inbound iMessage command from a bridged sender. Every command (status, stop, kill and the
  * approve/deny lane) mutates platform state, so the sender MUST resolve to the is_primary safe-sender (the
  * owner) first. A non-owner's command text is not a command: null, so it flows to the primary agent as an
  * ordinary message and never leaks the command surface.
  *
  * @param text          raw inbound message text
  * @param senderAddress the sender's iMessage address (phone / Apple ID)
+ * @param sentAtMs      when it was sent (ms since 1970), if known: a command older than 15 minutes is not run
  */
-export async function handleIMCommand(text: string, senderAddress: string): Promise<string | null> {
-  const reply = await routeIMCommand(text, senderAddress);
+export async function handleIMCommand(text: string, senderAddress: string, sentAtMs?: number | null): Promise<string | null> {
+  const reply = await routeIMCommand(text, senderAddress, sentAtMs);
   if (reply === null) return null;
   return dojoVoice(reply);   // the Dojo speaking; the bridge tells the agent once the send is done
 }
 
-async function routeIMCommand(text: string, senderAddress: string): Promise<string | null> {
+async function routeIMCommand(text: string, senderAddress: string, sentAtMs?: number | null): Promise<string | null> {
   const trimmed = text.trim().toLowerCase();
 
   // Resolve the sender to the owner safe-sender row. Dynamic import avoids a bridge<->commands static cycle.
   const { getSafeSenders, findSafeSenderByAddress } = await import('./imessage-bridge.js');
   const senderRecord = findSafeSenderByAddress(getSafeSenders(), senderAddress);
   const isOwner = !!senderRecord?.is_primary;
-  return runCommand(trimmed, isOwner, senderRecord);
+  return runCommand(trimmed, isOwner, senderRecord, sentAtMs);
 }
 
 /**
@@ -45,7 +48,8 @@ export async function handleConfirmedOwnerEmailWords(words: string): Promise<str
   return runCommand(firstLineOf(words), true, undefined);
 }
 
-async function runCommand(trimmed: string, isOwner: boolean, senderRecord: unknown): Promise<string | null> {
+async function runCommand(trimmed: string, isOwner: boolean, senderRecord: unknown, sentAtMs?: number | null): Promise<string | null> {
+  const tooOld = sentAtMs != null && Date.now() - sentAtMs > COMMAND_MAX_AGE_MS;
   // 1. Strict, unambiguous platform commands.
   const strict = parseStrictCommand(trimmed);
   if (strict) {
@@ -56,12 +60,13 @@ async function runCommand(trimmed: string, isOwner: boolean, senderRecord: unkno
       });
       return null; // flows on as an ordinary message; never leak the command surface
     }
+    // A kill text is a command only once its name matches a live agent, so killNamedAgent makes its own age check.
+    if (tooOld && strict.kind !== 'kill-named') return OLD_COMMAND_REPLY;
     switch (strict.kind) {
       case 'status': return getStatusReport();
+      case 'stop': return stopPrimaryWork((n) => (n === 0 ? 'Stopped.' : `Stopped. ${n} ${n === 1 ? 'request' : 'requests'} ended.`));
       case 'kill-all': return killAllAgents();
-      case 'kill-named': return killNamedAgent(strict.name);
-      case 'pause': return pausePrimaryAgent();
-      case 'resume': return resumePrimaryAgent();
+      case 'kill-named': return killNamedAgent(strict.name, tooOld);
     }
   }
 
@@ -77,7 +82,7 @@ async function runCommand(trimmed: string, isOwner: boolean, senderRecord: unkno
       });
       return null;
     }
-    return handleApproveDeny(approveDeny);
+    return handleApproveDeny(approveDeny, tooOld);
   }
 
   // Not a command, so return null to forward to the primary agent.
@@ -88,7 +93,7 @@ async function runCommand(trimmed: string, isOwner: boolean, senderRecord: unkno
  * Resolves an approval from the iMessage lane through the SAME core as the dashboard route
  * (resolveHealerProposal), so the two surfaces cannot drift. Only pending imessage-surface proposals are reachable.
  */
-async function handleApproveDeny(cmd: ApproveDenyCommand): Promise<string | null> {
+async function handleApproveDeny(cmd: ApproveDenyCommand, tooOld: boolean): Promise<string | null> {
   const db = getDb();
   const pending = db.prepare(`
     SELECT id FROM healer_proposals
@@ -99,6 +104,7 @@ async function handleApproveDeny(cmd: ApproveDenyCommand): Promise<string | null
   // Nothing to act on: let "yes <id>" whose proposal already resolved flow on
   // to the agent as an ordinary reply rather than erroring.
   if (pending.length === 0) return null;
+  if (tooOld) return OLD_COMMAND_REPLY;
 
   // The id is mandatory (parseApproveDeny guarantees it): the owner must name the exact pending proposal,
   // with no "newest pending" fallback a bare reply could hit.
@@ -186,7 +192,7 @@ function killAllAgents(): string {
   }
 }
 
-function killNamedAgent(name: string): string {
+async function killNamedAgent(name: string, tooOld: boolean): Promise<string | null> {
   try {
     const db = getDb();
     const agent = db.prepare(`
@@ -194,9 +200,10 @@ function killNamedAgent(name: string): string {
       WHERE LOWER(name) = ? AND status NOT IN ('terminated')
     `).get(name.trim()) as { id: string; name: string } | undefined;
 
-    if (!agent) {
-      return `No active agent found with name "${name}".`;
-    }
+    // No live agent has that name: the text was ordinary chat, however old. The main agent's own name stops its work only.
+    if (!agent) return null;
+    if (tooOld) return OLD_COMMAND_REPLY;
+    if (agent.id === getPrimaryAgentId()) return stopPrimaryWork(() => `Stopped ${agent.name}'s work. ${agent.name} is still here.`);
 
     terminateAgent(agent.id, 'Killed via iMessage command');
     return `Terminated agent "${agent.name}" (${agent.id}).`;
@@ -209,37 +216,16 @@ function killNamedAgent(name: string): string {
   }
 }
 
-function pausePrimaryAgent(): string {
+/** The owner's Stop on the main agent: the one call the dashboard button makes. `said` words the reply from the
+ *  number of requests it ended; queued replies it kept from going are named after it. */
+async function stopPrimaryWork(said: (ended: number) => string): Promise<string> {
   try {
-    const primaryId = getPrimaryAgentId();
-    // Through the one status writer, which also drops a park's tag: the owner's pause wins over a park.
-    writeAgentStatus(primaryId, 'paused');
-    logger.info('Primary agent paused via iMessage', { primaryId });
-    return 'Agent paused. Send "resume" to continue.';
+    const { stopByOwner } = await import('../agent/runtime.js');
+    const { ended, repliesNotSent: n, nothingRunning } = stopByOwner(getPrimaryAgentId());
+    if (nothingRunning) return 'Nothing was running.';
+    return n === 0 ? said(ended) : `${said(ended)} ${n === 1 ? 'A queued reply was' : `${n} queued replies were`} not sent.`;
   } catch (err) {
-    logger.error('Failed to pause primary agent', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return 'Error pausing agent.';
-  }
-}
-
-function resumePrimaryAgent(): string {
-  try {
-    const db = getDb();
-    const primaryId = getPrimaryAgentId();
-    const current = db.prepare('SELECT status FROM agents WHERE id = ?').get(primaryId) as { status: string } | undefined;
-    if (current && (current.status === 'paused' || current.status === 'error')) {
-      // Through the one status writer, which clears a park's tag and closes the "agent has stopped" owner card.
-      writeAgentStatus(primaryId, 'idle', { clearError: true });
-      logger.info('Primary agent resumed via iMessage', { primaryId });
-      return 'Agent resumed.';
-    }
-    return 'Agent is not paused.';
-  } catch (err) {
-    logger.error('Failed to resume primary agent', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return 'Error resuming agent.';
+    logger.error('Failed to stop the main agent', { error: err instanceof Error ? err.message : String(err) });
+    return 'Error stopping the agent.';
   }
 }

@@ -37,7 +37,6 @@ vi.mock('../../../../model.js', async (importOriginal) => ({
 
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runEmptyResponse } from '../empty-response.js';
-import { steerFired } from '../../../steer-queue.js';
 import type { PostCallClassifyContext } from '../index.js';
 import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -205,37 +204,27 @@ describe('HL2 — an answer left in the reasoning channel is retried, not called
   });
 
   it('CONTROL — the latch is SHARED: a turn gets one silent retry, whichever door asked', () => {
+    // No SECOND silent retry: the latch is spent; an owed turn then ends into the required reply.
     const out = runEmptyResponse(afterToolsState({ retriedEmptyResponse: true }), ctxFor());
-    // STILL THE CONTROL IT ALWAYS WAS — no SECOND silent retry: the latch is spent and
-    // neither door re-spends it. t125 only moved what happens NEXT for an owed turn: the
-    // ladder's one-shot nudge instead of an exit in silence. The bound is unchanged (one
-    // silent retry + one steer); what changed is that the person is still in the loop.
-    expect(out.directive).toBe('continue');
-    if (out.directive !== 'continue') throw new Error('unreachable');
-    expect(out.state.retriedEmptyResponse).toBe(true);
-    expect(steerFired(out.state.steerQueue, 'empty-response')).toBe(true);
+    expect(out.directive).toBe('exit');
+    if (out.directive !== 'exit') throw new Error('unreachable');
+    expect(out.reason).toBe('empty-response-owed');
   });
 
   it('CONTROL — a contract with emptyRetryBudget 0 gets no silent retry from EITHER door', () => {
     CONTRACT = { ...ANSWERS_IN_REASONING, emptyRetryBudget: 0 };
-    // The wrong-channel door is still refused — and t125: an OWED turn with no retry budget
-    // skips to the nudge rather than exiting mute. `retriedEmptyResponse` stays false, which
-    // is the assertion this control is really about.
+    // An owed turn with no retry budget ends into the required reply; `retriedEmptyResponse` stays false.
     const owed = runEmptyResponse(afterToolsState(), ctxFor());
-    expect(owed.directive).toBe('continue');
-    if (owed.directive !== 'continue') throw new Error('unreachable');
+    expect(owed.directive).toBe('exit');
     expect(owed.state.retriedEmptyResponse).toBe(false);
-    expect(steerFired(owed.state.steerQueue, 'empty-response')).toBe(true);
     // Nobody owed: the not-a-failure exit, untouched, with no retry spent either.
     expect(runEmptyResponse(afterToolsState(), ctxFor({
       hasUnansweredUser: false, triggerRow: null,
     })).directive).toBe('exit');
-    // and the ordinary empty-response door, which skips straight to the nudge
+    // The ordinary empty-response door, with a person owed, likewise.
     const noTools = runEmptyResponse(afterToolsState({ toolCallsExecutedThisTurn: 0 }), ctxFor());
-    expect(noTools.directive).toBe('continue');
-    if (noTools.directive !== 'continue') throw new Error('unreachable');
+    expect(noTools.directive).toBe('exit');
     expect(noTools.state.retriedEmptyResponse).toBe(false);
-    expect(steerFired(noTools.state.steerQueue, 'empty-response')).toBe(true);
   });
 
   it('CONTROL — a turn that ran NO tools still walks the original ladder', () => {

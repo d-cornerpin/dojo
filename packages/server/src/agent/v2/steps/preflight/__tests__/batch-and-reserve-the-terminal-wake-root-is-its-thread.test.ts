@@ -28,6 +28,7 @@ import { insertMessage } from '../../../../../memory/message-store.js';
 import { openTurnContext, endTurnContext } from '../../../../../agent/turn-context.js';
 import { trackerHandlers } from '../../../../../agent/tools/cat/tracker.js';
 import { runTurnClassification } from '../turn-classification.js';
+import { nextOwed } from '../../../owed.js';
 import type { PreflightContext, PreflightScratch } from '../index.js';
 import type { TurnContext } from '../../../../../agent/turn-context.js';
 
@@ -59,7 +60,7 @@ async function classify(): Promise<TurnContext> {
   const turnCtx = {} as unknown as TurnContext;
   const scratch: PreflightScratch = { claimedEngineEvent: null, pendingEngineClaim: null, terminalAnswerRowId: null };
   const out = await runTurnClassification(turnCtx, preflightCtx(), scratch, {
-    db: mockDb.current!, waitingConvs: [], openHumanWorkAtTurnStart: false, triggerRow: null,
+    db: mockDb.current!, waitingConvs: [], openHumanWorkAtTurnStart: false, item: nextOwed(AGENT)[0], triggerRow: null,
     chosenConvKey: '', lastUserMessageContent: '', unrepliedAssign: null,
   });
   if (out.directive !== 'proceed') throw new Error(`expected proceed, got ${out.reason}`);
