@@ -20,30 +20,12 @@ import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { setHold, heldExpr, workingExpr } from '../work/done/hold.js';
 import { moveAssignee } from '../work/row-authority.js';
 import { memoryGrep } from '../memory/retrieval.js';
-import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
-import type { PermissionManifest, Agent, Message } from '@dojo/shared';
+import type { PermissionManifest, Agent } from '@dojo/shared';
 
 const logger = createLogger('spawner');
-
-function broadcastMessage(agentId: string, msg: { id: string; role: string; content: string }) {
-  broadcast({
-    type: 'chat:message',
-    agentId,
-    message: {
-      id: msg.id,
-      agentId,
-      role: msg.role as Message['role'],
-      content: msg.content,
-      tokenCount: null,
-      modelId: null,
-      cost: null,
-      latencyMs: null,
-      createdAt: new Date().toISOString(),
-    },
-  });
-}
 
 // Config (reads from the DB config table, falls back to defaults)
 
@@ -97,15 +79,10 @@ export interface SpawnParams {
   classification?: 'ronin' | 'apprentice' | 'sensei';
   shareUserProfile?: boolean;
   groupId?: string;
-  /** When set, replaces the ENTIRE initial task message, complete_task instructions included. */
-  initialMessage?: string;
   /** Technique IDs to equip on this agent (pre-loaded into context) */
   equippedTechniques?: string[];
   /** Custom always-loaded tools for this agent (overrides role defaults); the floor validates. */
   alwaysLoadedTools?: unknown;
-  /** If false the agent is created but stays idle until something real wakes it (a task
-   *  assignment, an A2A poke), so the parent can set up its state first. Default: true. */
-  autoStart?: boolean;
 }
 
 export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string; name: string; status: string; persist: boolean; warnings: string[] }> {
@@ -126,7 +103,6 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     groupId,
     equippedTechniques = [],
     alwaysLoadedTools,
-    autoStart = true,
   } = params;
 
   // Validate the contract up front so the failure names the field that was missed: the schema
@@ -368,21 +344,26 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     }
   }
 
-  const runtime = getAgentRuntime();
+  return { agentId, name, status: 'idle', persist, warnings };
+}
+
+
+/** The working rules a new helper's job carries in its ASSIGN: the caller's own first message, else the default. */
+export function jobBrief(p: { systemPrompt: string; initialMessage?: string; taskId?: string | null }): string {
   let taskMessage: string;
 
-  if (params.initialMessage) {
+  if (p.initialMessage) {
     // Custom initial message provided, use it, but always remind about complete_task
-    taskMessage = params.initialMessage;
-    if (!params.initialMessage.toLowerCase().includes('complete_task')) {
+    taskMessage = p.initialMessage;
+    if (!p.initialMessage.toLowerCase().includes('complete_task')) {
       taskMessage += '\n\nIMPORTANT: When you are finished, you MUST call complete_task with status="complete" and a summary. Do NOT just stop responding.';
     }
-  } else if (systemPrompt.toLowerCase().includes('complete_task')) {
+  } else if (p.systemPrompt.toLowerCase().includes('complete_task')) {
     // System prompt already mentions complete_task, don't inject default instructions
-    taskMessage = `Your task: ${systemPrompt}\n\nBegin working immediately.`;
+    taskMessage = `Your task: ${p.systemPrompt}\n\nBegin working immediately.`;
   } else {
     // Default: inject complete_task instructions
-    taskMessage = `Your task: ${systemPrompt}
+    taskMessage = `Your task: ${p.systemPrompt}
 
 IMPORTANT INSTRUCTIONS:
 1. Begin working immediately.
@@ -394,39 +375,11 @@ IMPORTANT INSTRUCTIONS:
   }
 
   // Append task ID context if this agent has an associated tracker task
-  if (taskId) {
-    taskMessage += `\n\nYour tracker task ID is: ${taskId}, update its status when you finish.`;
+  if (p.taskId) {
+    taskMessage += `\n\nYour tracker task ID is: ${p.taskId}, update its status when you finish.`;
   }
-
-  if (autoStart === false) {
-    // Spawned but not poked: skip the initial message and the runtime trigger. Something else
-    // (an A2A message, a task assignment, send_to_agent) will wake it.
-    logger.info('Spawned with auto_start=false, agent stays idle until externally poked', { agentId, name });
-    return { agentId, name, status: 'idle', persist, warnings };
-  }
-
-  // THE KICKOFF IS THE ENGINE, NOT THE OWNER: this text is the engine composing an instruction,
-  // never a person talking, so it is an engine event, not an owner-lane user row: an owner-lane
-  // row makes the worker chat AT the owner instead of reporting through its report tools. The
-  // kickoff still wakes the agent (handleMessage reads the persisted rows), with identical text.
-  const initMsgId = uuidv4();
-  insertEngineEventIfAbsent({
-    id: initMsgId, agentId, content: taskMessage,
-    sourceAgentId: null, originIntent: 'spawn_kickoff',
-    work: taskId ? { taskId, runId: null, rootKind: 'task', rootId: taskId } : null,
-  });
-  broadcastMessage(agentId, { id: initMsgId, role: 'user', content: taskMessage });
-
-  runtime.handleMessage(agentId, taskMessage).catch(err => {
-    logger.error('Spawned agent initial run failed', {
-      agentId,
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  });
-
-  return { agentId, name, status: 'idle', persist, warnings };
+  return taskMessage;
 }
-
 
 export function terminateAgent(agentId: string, reason?: string): void {
   const db = getDb();
@@ -868,7 +821,7 @@ export function fireSpawnTimeoutUndecided(agentId: string): void {
 
 export interface SpawnTimeoutDecisionResult { ok: boolean; message: string }
 
-/** Apply the creator's decision (creator-only; the user path is the dashboard). extend: new
+/** Apply the creator's or the main agent's decision (the owner's path is the dashboard). extend: new
  *  timeout_at + re-armed decision timer. terminate: flows through terminateAgent. */
 export async function applySpawnTimeoutDecision(opts: {
   callerAgentId: string;
@@ -888,9 +841,9 @@ export async function applySpawnTimeoutDecision(opts: {
 
   if (!agent) return { ok: false, message: `No agent found for id ${agentId}.` };
 
-  // Creator-only. The user path is the dashboard, not this tool.
+  // Its creator or the main agent decides; the owner's path is the dashboard.
   const creatorId = agent.created_by ?? agent.parent_agent;
-  if (creatorId !== callerAgentId) {
+  if (creatorId !== callerAgentId && !isPrimaryAgent(callerAgentId)) {
     return { ok: false, message: `Only the agent that created "${agent.name}" can decide its timeout, and you did not create it. If you are the owner, extend or dismiss it from the dashboard instead.` };
   }
 

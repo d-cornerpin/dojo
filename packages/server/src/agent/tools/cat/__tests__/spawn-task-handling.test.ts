@@ -88,7 +88,7 @@ beforeEach(() => {
 const spawn = async (args: Record<string, unknown>) => toolResultOf(await executeTool('primary', {
   id: `tc-${Math.random()}`,
   name: 'spawn_agent',
-  arguments: { name: 'Helper', system_prompt: 'Help with the task.', timeout_minutes: 10, group_id: 'g-mine', ...args },
+  arguments: { name: 'Helper', system_prompt: 'Help with the task.', timeout_minutes: 10, group_id: 'g-mine', auto_start: false, ...args },
 }));
 
 const holderOf = (id: string) =>
@@ -126,6 +126,6 @@ describe('dec 4 spawn_agent(task_id) needs an explicit keep or transfer', () => 
     const r = await spawn({ task_id: 'task-theirs-001', task_handling: 'keep' });
     expect(r.isError, r.content).toBeFalsy();
     expect(holderOf('task-theirs-001').agent_id).toBe('worker');
-    expect(r.content).toMatch(/stays with its current holder/);
+    expect(r.content).toMatch(/stays with its current holder; helper.s work for it is its own task/);
   });
 });

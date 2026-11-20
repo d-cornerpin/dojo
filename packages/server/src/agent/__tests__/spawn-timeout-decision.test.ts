@@ -4,7 +4,7 @@
 // applySpawnTimeoutDecision is the creator-owned decision the timeout notice
 // asks for. These cover the cheap, security-relevant early-return paths without
 // touching the heavy terminate/extend machinery:
-//   - creator-only: a non-creator caller is refused (the user path is dashboard)
+//   - creator or main agent: any other caller is refused (the owner's path is the dashboard)
 //   - unknown agent id: clean error
 //   - extend with no/invalid minutes: teaching error
 // ════════════════════════════════════════
@@ -22,7 +22,7 @@ vi.mock('../../db/connection.js', () => ({
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../../config/platform.js', () => ({
-  isPrimaryAgent: () => false,
+  isPrimaryAgent: (id: string) => id === 'primary',
   getPrimaryAgentId: () => 'primary',
 }));
 vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn() }) }));
@@ -64,6 +64,13 @@ describe('applySpawnTimeoutDecision - P3 decision verb', () => {
     // The decision must NOT have been applied.
     const row = mockDb.current!.prepare('SELECT timeout_decision_pending FROM agents WHERE id = ?').get('sub') as { timeout_decision_pending: number };
     expect(row.timeout_decision_pending).toBe(1);
+  });
+
+  it('the main agent may decide a helper it did not create', async () => {
+    const r = await applySpawnTimeoutDecision({ callerAgentId: 'primary', agentId: 'sub', action: 'extend', extendMinutes: 5 });
+    expect(r.ok, r.message).toBe(true);
+    const row = mockDb.current!.prepare('SELECT timeout_decision_pending FROM agents WHERE id = ?').get('sub') as { timeout_decision_pending: number };
+    expect(row.timeout_decision_pending).toBe(0);
   });
 
   it('errors cleanly on an unknown agent id', async () => {

@@ -56,7 +56,8 @@ export function workersOf(workId: string): Set<string> {
   const rows = getDb().prepare(
     `SELECT actor AS a FROM work_events WHERE work_id = ? AND kind = 'handed_in' AND actor <> 'engine'
      UNION SELECT json_extract(payload, '$.from_agent') FROM work_events
-      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = ?`,
+      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = ?
+        AND NOT (actor = json_extract(payload, '$.from_agent') AND json_extract(payload, '$.reason') LIKE 'cause=coordination%')`,
   ).all(workId, workId, PATIENCE_ENTRY.reassigned) as Array<{ a: string | null }>;
   const out = new Set(rows.map((r) => r.a).filter((a): a is string => !!a));
   const now = workerOf(workId);

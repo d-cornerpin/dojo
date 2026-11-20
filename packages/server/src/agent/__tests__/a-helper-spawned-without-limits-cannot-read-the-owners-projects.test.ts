@@ -27,7 +27,7 @@ beforeEach(() => {
 
 describe('a helper spawned without limits cannot read the owner\'s projects', () => {
   it('reads and writes only its own folders', async () => {
-    const { agentId } = await spawnAgent({ parentId: 'main', name: 'Helper', systemPrompt: 'Sort files.', autoStart: false });
+    const { agentId } = await spawnAgent({ parentId: 'main', name: 'Helper', systemPrompt: 'Sort files.' });
     const read = (path: string) => checkPermission(agentId, { type: 'file_read', path }).allowed;
     const write = (path: string) => checkPermission(agentId, { type: 'file_write', path }).allowed;
     expect(read('~/Projects/site/index.html')).toBe(false);

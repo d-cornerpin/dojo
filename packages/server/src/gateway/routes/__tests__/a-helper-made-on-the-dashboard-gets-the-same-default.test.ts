@@ -37,7 +37,7 @@ describe('a helper made on the dashboard gets the same default', () => {
     });
     expect(res.status, await res.clone().text()).toBe(201);
     const made = ((await res.json()) as { data: { id: string } }).data.id;
-    const { agentId: spawned } = await spawnAgent({ parentId: 'main', name: 'Helper', systemPrompt: 'Sort files.', autoStart: false });
+    const { agentId: spawned } = await spawnAgent({ parentId: 'main', name: 'Helper', systemPrompt: 'Sort files.' });
     expect(limitsOf(made)).toEqual(limitsOf(spawned));
     expect(getAgentPermissions(made).file_read).not.toBe('*');
   });

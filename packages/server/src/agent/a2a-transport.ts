@@ -363,7 +363,10 @@ export interface A2ADeliveryResult {
 }
 
 /** The sender's declared hand-off, beside the envelope: a platform fact, not a message fact. */
-export type A2ADeliveryOptions = A2AEnvelope & { handsOffThread?: string | null; work?: EngineEventWork | null };   // the work a wake belongs to, as the serve-boundary columns
+export type A2ADeliveryOptions = A2AEnvelope & {
+  handsOffThread?: string | null; work?: EngineEventWork | null;   // the work a wake belongs to, as the serve-boundary columns
+  taskId?: string | null;   // an ASSIGN's given task, from engine state only (a spawn's transfer)
+};
 
 /** It must not hard-name a recipient or channel: the deliverable is owed to whoever asked, on their channel. */
 export function deliverableArrivedNote(senderName: string): string {
@@ -515,6 +518,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
         payload: envelope.payload,
         threadId,
         assignMessageId: msgId,
+        taskId: envelope.taskId,
       });
     } catch (err) {
       logger.warn('A2A ASSIGN: auto-task creation failed, delivering message anyway', {

@@ -10,7 +10,8 @@ import { getDb } from '../db/connection.js';
 import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { spawnAgent } from '../agent/spawner.js';
+import { spawnAgent, jobBrief } from '../agent/spawner.js';
+import { redriveWithoutReply } from '../agent/agent-notice.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { activeRuns, pendingWakeups } from '../agent/shared-state.js';
 import { rehomeUnclaimedEngineEvents } from '../agent/v2/counterparty.js';
@@ -1426,11 +1427,7 @@ export async function runFirstRunProfileBootstrap(): Promise<{ dreamerId: string
 
   logger.info('Spawning first-run Dreamer to bootstrap profile into vault');
 
-  try {
-    const result = await spawnAgent({
-      parentId: primaryId,
-      name: 'Dreamer',
-      systemPrompt: `You are processing the dojo owner's profile to optimize token usage. You have one job: split the profile into two parts.
+  const systemPrompt = `You are processing the dojo owner's profile to optimize token usage. You have one job: split the profile into two parts.
 
 PART 1 (stays in USER.md): Anything the agent needs to know on EVERY turn to behave correctly. This means:
 - The owner's name and where they live and their timezone
@@ -1447,7 +1444,20 @@ Instructions:
 2. For each piece of information, decide: does the agent need this to behave correctly on every turn regardless of topic? If yes, it stays. If no, it goes to the vault.
 3. Call vault_remember for each fact being moved to the vault. Use the correct type (fact, relationship, preference). Set permanent: true for things that are definitionally stable (names, family, businesses, locations, birth dates).
 4. Write the trimmed USER.md to "${profilePath}" using file_write. It should contain ONLY the behavioral and operational content. Do not summarize or reword the behavioral content. Keep the owner's original phrasing.
-5. Call complete_task when done.`,
+5. Call complete_task when done.`;
+  const initialMessage = `Here is the owner's profile. Extract reference facts into the vault, then rewrite the file with those facts removed. Keep all behavioral and operational instructions.
+
+--- USER PROFILE (${profilePath}) ---
+${profileContent}
+--- END USER PROFILE ---
+
+Use vault_remember for each fact extracted, then file_write to save the trimmed USER.md. Do NOT touch SOUL.md.`;
+
+  try {
+    const result = await spawnAgent({
+      parentId: primaryId,
+      name: 'Dreamer',
+      systemPrompt,
       modelId,
       classification: 'ronin',
       timeout: 3600,
@@ -1473,14 +1483,9 @@ Instructions:
         can_assign_permissions: false,
         system_control: [],
       },
-      initialMessage: `Here is the owner's profile. Extract reference facts into the vault, then rewrite the file with those facts removed. Keep all behavioral and operational instructions.
-
---- USER PROFILE (${profilePath}) ---
-${profileContent}
---- END USER PROFILE ---
-
-Use vault_remember for each fact extracted, then file_write to save the trimmed USER.md. Do NOT touch SOUL.md.`,
     });
+    // A ronin made by the engine is given its job as a re-drive, which the one clock serves.
+    await redriveWithoutReply({ toAgentId: result.agentId, fromAgentId: null, content: jobBrief({ systemPrompt, initialMessage }), taskId: null });
 
     logger.info('First-run Dreamer spawned for profile bootstrap', { dreamerId: result.agentId });
     return { dreamerId: result.agentId };

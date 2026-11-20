@@ -27,7 +27,7 @@ beforeEach(() => {
 describe('the main agent widens a helper for one job', () => {
   it('the named folder and spawn power are granted; the rest stays small', async () => {
     const { agentId } = await spawnAgent({
-      parentId: 'main', name: 'Site builder', systemPrompt: 'Build the site.', autoStart: false,
+      parentId: 'main', name: 'Site builder', systemPrompt: 'Build the site.',
       permissions: { file_read: ['~/Projects/site/**'], file_write: ['~/Projects/site/**'], can_spawn_agents: true } as never,
     });
     const may = (type: 'file_read' | 'file_write' | 'exec' | 'spawn', target = '') =>

@@ -24,7 +24,7 @@ import { taskScope, projectScope } from '../../../work/tracker-view.js';
 import { patchWork } from '../../../work/tracker-store.js';
 import { engineHandIn, handInOnAssignReply } from '../../../work/done/hand-in.js';
 import { noteUnsettled } from '../../../work/store.js';
-import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from '../../spawner.js';
+import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision, jobBrief } from '../../spawner.js';
 import { completeTaskHandIn } from './measure-door.js';
 import { finalWordsBack } from '../../../work/done/effects.js';
 import { resolveAgentTaskId } from '../../agent-task.js';
@@ -243,12 +243,12 @@ function a2aDropOutcome(reason: string | undefined): 'suppressed' | 'failed' {
 }
 
 /** The one door out to another agent: target checks, delivery, the ledger rows and the result text. The
- *  `send_to_agent` handler passes only its declared arguments. */
+ *  `send_to_agent` handler passes only its declared arguments; `taskId` comes from engine state alone. */
 export async function sendToAgent(agentId: string, input: {
   agent: string; intent: A2AIntent; payload: string; threadId?: string; requiresResponse: boolean;
-  attachPaths?: string[]; handsOffThread?: string;
+  attachPaths?: string[]; handsOffThread?: string; taskId?: string | null;
 }): Promise<{ content: string; isError: boolean }> {
-  const { agent: agentRef, intent, payload, threadId, requiresResponse, attachPaths, handsOffThread } = input;
+  const { agent: agentRef, intent, payload, threadId, requiresResponse, attachPaths, handsOffThread, taskId } = input;
   let content = '';
   let isError = false;
   // An injured or paused target is refused, except to the main agent and the Healer.
@@ -309,6 +309,7 @@ export async function sendToAgent(agentId: string, input: {
       fromAgent: agentId,
       attachPaths,
       handsOffThread,
+      taskId,
     });
 
     if (result.delivered) {
@@ -513,24 +514,24 @@ export const agentsHandlers: ToolHandlerMap = {
         // place they are validated and bounded, shared with the dashboard and the engine.
         grants: args.grants,
         groupId: squad.groupId,
-        initialMessage: args.initial_message as string | undefined,
         equippedTechniques: args.techniques as string[] | undefined,
         alwaysLoadedTools: declared.names,
-        autoStart: args.auto_start as boolean | undefined,
       });
       // The task half of the choice, now the agent exists: a transfer logs cause and actor
       // on the task's log; a failed transfer is SAID, never swallowed. A keep logs the helper.
       let reassignNote = '';
+      let given: string | null = null;
       if (taskPlan?.handling === 'transfer') {
         const moved = moveAssignee({ taskId: taskPlan.taskId, by: 'agent', actorId: agentId, cause: taskPlan.cause, to: { agentId: result.agentId }, door: 'spawn_agent(task_handling="transfer")' });
         const freshTask = getTask(taskPlan.taskId);
         if (freshTask) broadcast({ type: 'tracker:task_updated', data: freshTask });
+        given = moved.ok ? taskPlan.taskId : null;
         reassignNote = moved.ok
           ? `\nTask ${taskPlan.taskId.slice(0, 8)} transferred to ${result.name} (cause: ${moved.cause}).${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [freshTask?.title, freshTask?.description] })}`   // the delegated task's own words, read off the row, not an undeclared arg
           : `\nThe agent was created, but task ${taskPlan.taskId.slice(0, 8)} was NOT transferred: ${moved.text.replace(/^Error: /, '')}`;
       } else if (taskPlan) {
         writeTaskLog({ taskId: taskPlan.taskId, fromEntity: `agent:${agentId}`, entryKind: 'observation', actionTaken: 'helper linked (spawn_agent with task_handling="keep")', reason: `agent ${result.agentId} spawned to help; the task stays with its current holder` });
-        reassignNote = `\nTask ${taskPlan.taskId.slice(0, 8)} stays with its current holder; ${result.name} is linked to it as a helper.`;
+        reassignNote = `\nTask ${taskPlan.taskId.slice(0, 8)} stays with its current holder; ${result.name}'s work for it is its own task, and its reply comes back to you.`;
       }
       // Every model-made grant change is audited: actor, target, and a delta measured
       // against the most-restrictive start, so the row says what this spawn ADDED; nothing
@@ -541,6 +542,15 @@ export const agentsHandlers: ToolHandlerMap = {
         if (delta) auditLog(agentId, 'spawn_agent', result.agentId, 'success', `grants: ${delta}`);
       }
       content = `Agent spawned successfully.${result.warnings.map((w) => `\nWarning: ${w}`).join('')}\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}${accessLine(result.agentId)}${mismatchWarning({ agentId: result.agentId, agentName: result.name, texts: [args.system_prompt as string] })}`;   // tools the instructions name that the assignee cannot call, surfaced to the spawner
+      // The job is handed over the way any agent is given work: one ASSIGN on its own thread with the job's rules.
+      if (args.auto_start !== false) {
+        const job = await sendToAgent(agentId, {
+          agent: result.agentId, intent: 'ASSIGN', requiresResponse: true, taskId: given,
+          payload: jobBrief({ systemPrompt: args.system_prompt as string, initialMessage: args.initial_message as string | undefined,
+            taskId: given }),
+        });
+        content += `\n${job.content}`;
+      }
     } catch (err) {
       // A refused GRANT is not a database error and must not be translated as one: the
       // reason names the field the caller has to fix, and the attempt itself is audited.

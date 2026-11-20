@@ -86,7 +86,7 @@ afterAll(() => {
 });
 
 const spawn = (parentId: string, extra: Record<string, unknown>) =>
-  mod.spawner.spawnAgent({ parentId, name: `child-${Math.random().toString(36).slice(2, 8)}`, systemPrompt: 'You help.', modelId: 'mdl', autoStart: false, ...extra } as Parameters<typeof mod.spawner.spawnAgent>[0]);
+  mod.spawner.spawnAgent({ parentId, name: `child-${Math.random().toString(36).slice(2, 8)}`, systemPrompt: 'You help.', modelId: 'mdl', ...extra } as Parameters<typeof mod.spawner.spawnAgent>[0]);
 
 describe('an agent that does not hold dojo_inspect cannot grant it', () => {
   it('the reviewer\'s path: a sensei spawner names it in the child\'s grants — refused, no child', async () => {

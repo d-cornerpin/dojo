@@ -37,13 +37,13 @@ describe('a child never inherits a model under 32K', () => {
 
   it('the main agent is refused too', async () => {
     primary.id = 'parent';
-    await expect(spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.', autoStart: false } as never)).rejects.toThrow(/too small for an agent's main model/);
+    await expect(spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.' } as never)).rejects.toThrow(/too small for an agent's main model/);
   });
 
   it('a big model named by the caller is accepted', async () => {
     mockDb.current!.prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled)
       VALUES ('m-big', 'cloud', 'Big', 'big', '["chat","tools"]', 128000, 1)`).run();
-    const r = await spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.', modelId: 'm-big', autoStart: false } as never);
+    const r = await spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.', modelId: 'm-big' } as never);
     expect(r.warnings).toEqual([]);
   });
 });

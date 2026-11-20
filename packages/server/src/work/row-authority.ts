@@ -310,6 +310,10 @@ export function planSpawnTask(actorId: string, taskId: string, handling: unknown
   const f = rowFacts(taskId);
   const cause: MoveCause = f && f.holder !== actorId && !f.holderLive ? 'assignee_gone' : 'coordination';
   if (handling === 'transfer') {
+    const thread = getDb().prepare('SELECT a2a_thread_id AS t FROM work WHERE id = ?').get(taskId) as { t: string | null } | undefined;
+    if (thread?.t) {
+      return { ok: false, text: 'spawn_agent cannot hand over this task: it already has its own thread, so a helper\'s reply could not hand it in. Keep it, and spawn the helper with task_handling="keep" or with no task_id; its work then gets its own task. No agent was created.' };
+    }
     const c = checkMove({ taskId, by: 'agent', actorId, cause });
     if (!c.ok) return { ok: false, text: `${c.text} No agent was created.` };
   } else {
