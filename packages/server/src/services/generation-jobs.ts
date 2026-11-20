@@ -1,25 +1,21 @@
 // Run-once media generation worker (image / audio / music). Video has its own async table and poller (video_jobs,
 // video-job-poller.ts) because it is a poll-the-provider flow; these kinds return the finished asset from one
 // call, yet are modelled as `generation_jobs` rows so the dashboard shows the same indicator and a model cannot
-// retry-storm: the tool fires the job, ends its turn, and this worker delivers a synthetic assistant message.
+// retry-storm: the tool fires the job, ends its turn, and this worker hands the finished file to `deliverMedia`.
 // Lifecycle: queued -> running -> succeeded | failed | cancelled. Audio and music run entirely here; image_create
-// keeps its own delivery and uses only the lifecycle helpers. A run-once job cannot resume, so job-orphans.ts
-// closes leftover rows at boot.
+// drives its own job with these lifecycle helpers and the same `deliverMedia`. A run-once job cannot resume, so
+// job-orphans.ts closes leftover rows at boot.
 
-import * as effectFs from '../agent/effects/fs.js';
 import { turnContext } from '../agent/turn-context.js';
-import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
-import { deliveredResult, insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
-import { settleAskOnAsyncResult, settleAskOnJobEnded } from '../work/ask-settlement.js';
+import { settleAskOnJobEnded } from '../work/ask-settlement.js';
 import { announceLiveWork } from '../agent/live-work.js';
-import { homeDir } from '../home.js';
-import { postAgentNotice } from '../agent/agent-notice.js';
 import { tellAgentAndWake, noteJobStartedIn, takeJobStartedInFailureTurn } from '../agent/wake-with-notice.js';
 import { TERMINAL_JOB_STATUS_SQL } from './media-job-status.js';
+import { deliverMedia, MEDIA_WORD } from './media-delivery.js';
 
 const logger = createLogger('generation-jobs');
 
@@ -73,10 +69,6 @@ function emitUpdate(row: { id: string; agent_id: string; kind: GenerationKind; s
   // The per-agent answer: this frame is per job with a box-wide count, so it cannot say whether THIS agent still has
   // work running (the row is the only standing fact during image_create's pre-dial wait).
   announceLiveWork(row.agent_id);
-}
-
-function slugify(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
 }
 
 /** The live turn's lineage a media job row carries: source message, turn number, task, conversation (NULL outside a turn). */
@@ -208,69 +200,14 @@ export function setFailed(jobId: string, error: string): boolean {
   return true;
 }
 
-// ── Synthetic chat delivery ──
-
-/** Deliver a finished audio/music asset into the agent's chat as a synthetic assistant message (no LLM turn). */
-function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: number, mime: string): void {
-  const recipientDir = path.join(homeDir(), '.dojo', 'uploads', row.agent_id);
-  if (!effectFs.existsSync(recipientDir)) effectFs.mkdirSync(recipientDir, { recursive: true });
-  const ext = path.extname(assetPath) || '.wav';
-  const titleSlug = row.title ? slugify(row.title) : '';
-  const shortId = row.id.replace(/^gen_/, '').slice(0, 8);
-  const stableFilename = titleSlug ? `${titleSlug}-${shortId}${ext}` : `${row.kind}_${shortId}${ext}`;
-  const stablePath = path.join(recipientDir, stableFilename);
-  let deliveredPath = assetPath;
-  try {
-    effectFs.copyFileSync(assetPath, stablePath);
-    deliveredPath = stablePath;
-  } catch (err) {
-    logger.warn('generation delivery: copy to caller uploads dir failed — using shared path', {
-      jobId: row.id, error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  const attachment = {
-    fileId: uuidv4(),
-    filename: path.basename(deliveredPath),
-    mimeType: mime,
-    size: sizeBytes,
-    path: deliveredPath,
-    category: 'audio' as const,
-  };
-
-  // The engine writes no caption in the agent's voice: the agent is told it was delivered and adds its own words.
-  const caption = '';
-
-  const msgId = uuidv4();
-  insertMessageIfAbsent({
-    id: msgId, agentId: row.agent_id, role: 'assistant', content: caption,
-    attachments: JSON.stringify([attachment]),
-    ...deliveredResult(row.conversation_id, row.source_message_id) });  // labelled with its request
-  broadcast({
-    type: 'chat:message', agentId: row.agent_id,
-    message: {
-      id: msgId, agentId: row.agent_id, role: 'assistant' as const,
-      content: caption, attachments: [attachment],
-      tokenCount: null, modelId: null, cost: null, latencyMs: null,
-      createdAt: new Date().toISOString(),
-    },
-  });
-  broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
-  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });   // the work the ask waited on reached the owner
-  postAgentNotice({
-    toAgentId: row.agent_id, fromName: 'Media delivery', intent: 'image_delivery_outcome', selfIntro: false,
-    brief: `your ${row.kind === 'music' ? 'music' : 'audio'} was delivered in the dashboard with no caption: the Dojo wrote no words around it. If you want to say something about it, say it in your own words.`,
-  });
-}
-
-const KIND_WORD: Record<GenerationKind, string> = { image: 'picture', audio: 'audio', music: 'music' };
+// ── Failure notice ──
 
 function deliverError(row: GenerationJobRow, error: string): void {
   // The engine writes no failure bubble in the agent's voice: the agent is handed the failure and WOKEN
   // (agent/wake-with-notice.ts) to tell the person now.
   void tellAgentAndWake({
     agentId: row.agent_id, from: 'Media generation', inFailureTurn: takeJobStartedInFailureTurn(row.id),
-    brief: `the ${KIND_WORD[row.kind]} you asked for could not be finished. The provider said: ${error}. Nothing was sent to the person. ` +
+    brief: `the ${MEDIA_WORD[row.kind]} you asked for could not be finished. The provider said: ${error}. Nothing was sent to the person. ` +
       'Tell them in your own words that it failed and offer a next step; do not start the same one again unless they ask.',
   });
   settleAskOnJobEnded(row.agent_id, row.id);
@@ -367,7 +304,10 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
     }
 
     const fresh = getJob(jobId);
-    if (fresh) deliverAsset(fresh, result.filePath, result.sizeBytes, result.mimeType);
+    if (fresh) {
+      await deliverMedia({ kind: fresh.kind, agentId: fresh.agent_id, jobId, title: fresh.title, filePath: result.filePath, mimeType: result.mimeType,
+        sizeBytes: result.sizeBytes, conversationId: fresh.conversation_id ?? null, requestMessageId: fresh.source_message_id ?? null });
+    }
     logger.info('generation job succeeded + delivered', {
       jobId, kind: row.kind, durationSeconds: result.durationSeconds, costUsd,
     });
@@ -383,9 +323,9 @@ async function runAudioOrMusicJob(jobId: string): Promise<void> {
   }
 }
 
-/** Kick off an audio/music job immediately (called right after create). */
-export function enqueueAudioOrMusicJob(jobId: string): void {
-  void runAudioOrMusicJob(jobId);
+/** Kick off an audio/music job immediately (called right after create); the promise ends when it is delivered. */
+export function enqueueAudioOrMusicJob(jobId: string): Promise<void> {
+  return runAudioOrMusicJob(jobId);
 }
 
 /**
