@@ -534,7 +534,7 @@ export const agentsHandlers: ToolHandlerMap = {
       if (args.auto_start !== false) {
         const job = await sendToAgent(agentId, {
           agent: result.agentId, intent: 'ASSIGN', requiresResponse: true, taskId: given,
-          payload: await jobBrief({ agentId: result.agentId, systemPrompt: args.system_prompt as string, initialMessage: args.initial_message as string | undefined }),
+          payload: jobBrief({ systemPrompt: args.system_prompt as string, initialMessage: args.initial_message as string | undefined }),
         });
         content += `\n${job.content}`;
       }

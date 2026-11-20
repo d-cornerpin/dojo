@@ -1,8 +1,8 @@
 // A helper made for a job is given it the way any agent is: one ASSIGN on its own thread carrying the job's
 // rules, which is one task on the board, handed in by its reply. A transfer's task rides that ASSIGN; a task
 // that already has a thread is refused before any agent is made, with a way forward; a kept helper's work is
-// its own task and it can finish; a helper without send_to_agent is never told to use it; and an undeclared
-// task_id on send_to_agent is never read.
+// its own task and it can finish; a helper spawned with a narrow tool list can still reply and finish; and an
+// undeclared task_id on send_to_agent is never read.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -19,6 +19,7 @@ vi.mock('../../config/platform.js', async (orig) => ({
 
 import { runMigrations } from '../../db/migrations.js';
 import { executeTool, toolResultOf } from '../tools/index.js';
+import { getFilteredTools } from '../tools/surface.js';
 import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { workersOf } from '../../work/done/record.js';
 
@@ -120,12 +121,18 @@ describe('a spawned job is one task and one review', () => {
     expect(words.get(helper)).toEqual({ n: 1 });
   });
 
-  it('a helper made without send_to_agent is never told to use it', async () => {
-    const r = await spawn({ tools: { allow: ['file_read', 'file_write', 'complete_task'], deny: [] } });
+  it('a helper spawned with a narrow tool list still holds send_to_agent and finishes a text-only job', async () => {
+    const r = await spawn({ tools: { allow: ['file_read', 'complete_task'], deny: [] } });
     expect(r.isError, r.content).toBeFalsy();
-    const [assign] = assignsTo(helperId()!);
-    expect(assign.content).toContain('call the complete_task tool with status="complete"');
-    expect(assign.content.split('[Thread')[0]).not.toContain('send_to_agent');
+    const helper = helperId()!;
+    expect(getFilteredTools(helper).map((t) => t.name)).toEqual(expect.arrayContaining(['file_read', 'complete_task', 'send_to_agent']));
+    expect(getFilteredTools(helper).map((t) => t.name)).not.toContain('file_write');
+    const thread = assignsTo(helper)[0].thread;
+    const reply = await call(helper, 'send_to_agent', { agent: 'main', intent: 'COMPLETE', thread_id: thread, payload: 'The report is written.' });
+    expect(reply.isError, reply.content).toBeFalsy();
+    const done = await call(helper, 'complete_task', { status: 'complete', summary: 'The report is written.' });
+    expect(done.isError, done.content).toBeFalsy();
+    expect(tasksHeldBy(helper)[0].state).toBe('handed_in');
   });
 
   it('an undeclared task_id on send_to_agent is never read', async () => {

@@ -1486,7 +1486,7 @@ Use vault_remember for each fact extracted, then file_write to save the trimmed 
     });
     // A ronin made by the engine is given its job as a re-drive, which the one clock serves.
     await redriveWithoutReply({
-      toAgentId: result.agentId, fromAgentId: null, content: await jobBrief({ agentId: result.agentId, systemPrompt, initialMessage }), taskId: null,
+      toAgentId: result.agentId, fromAgentId: null, content: jobBrief({ systemPrompt, initialMessage }), taskId: null,
     });
 
     logger.info('First-run Dreamer spawned for profile bootstrap', { dreamerId: result.agentId });

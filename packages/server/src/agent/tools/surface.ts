@@ -159,9 +159,9 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
       if (def) filtered.push(def);
     }
   }
-  // The pointer reader names the agent's OWN results, and the repeat rule's lift its own stopped calls;
-  // every agent holds both, deny still wins.
-  for (const name of [RESULT_READ_TOOL, LIFT_TOOL]) {
+  // The pointer reader names the agent's OWN results, the repeat rule's lift its own stopped calls, and a reply on
+  // its job's thread is how a helper finishes: every agent holds all three, deny still wins.
+  for (const name of [RESULT_READ_TOOL, LIFT_TOOL, 'send_to_agent']) {
     const def = toolDefinitions.find((t) => t.name === name);
     if (def && !filtered.includes(def) && !toolsPolicy.deny.includes(name)) filtered.push(def);
   }
