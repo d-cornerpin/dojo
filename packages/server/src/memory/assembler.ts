@@ -3,14 +3,13 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
-import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getModelOutputCap, getProviderCeilingTokens } from '../agent/model.js';
 import { agentTurnWindow } from '../router/router-window.js';
 import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages, getMessagesByIds } from './store.js';
 import {
-  eventAddressee, labelRows, labelText, lastViewedTriggerSeq, renderRowLabel, servedConversationId, subjectOf, withSubjectKinds,
+  eventAddressee, labelRows, labelText, lastViewedTriggerSeq, renderRowLabel, withSubjectKinds,
 } from './row-label.js';
 import { LabelFacts } from './summary-subject.js';
 import { renderSummariesLane, truncateSummariesLane, type SummariesPayload } from './summaries-lane.js';
@@ -61,7 +60,7 @@ import { turnBoundary } from '../agent/turn-state.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import type { Summary } from './dag.js';
 import type { Message, MessageOrigin } from '@dojo/shared';
-import { A2A_INBOUND_RE, parseTechniqueFreshRead, parseWorkingNote } from '@dojo/shared';
+import { parseTechniqueFreshRead, parseWorkingNote } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
 
@@ -339,143 +338,11 @@ function buildAwarenessGist(inboundMetaRaw: string | null | undefined, rawConten
   return parts.join(' | ');
 }
 
-/** Remove inter-agent traffic from a fresh tail for a user turn: inbound A2A, the agent's own
- *  send_to_agent / broadcast_to_group calls and their paired tool_results. Keys on structured origin.
- *  Pure. */
-function stripA2AFromTail(tail: Message[]): Message[] {
-  const a2aToolIds = new Set<string>();
-  for (const m of tail) {
-    if (m.role !== 'assistant') continue;
-    try {
-      const blocks = JSON.parse(m.content);
-      if (Array.isArray(blocks)) {
-        for (const b of blocks) {
-          if (b && b.type === 'tool_use' && (b.name === 'send_to_agent' || b.name === 'broadcast_to_group') && b.id) {
-            a2aToolIds.add(b.id);
-          }
-        }
-      }
-    } catch { /* non-JSON assistant text, nothing to scan */ }
-  }
-  const isA2AAssistant = (content: string): boolean => {
-    try {
-      const blocks = JSON.parse(content);
-      return Array.isArray(blocks) && blocks.some((b) => b && b.type === 'tool_use' && (b.name === 'send_to_agent' || b.name === 'broadcast_to_group'));
-    } catch { return false; }
-  };
-  const isA2AToolResult = (content: string): boolean => {
-    try {
-      const blocks = JSON.parse(content);
-      return Array.isArray(blocks) && blocks.some((b) => b && b.type === 'tool_result' && a2aToolIds.has(b.tool_use_id));
-    } catch { return false; }
-  };
-  return tail.filter((m) => {
-    if (m.role === 'user' && (m.origin?.kind === 'agent' || A2A_INBOUND_RE.test(m.content ?? ''))) return false;
-    if (m.role === 'assistant' && isA2AAssistant(m.content ?? '')) return false;
-    if (m.role === 'tool' && isA2AToolResult(m.content ?? '')) return false;
-    return true;
-  });
-}
-
-/** Scope a fresh tail to one A2A thread plus the agent's own output, so the agent never conflates the
- *  user with its peer. */
-export function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
-  // origin.threadId is the full id; the turn's `threadId` may be the 8-char short id. Exact match, else
-  // prefix: exact-only never matches short to full and drops this thread's own inbound task.
-  const sameThread = (t?: string | null): boolean => {
-    if (!t || !threadId) return false;
-    if (t === threadId) return true;
-    const short = t.length <= threadId.length ? t : threadId;
-    const long = t.length <= threadId.length ? threadId : t;
-    return short.length >= 8 && long.startsWith(short);
-  };
-  return tail.filter((m) => {
-    const o = m.origin;
-    if (!o) return true;                                  // unclassified, keep
-    if (o.kind === 'agent') return sameThread(o.threadId); // only THIS thread's A2A
-    if (o.kind === 'self') {
-      // Keep tool activity and A2A sends; drop reply text, engine acks and human-stamped tool debris
-      // (without its answer it reads as an unfinished job and the agent redoes settled work).
-      const isToolActivity = typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
-      const humanStamped = subjectOf(m) === 'conv';
-      // An own row stamped for another A2A thread is dropped (`origin.threadId` is its `a2a_thread_id`);
-      // the rest (this thread's, unstamped, or a turn with no thread id) fall through to the rule below.
-      if (o.threadId && threadId && !sameThread(o.threadId)) return false;
-      return (isToolActivity && !humanStamped) || o.channel === 'a2a';
-    }
-    // The one exemption: a fan-out compile order is an imperative to this agent, so it stays. Every other
-    // engine intent stays out; the compile-order test enumerates `ENGINE_RIDER_INTENTS` to hold that.
-    if (isFanoutJoinImperative(m)) return true;
-    return false;                                          // exclude human + engine
-  });
-}
-
 /** The fan-out compile-order exemption, named once so the seams that honour it agree: `fanout_join` is
  *  the one engine intent carrying content the agent cannot get elsewhere; other engine rows are ambient
  *  and stay a gist. */
 export function isFanoutJoinImperative(m: { origin?: MessageOrigin | null }): boolean {
   return m.origin?.kind === 'engine' && m.origin?.intent === 'fanout_join';
-}
-
-/** Scope a fresh tail for an engine turn: drop the human conversation (the task lives in the engine
- *  event and EVENTS lane); keep the agent's current-turn work and engine events; drop all human inbound
- *  and all A2A. */
-function scopeToEngineTurn(tail: Message[], inFlightTurn: number | null): Message[] {
-  return tail.filter((m) => {
-    const o = m.origin;
-    const keepOwn = isInFlight(m, inFlightTurn) || subjectOf(m) !== 'conv';
-    // Unclassified rows follow the same rule as self output: conv-stamped rows are dropped, untagged kept.
-    if (!o) return keepOwn;
-    if (o.kind === 'engine') return true;      // kept; EVENTS lane lifts it out
-    if (o.kind === 'self') {
-      // Keep only the current turn's own work (untagged: `conversation_id` is stamped at turn end), never a prior
-      // conversation's data.
-      return keepOwn;
-    }
-    return false;                              // drop human + agent inbound
-  });
-}
-
-/** Scope a fresh tail to the one human conversation this turn addresses: keeps the counterparty's
- *  conversation (conversationKey), the agent's own output and engine events; drops other humans and all
- *  A2A. Exported for the tests. */
-export function scopeToHumanConversation(
-  tail: Message[],
-  cp: TurnCounterparty | undefined,
-  /** The counterparty's conversation as `conversations.id`; own-output rows are kept unless they are a
-   *  person's reply in another conversation. */
-  cpConversationId?: string | null,
-  inFlightTurn: number | null = null,
-): Message[] {
-  const a2aStripped = stripA2AFromTail(tail);
-  if (!cp) return a2aStripped;
-  const cpKey = conversationKey(cp.channel, cp.senderId, cp.name, cp.threadId);
-  // This counterparty's other conversations whose questions are in view keep their answers beside them.
-  const shownHere = new Set(a2aStripped.filter((m) => m.origin?.kind === 'user' && m.origin.authorized
-    && m.conversationId && m.conversationId !== cpConversationId
-    && conversationKey(m.origin.channel, m.origin.senderId, m.origin.senderName, m.origin.threadId) === cpKey)
-    .map((m) => m.conversationId as string));
-  return a2aStripped.filter((m) => {
-    const o = m.origin;
-    if (o?.kind === 'user') {
-      // Unauthorized human inbound (a mailbox notification, an unknown sender) is not a conversation: keep it so
-      // the caller lifts it into the EVENTS lane. Authorized inbound stays only for this counterparty.
-      if (!o.authorized) return true;
-      return conversationKey(o.channel, o.senderId, o.senderName, o.threadId) === cpKey;
-    }
-    if (o?.kind === 'engine') return true;
-    // Everything else is the agent's own turn output, which belongs to its conversation as a unit:
-    // `conversation_id` gates the debris like the answer, else a turn scoped elsewhere re-answers. Dropped
-    // only when positively a person's reply in another conversation, not in flight and not shown here.
-    return isInFlight(m, inFlightTurn)
-      || m.conversationId === cpConversationId
-      || subjectOf(m) !== 'conv'
-      || shownHere.has(m.conversationId ?? '');
-  });
-}
-
-function isInFlight(m: Message, inFlightTurn: number | null): boolean {
-  return inFlightTurn != null && m.turnNumber === inFlightTurn;
 }
 
 // The message context, built from the lane table (`memory/lanes.ts`): the fit's decisions, rejections

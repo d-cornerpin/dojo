@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
-// t141 — MIGRATION 188 LABELS THE LEGACY ROWS ONCE, AND MOVES NO ROW IN OR OUT OF VIEW.
+// t141: MIGRATION 188 LABELS THE LEGACY ROWS ONCE.
 //
 // Rehearsed per G13 against an ADVERSARIAL body: every shape of own row the old late stamp
 // could leave behind (turnless, orphan turn, NULL turn number, a person's turn the stamp
@@ -9,10 +9,6 @@
 // thread id is already set). Each statement of the file is run ONE AT A TIME with its own
 // `changes` counted, and every branch must touch at least one row — a zero means the branch
 // was never exercised, which is what G13 forbids believing.
-//
-// The membership clause is the owner's rule as a test: the set of own rows the owner's
-// conversation keeps is computed with the PRE-188 rule (`!conversation_id || = this one`) on
-// the body before the migration, and with the live scoper on the body after it. Equal, or red.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -32,10 +28,6 @@ vi.mock('../connection.js', async () => {
 });
 
 import { runMigrations } from '../migrations.js';
-import { scopeToHumanConversation } from '../../memory/assembler.js';
-import { getRecentMessages } from '../../memory/store.js';
-import { subjectKindsBySeq } from '../../memory/message-store.js';
-import type { TurnCounterparty } from '../../agent/v2/counterparty.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FILE = path.join(HERE, '..', 'migrations', '188_label_legacy_own_rows.sql');
@@ -145,8 +137,6 @@ beforeEach(() => {
 });
 afterEach(() => { db.close(); mockDb.current = null; });
 
-const ownerCp: TurnCounterparty = { kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard', senderId: 'owner', threadId: null, senderIsAgent: false };
-
 describe('migration 188 — the legacy rows are labelled once', () => {
   it('runs on the chain (the column exists, with its CHECK)', () => {
     const col = (db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'messages'`).get() as { sql: string }).sql;
@@ -192,23 +182,5 @@ describe('migration 188 — the legacy rows are labelled once', () => {
     const second = body.map((sql) => ({ sql, n: db.prepare(sql).run().changes }))
       .filter((r) => r.sql.startsWith('UPDATE')).map((r) => r.n);
     expect(second).toEqual([0, 0, 0, 0, 0, 0, 0]);
-  });
-
-  it('MEMBERSHIP DOES NOT MOVE: the owner conversation keeps exactly the own rows it kept before 188', () => {
-    const own = (): Array<{ id: string; conversation_id: string | null }> =>
-      db.prepare(`SELECT id, conversation_id FROM messages WHERE role IN ('assistant','tool') ORDER BY seq`).all() as Array<{ id: string; conversation_id: string | null }>;
-    // The PRE-188 rule, re-stated as the oracle: an unstamped row was "mine", a stamped one
-    // was kept only in its own conversation.
-    const before = own().filter((r) => !r.conversation_id || r.conversation_id === OWNER_CONV).map((r) => r.id).sort();
-    db.exec(fs.readFileSync(FILE, 'utf8').replace(/^ALTER TABLE[\s\S]*?;/m, ''));
-    const tail = getRecentMessages(A, 500);
-    const kinds = subjectKindsBySeq(A, tail.map((m) => m.rowid!));
-    const labelled = tail.map((m) => ({ ...m, subjectKind: kinds.get(m.rowid!) ?? null }));
-    const after = scopeToHumanConversation(labelled, ownerCp, OWNER_CONV, null)
-      .filter((m) => m.role === 'assistant' || m.role === 'tool').map((m) => m.id).sort();
-    expect(after).toEqual(before);
-    // And the reconstructed row is now labelled with its real conversation while staying in view.
-    expect(after).toContain('own-legacy');
-    expect(after).not.toContain('own-conv-other');
   });
 });
