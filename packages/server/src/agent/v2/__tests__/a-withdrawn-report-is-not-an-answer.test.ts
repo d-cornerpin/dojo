@@ -127,7 +127,6 @@ import {
   RECENTLY_ANSWERED_LIMIT,
   answeredPairsForMessages,
   recentlyAnsweredAsks,
-  recordedAnswerInConversation,
   renderRecentlyAnsweredBlock,
 } from '../answered-edge.js';
 // ROUND 3: the predicate is its own module now, beside the state machine whose rows it reads.
@@ -357,7 +356,6 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
     expect(injectedBlock()).toContain('Something went wrong earlier');
     expect(answeredPairsForMessages(AGENT, [e.askId]).get(e.askId)?.answerContent).toBe(THE_CLAIM);
     expect(quotedAnswerFor(e)).toContain('sitting on your dashboard');
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
     // The predicate's own verdict, stated once so the clauses below cannot pass for the wrong
     // reason (a seeding mistake reads as "voided" everywhere).
     expect(answerStillStands(AGENT, ...spanOf(e))).toBe(true);
@@ -380,8 +378,6 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
     const lane = quotedAnswerFor(e);
     expect(lane).not.toContain('ALREADY ANSWERED');
     expect(lane).not.toContain('Do NOT re-run the work');
-    // CARRIER 5 — the ghosted-ask ladder's second rung.
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
   });
 
   it('DOCUMENTED RESIDUAL: the withdrawn claim may still be RECALLED, stripped of authority', () => {
@@ -415,7 +411,6 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
     expect(answerStillStands(AGENT, ...spanOf(e))).toBe(false);
     expect(listedAskIds()).toEqual([]);
     expect(answeredPairsForMessages(AGENT, [e.askId]).size).toBe(0);
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
   });
 
   it('ROUND 3 · GENERATION 2 — a restatement that only NAMES the report is bound by that name', () => {
@@ -426,7 +421,6 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
     const e = seedRound3Ask({ key: 'restated', reportId: rid, shape: 'restates-id', turn: 40 });
     expect(answerStillStands(AGENT, ...spanOf(e))).toBe(false);
     expect(listedAskIds()).toEqual([]);
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
     // …and the SHORT form is what did it: the full uuid never appears in that reply.
     const ans = db().prepare('SELECT content FROM messages WHERE id = ?').get(e.answerId) as { content: string };
     expect(ans.content).not.toContain(rid);
@@ -484,7 +478,6 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
     expect(cancelReport(row.id)?.status).toBe('cancelled');
     expect(getReport(row.id)?.status).toBe('cancelled');
     expect(listedAskIds()).toEqual([]);
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
   });
 
   it('and a row that walks ON to approved and posted keeps standing at every step', () => {
@@ -505,7 +498,6 @@ describe('§1 the ARM B shape: cancel the card, and the stamp stops being eviden
       db().prepare('UPDATE dojo_reports SET status = ? WHERE id = ?').run(status, row.id);
       expect(getReport(row.id)?.status).toBe(status);
       expect(listedAskIds()).toEqual([e.askId]);
-      expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
     }
   });
 });
@@ -543,8 +535,6 @@ describe('§2 the per-status table, over all three reads', () => {
       // read 2 — the verbatim answer quote
       expect(answeredPairsForMessages(AGENT, [e.askId]).has(e.askId)).toBe(row.stands);
       expect(quotedAnswerFor(e).includes('sitting on your dashboard')).toBe(row.stands);
-      // carrier 5 — the no-reply ladder's recorded-answer quote
-      expect(recordedAnswerInConversation(AGENT, CONV)).toBe(row.stands ? THE_CLAIM : null);
       // and the predicate itself, so a table row cannot pass by accident of seeding
       expect(answerStillStands(AGENT, ...spanOf(e))).toBe(row.stands);
     });
@@ -571,7 +561,6 @@ describe('§3 suppression is untouched for everything but a withdrawn-report ans
     expect(answeredPairsForMessages(AGENT, [e.askId]).get(e.askId)?.answerContent)
       .toBe('About $395 a year.');
     expect(quotedAnswerFor(e)).toContain('About $395 a year.');
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBe('About $395 a year.');
   });
 
   it('BYTE-IDENTICAL: the block a plain conversation renders does not move when a report is cancelled', () => {
@@ -664,33 +653,6 @@ describe('§3 suppression is untouched for everything but a withdrawn-report ans
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §4 — THE FIFTH CARRIER, on its own. `no-reply.ts`'s second steer quotes
-// `recordedAnswerInConversation` under "you already answered this … Do not re-do the work".
-// ════════════════════════════════════════════════════════════════════════════════════════
-
-describe('§4 the ghosted-ask ladder is not handed a withdrawn claim to restate', () => {
-  it('the newest settled ask is a withdrawn report: the rung gets nothing', () => {
-    seedPlainAnsweredAsk('older', 'what time is the call?', 'Three o\'clock.');
-    const rid = seedReport('rep-fifth', 'awaiting_approval');
-    seedAnsweredReportAsk({ key: 'fifth', reportIds: [rid] });
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
-
-    db().prepare("UPDATE dojo_reports SET status = 'cancelled' WHERE id = ?").run(rid);
-
-    // Null, not the OLDER answer: this read is scoped to the newest settled ask, and quoting a
-    // different one would put a claim in front of the model that was never on offer.
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBeNull();
-    expect(recordedAnswerInConversation(AGENT, CONV)).not.toBe('Three o\'clock.');
-  });
-
-  it('a standing answer is still handed over, verbatim', () => {
-    const rid = seedReport('rep-5-live', 'awaiting_approval');
-    seedAnsweredReportAsk({ key: 'fifthlive', reportIds: [rid] });
-    expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
 // §6 — THE INSTRUMENT FAILING IS LOUD, AND IT FAILS OPEN (review F4).
 //
 // `answerStillStands` catches its own throw and returns `true` — the ONE place this fix silently
@@ -740,7 +702,6 @@ describe('§6 the instrument failing is LOUD, and it fails OPEN', () => {
       // behaviour, and the cost of this direction) AND the ORDINARY ask keeps its anti-repetition,
       // which is the reason the direction is `true` rather than `false`.
       expect(listedAskIds()).toEqual([e.askId, plain.askId]);
-      expect(recordedAnswerInConversation(AGENT, CONV)).toBe(THE_CLAIM);
     } finally {
       restore();
     }

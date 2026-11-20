@@ -176,7 +176,8 @@ describe('the declared precedence table', () => {
     // The repeat rule replaced `thrash-gate`, `thrash-drift` and `repetition`; `dead-end` replaced
     // `spinning` and `no-results`.
     // `forced-reply` is the required reply's steer.
-    expect(STEER_PRECEDENCE.length).toBe(28);
+    // A6-3 REMOVES `ghosted-ask` and `ghosted-ask-answer` with their ladder: the required reply replaces them.
+    expect(STEER_PRECEDENCE.length).toBe(26);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'forced-reply').length).toBe(1);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
       expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);
@@ -199,7 +200,7 @@ describe('the declared precedence table', () => {
     expect(p('failed-save-claim')).toBeLessThan(p('uncommitted-promise'));
     // …and above every silence floor, because "the promise is recorded" is a statement of
     // fact and it is untrue, which outranks a turn merely ending quietly.
-    expect(p('uncommitted-promise')).toBeLessThan(p('ghosted-ask'));
+    expect(p('uncommitted-promise')).toBeLessThan(p('forced-reply'));
     expect(p('uncommitted-promise')).toBeLessThan(p('promise-floor'));
   });
 
@@ -274,7 +275,7 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
 
 describe('delivered-to-model is RECORDED, not assumed', () => {
   function pushed(): { q: SteerQueue; entry: ReturnType<typeof nextSteer> } {
-    const q = enqueueSteer(emptySteerQueue(), { floor: 'ghosted-ask', content: 'speak', atLoop: 1 });
+    const q = enqueueSteer(emptySteerQueue(), { floor: 'forced-reply', content: 'speak', atLoop: 1 });
     return { q, entry: nextSteer(q) };
   }
 
@@ -300,7 +301,7 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
     expect(q.abandoned.map((e) => e.content)).toEqual([sys('speak')]);
     expect(q.delivered).toEqual([]);
     // fired-without-delivered is the fact the single slot destroyed. It survives here.
-    expect(steerFired(q, 'ghosted-ask')).toBe(true);
+    expect(steerFired(q, 'forced-reply')).toBe(true);
   });
 
   it('negative control: marking an entry this queue does not hold changes nothing', () => {
