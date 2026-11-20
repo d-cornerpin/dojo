@@ -104,7 +104,7 @@ function settleStatus(ctx: TeardownContext): void {
   }
 }
 
-/** THE `finally` ARM: runs on every exit path (reply, decline, cap, brake, early return, throw). */
+/** THE `finally` ARM: runs on every exit path (reply, decline, cap, repeat rule, early return, throw). */
 export async function runTurnTeardown(
   state: AgentTurnState,
   ctx: TeardownContext,

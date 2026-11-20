@@ -107,7 +107,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   let calledCompleteTask = false;
   let calledFireAndForgetGen = false;
   // Once-per-response guard: a non-idempotent signature (generation, people send) runs at most once per
-  // response; a repeat gets a note naming the first run. Repeats across responses belong to the brake.
+  // response; a repeat gets a note naming the first run. Repeats across responses belong to the repeat rule.
   const onceGuardExecuted = new Map<string, string>();
 
   const sc: ExecuteScratch = {
@@ -166,7 +166,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   calledCompleteTask = sc.calledCompleteTask;
   calledFireAndForgetGen = sc.calledFireAndForgetGen;
 
-  // The brake's refusals are read off its own ledger (parallel `runOne` callbacks clobber `state` writes).
+  // The repeat rule's refusals are read off its own ledger (parallel `runOne` callbacks clobber `state` writes).
   // A mid-batch stop latches engineCut 'stop' (first writer wins): the turn records the owner's stop.
   state = advance(state, {
     toolResults: state.toolResults.concat(turnToolResults.map((r) => ({

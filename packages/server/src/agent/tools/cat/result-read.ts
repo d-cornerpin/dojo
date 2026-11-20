@@ -67,7 +67,7 @@ function presentSlice(text: string, start: number, end: number): string {
 
 /** One page of an answer. The room left under the view is for the header, the footer and the
  *  short engine notes that are appended to a result after it is admitted (a link reminder, a
- *  repeated-call brake), so a full page plus those still fits the view whole. */
+ *  repeat rule note), so a full page plus those still fits the view whole. */
 const PAGE_CHARS = TOOL_RESULT_VIEW_CHARS - 1_000;
 
 /** How much of a long matching line a search shows around the match. */
