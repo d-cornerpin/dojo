@@ -160,6 +160,11 @@ describe('§1 a delivered peer hand-off writes its own receipt', () => {
     expect(row.recipient_display).toBe(FX.n5);
   });
 
+  it('a hand-off declared on a STATUS is not applied, and the sender is told so', async () => {
+    const content = await sendToAgent({ intent: 'STATUS', thread_id: THREAD, hands_off_thread: 'thread-fictional-2' });
+    expect(content).toContain('[Engine: hands_off_thread was not applied. A hand-off counts only on an ANSWER, DELIVERABLE, COMPLETE or FAIL reply; this message was sent as STATUS.]');
+  });
+
   it('the receipt and the ledger row are ONE send said twice, not two sends', async () => {
     await sendToAgent();
     // The tool receipt was always written; the ledger row is the half that was missing. Both

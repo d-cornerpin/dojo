@@ -377,6 +377,7 @@ export async function sendToAgent(agentId: string, input: {
     }
     // The hand-off outcome is composed by the transport; only relayed here.
     if (result.handOff) content += `\n${result.handOff.message}`;
+    else if (handsOffThread) content += `\n[Engine: hands_off_thread was not applied. A hand-off counts only on an ANSWER, DELIVERABLE, COMPLETE or FAIL reply; this message was sent as ${effectiveIntent}.]`;
   } else {
     // A protocol drop is expected behavior: log the reason, do not error.
     auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
