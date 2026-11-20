@@ -92,7 +92,7 @@ export async function routeTerminalReply(
       const settledContextHold = routeRoot.held;
       // One line per settled-wake user-facing outbound, with the outcome and the root that permitted it.
       if (settledContextWakeTurn && counterparty.kind !== 'agent') {
-        const heldNow = settledContextHold && destination !== 'dashboard';
+        const heldNow = (settledContextHold || !!turnCtx.pushHeld) && destination !== 'dashboard';
         logger.warn('settled-context tripwire: user-facing outbound from a wake turn whose visible conversations were all answered; verify it is a genuine delivery and not a re-answer', {
           agentId, turnNumber, convKey: chosenConvKey ?? null,
           inboundChannel: state.inboundChannel, presence: presenceNow, destination,
@@ -136,16 +136,17 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
   const { destination, settledContextHold, routeRoot, presenceNow } = r;
   const conversationId = turnCtx.root?.conversationId ?? null;
 
-  if (settledContextHold && destination !== 'dashboard') {
-    // No affirmative root on a settled wake: withhold the push, keep the reply in the dashboard and mark
-    // the pill "held". The held row carries the root read that produced it, so a hold reads apart from a push.
-    recordedId(recordHeld({ agentId, tool: 'auto-route', channel: 'dashboard', conversationId }, describeOutboundRoot(routeRoot)),
+  if ((settledContextHold || !!turnCtx.pushHeld) && destination !== 'dashboard') {
+    // No affirmative root on a settled wake, or the proactive limit: withhold the push, keep the reply in the
+    // dashboard and mark the pill "held". The held row carries why, so a hold reads apart from a push.
+    recordedId(recordHeld({ agentId, tool: 'auto-route', channel: 'dashboard', conversationId }, turnCtx.pushHeld ?? describeOutboundRoot(routeRoot)),
       'v2: settled-context hold', { agentId, turnNumber });
-    persistRoutingMarker('held in dashboard: no active conversation');
-    logger.warn('settled-context hold: withheld auto-route channel push (no affirmative root); reply stays visible in dashboard', {
+    persistRoutingMarker(turnCtx.pushHeld ? 'held in dashboard: the proactive limit' : 'held in dashboard: no active conversation');
+    logger.warn('settled-context hold: withheld auto-route channel push; reply stays visible in dashboard', {
       agentId, turnNumber, destination, presence: presenceNow,
-      outboundRoot: routeRoot.root,
+      outboundRoot: routeRoot.root, pushHeld: turnCtx.pushHeld,
     }, agentId);
+    if (turnCtx.pushHeld) tellAgentReplyHeld(agentId, destination, turnCtx.pushHeld, '');
   } else if (destination !== 'dashboard' && !engineMayRouteTo(agentId, destination)) {
     // One channel-grant door for every arm; the reply stays in the dashboard.
     recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, engineRouteRefusalReason(destination)),
@@ -175,10 +176,10 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
 }
 
 /** The agent is told once that its reply stayed in the dashboard: nothing sends a held reply later. */
-function tellAgentReplyHeld(agentId: string, destination: ReplyDestination, why: string): void {
+function tellAgentReplyHeld(agentId: string, destination: ReplyDestination, why: string, after = ' If they need to hear it, reach them another way in your own words.'): void {
   postAgentNotice({
     toAgentId: agentId, fromName: 'Reply delivery', selfIntro: false,
-    brief: `Your reply did not go out on the ${destination} channel: ${why}, so it stayed in the dashboard chat and will not be sent later. Do not say it arrived. If they need to hear it, reach them another way in your own words.`,
+    brief: `Your reply did not go out on the ${destination} channel: ${why}, so it stayed in the dashboard chat and will not be sent later. Do not say it arrived.${after}`,
   });
 }
 

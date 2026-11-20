@@ -47,6 +47,7 @@ const MAIN = 'main-agent';
 const PM = 'pm-agent';
 const TURN = 61;
 const LINE = 'No new Dojo reports today: all 20 open reports were already sent to you.';
+const PUSH_HELD = 'the owner has not answered your last messages sent on your own';
 const db = (): Database.Database => mockDb.current!;
 let turnStartMs = 0;
 
@@ -104,10 +105,12 @@ describe('C8: the budget does not demote a line the task owes its owner', () => 
     expect(held(t)).toEqual([]);
   });
 
-  it('NEGATIVE CONTROL: a wake working no task is still budgeted (real unsolicited chatter is demoted)', () => {
+  it('NEGATIVE CONTROL: a wake working no task is still budgeted (real unsolicited chatter stays in chat, its push held)', () => {
     const sc = scratch();
-    runCloseoutFloors(state(), ctx(), sc);
-    expect(sc.persistedContent).toBeNull();
+    const c = ctx();
+    runCloseoutFloors(state(), c, sc);
+    expect(sc.persistedContent).toBe(LINE);
+    expect(c.turnCtx.pushHeld).toBe(PUSH_HELD);
   });
 
   it('NEGATIVE CONTROL: once a line has reached the person, the task owes nothing more and the budget applies again', () => {
@@ -115,8 +118,10 @@ describe('C8: the budget does not demote a line the task owes its owner', () => 
     fileCloseThisTurn(t);
     db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at) VALUES ('d-line', ?, 60, 'dashboard', 'dashboard', 'delivered', datetime('now'))`).run(HELPER);
     const sc = scratch();
-    runCloseoutFloors(state(), ctx(), sc);
-    expect(sc.persistedContent).toBeNull();
+    const c = ctx();
+    runCloseoutFloors(state(), c, sc);
+    expect(sc.persistedContent).toBe(LINE);
+    expect(c.turnCtx.pushHeld).toBe(PUSH_HELD);
   });
 });
 

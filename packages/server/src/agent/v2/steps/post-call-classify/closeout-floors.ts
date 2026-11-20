@@ -121,8 +121,8 @@ export function runCloseoutFloors(
     persistedContent = null;
   }
 
-  // Proactive-send backoff: past the threshold of consecutive unprompted settled-wake replies, the next is
-  // demoted to a note. Deliberate surfaces are exempt, and so is a turn working a task that owes its owner
+  // Proactive-send backoff: past the threshold of consecutive unprompted settled-wake replies, the next stays in
+  // chat and is not pushed. Deliberate surfaces are exempt, and so is a turn working a task that owes its owner
   // a delivery (`tracker/owed-delivery.ts`): the owner asked for that line.
   if (
     settledContextWakeTurn &&
@@ -140,14 +140,10 @@ export function runCloseoutFloors(
         }, agentId);
       }
     } else if (streak >= PROACTIVE_SEND_DEMOTE_THRESHOLD) {
-      logger.info('v2 RC-5.3: proactive-send budget reached; demoting unsolicited settled-wake outbound to a quiet notices-lane row instead of sending', {
+      logger.info('v2 RC-5.3: proactive-send limit reached; the reply stays in chat and its push is held', {
         agentId, turnNumber, streak, threshold: PROACTIVE_SEND_DEMOTE_THRESHOLD,
-        preview: persistedContent.slice(0, 80),
       }, agentId);
-      demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }, {
-        why: 'the proactive-send limit: the owner had not answered the agent\'s recent unprompted messages', owed,
-      });
-      persistedContent = null;
+      turnCtx.pushHeld = 'the owner has not answered your last messages sent on your own';
     } else {
       // An allowed proactive delivery counts toward the streak and pings as normal.
       bumpProactiveSendStreak(agentId);
