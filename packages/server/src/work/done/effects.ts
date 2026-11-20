@@ -9,7 +9,6 @@ import { retireEngineEventsForTask } from '../../agent/v2/counterparty.js';
 import { claimTrackerNoticeForTask, repliedOnThread } from '../../memory/message-store.js';
 import { taskScope, STATE_TO_STATUS_SQL, heldByOwnerSql, stateToStatus } from '../tracker-view.js';
 import { setTrackerStatus } from '../tracker-store.js';
-import { sendAgentMessage } from '../../agent/agent-bus.js';
 import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
 import { workerOfRecord, rehome } from '../row-authority.js';
 import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
@@ -63,16 +62,15 @@ export function onDecided(workId: string, decisionId: number): void {
     .catch((err: unknown) => logger.warn('decision: the schedule could not be stopped', { workId, error: String(err) }));
 }
 
-/** One hint to the worker of record, which works the row from here on: the owner's send-back as an engine hint in his
- *  name, an agent decider's as its own message. */
+/** One hint to the worker of record, which works the row from here on, in the decider's name (none for the owner). */
 function sendBackHint(workId: string, title: string | null, deciderId: string, reason: string): void {
   const worker = workerOf(workId);
   const to = workerOfRecord(worker);
   rehome(workId, worker, to, 'send-back');
   const hint = `[Engine hint: "${title ?? workId}" [${workId}] was sent back${deciderId === OWNER_ID ? ' by the owner' : ''}${to !== worker ? ` (its worker ${worker} has ended, so it is yours now)` : ''}: ${reason}. `
     + 'Delivered work stays as it is; do only what the reason asks, then hand it in again with proof.]';
-  if (deciderId !== OWNER_ID) sendAgentMessage(deciderId, to, 'status', hint, { taskId: workId, event: 'sent_back' });
-  else void import('../../agent/agent-notice.js').then(({ redriveWithoutReply }) => redriveWithoutReply({ toAgentId: to, fromAgentId: null, content: hint, taskId: workId }));
+  void import('../../agent/agent-notice.js').then(({ redriveWithoutReply }) => redriveWithoutReply(
+    { toAgentId: to, fromAgentId: deciderId === OWNER_ID ? null : deciderId, content: hint, taskId: workId }));
 }
 
 /** The asker of an assigned task hears the work on its thread when the worker never said anything there. */
@@ -155,26 +153,19 @@ export function checkDependencies(completedTaskId: string): void {
           by: 'pm', actorId: getPMAgentId(),
           reason: `every dependency of this task is complete (last: ${completedTaskId.slice(0, 8)})`,
         }), 'pm: dependencies cleared, task unblocked', { taskId: row.id });
+        // Its holder (else the main agent) is woken to work it.
+        const task = db.prepare('SELECT priority, description FROM work WHERE id = ?').get(row.id) as { priority: string | null; description: string | null };
+        const content = `Task "${row.title}" (${row.id}) is now unblocked. All dependencies are complete.\n\n`
+          + `Priority: ${task.priority ?? 'normal'}\n` + (task.description ? `Description: ${task.description}\n` : '')
+          + `Previously blocked on: ${dependsOn.join(', ')}`;
+        void import('../../agent/agent-notice.js').then(({ redriveWithoutReply }) => redriveWithoutReply(
+          { toAgentId: row.assigned_to ?? getPrimaryAgentId(), fromAgentId: getPMAgentId(), content, taskId: row.id }));
       }
 
       logger.info('Task unblocked by dependency completion', {
         taskId: row.id,
         taskTitle: row.title,
         completedDep: completedTaskId,
-      });
-
-      // Notify primary agent or the assigned agent
-      const recipient = row.assigned_to ?? getPrimaryAgentId();
-      const task = db.prepare('SELECT priority, description FROM work WHERE id = ?').get(row.id) as { priority: string | null; description: string | null };
-      const message = `Task "${row.title}" (${row.id}) is now unblocked. All dependencies are complete.`
-        + (startsLater ? ` It starts at its own scheduled time (${new Date(row.scheduled_start ?? row.next_run_at ?? nowMs).toISOString()}), not before.` : '') + '\n\n' +
-        `Priority: ${task.priority ?? 'normal'}\n` +
-        (task.description ? `Description: ${task.description}\n` : '') +
-        `Previously blocked on: ${dependsOn.join(', ')}`;
-      sendAgentMessage(getPMAgentId(), recipient, 'status', message, {
-        taskId: row.id,
-        event: 'unblocked',
-        completedDependency: completedTaskId,
       });
     }
   }
