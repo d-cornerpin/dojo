@@ -664,4 +664,4 @@ export function deleteAgentBusRowsFor(agentId: string): number {
 
 /** Declared in the leaf `origin-intents.ts` (an ESM re-export is safe at module scope). Never move it here:
  *  `work/ask-settlement.ts` reads it at module scope through an import cycle. */
-export { AGENT_BUS_INTENT, START_ACK_ORIGIN_INTENT };
+export { START_ACK_ORIGIN_INTENT };

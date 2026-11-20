@@ -18,7 +18,8 @@ function assignedOnAThread(): void {
   freshBoard();
   doneDb().prepare("UPDATE work SET requester = 'agent', requester_id = ?, a2a_thread_id = 'thr-relay-1' WHERE id = ?").run(OTHER, TASK);
   doneDb().prepare(
-    "INSERT INTO messages (id, agent_id, lane, role, content, source_agent_id, a2a_thread_id, a2a_intent, created_at) VALUES ('m-assign', ?, 'a2a', 'user', 'Write the report', ?, 'thr-relay-1', 'ASSIGN', ?)",
+    `INSERT INTO messages (id, agent_id, lane, role, content, source_agent_id, a2a_thread_id, a2a_intent, created_at)
+     VALUES ('m-assign', ?, 'a2a', 'user', 'Write the report', ?, 'thr-relay-1', 'ASSIGN', ?)`,
   ).run(WORKER, MAIN, Date.now());
 }
 function handTheTaskIn(): void {

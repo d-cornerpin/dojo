@@ -1,6 +1,6 @@
 // The sanctioned way to make another agent (usually the primary) AWARE: one brief first-person line.
 // Stored role='user' (a 'system' row is invisible to the model), origin_kind='engine', so it lands
-// in the EVENTS lane: model-visible, out of the user's chat, never compacted. Detail stays on the bus.
+// in the EVENTS lane: model-visible, out of the user's chat, never compacted.
 
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
@@ -13,7 +13,7 @@ const logger = createLogger('agent-notice');
 export interface AgentNoticeOpts {
   toAgentId: string;
   fromName: string;
-  /** ONE short first-person sentence; a full report belongs on the bus, not here. */
+  /** ONE short first-person sentence. */
   brief: string;
   intent?: string;
   selfIntro?: boolean;
