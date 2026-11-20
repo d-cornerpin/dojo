@@ -123,11 +123,12 @@ export async function runTurnClassification(
   // Both A2A shapes scope the live tail to the A2A thread so the agent sees the message.
   const a2aWakeTurn = !hasUnansweredUser && (unrepliedAssign !== null || terminalWakeA2A !== null);
   if (a2aWakeTurn) turnCtx.servedRequest = unrepliedAssign;
+  // An A2A turn's root is its thread, so what the turn makes is tied to the task that thread carries.
+  if (a2aWakeTurn && unrepliedAssign) turnCtx.root = { kind: 'a2a', id: unrepliedAssign.threadId, sourceMessageId: null };
   const terminalWakeDrivesTurn = a2aWakeTurn && terminalWakeA2A !== null;
   // The driving wake is claimed by its serve edge (`served_by_turn`, stamped in counterparty-and-record),
   // so it drives exactly one turn and is never re-relayed.
   if (terminalWakeDrivesTurn && terminalWakeA2A) {
-    // An A2A wake turn's root is its thread.
     if (terminalWakeA2A.threadId) turnCtx.root = { kind: 'a2a', id: terminalWakeA2A.threadId, sourceMessageId: null };
     turnCtx.triggerMessageId = messageIdAtSeq(db, agentId, terminalWakeA2A.rowid);
   }
