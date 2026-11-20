@@ -269,10 +269,10 @@ export const EFFECT_IMPORT_EXCLUSIONS = [
     residual: 'the image path came from a gate-DECIDED call; the prep read is not facade-carried.',
   },
   {
-    file: 'services/video-job-poller.ts',
+    file: 'services/media-delivery.ts',
     klass: 'honest-label',
-    why: 'PART 4. The video poller is started at boot and fires on its own timer; a converted site there would hold no capability and refuse working behaviour, and a new refusal is never a worker\'s to invent (P5-R5).',
-    residual: 'the asset the poller fetches was named by a gate-DECIDED submit call; the fetch itself is not facade-carried.',
+    why: 'PART 4. The one delivery of a finished media file runs after the tool call that started its job, and for a video from the poller started at boot; a converted site there would hold no capability and refuse working behaviour (P5-R5).',
+    residual: 'the file it copies was written by a gate-DECIDED generation call into the platform generated folder; the copy into the agent uploads folder and the public link are not facade-carried.',
   },
   {
     file: 'techniques/technique-folder.ts',
