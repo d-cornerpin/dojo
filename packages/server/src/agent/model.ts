@@ -6,6 +6,7 @@ import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { extractTextToolCalls } from './text-tool-fallback.js';
+import { isContextOverflowError } from './context-overflow.js';
 import { AgentError } from './errors.js';
 import { apiRootIsBareHost, contractForModel, contractForModelId, type ModelContract } from './model-contract.js';
 import { classifyProviderError, classifyProviderErrorText, isRetryableProviderClass } from './provider-error.js';
@@ -1903,8 +1904,8 @@ async function callOpenAIModel(
     recordProviderSuccess(modelInfo.providerId, { modelId, purpose });
 
     // Text tool-call fallback: only a tool this call actually offered is taken; see text-tool-fallback.ts.
-    if (toolCalls.length === 0 && openaiTools) {
-      const extracted = extractTextToolCalls(fullText, openaiTools.flatMap(t => (t.type === 'function' ? [t.function.name] : [])));
+    if (toolCalls.length === 0 && requestParams.tools) {
+      const extracted = extractTextToolCalls(fullText, requestParams.tools.flatMap(t => (t.type === 'function' ? [t.function.name] : [])));
       if (extracted.toolCalls.length > 0) {
         toolCalls.push(...extracted.toolCalls);
         fullText = extracted.cleanText;
@@ -2232,22 +2233,25 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   }
 }
 
-// The `reply` call becomes the answer's text. A provider that ignored the choice answered
-// ordinarily, and that answer is kept whole; one that refuses the form bills nothing and gets
-// one ordinary call instead.
+// The `reply` call becomes the answer's text; any call beside it is dropped. An answer that ignored the choice
+// is kept whole. A refusal of the form (a bad request, never money or a too-long context) bills nothing and gets
+// one ordinary call, which on a transport that never sends the form is the same request again.
 async function dialRequiringReply(params: ModelCallParams): Promise<ModelCallResult> {
   let r: ModelCallResult;
   try {
     r = await dialModel(params);
   } catch (err) {
-    if (err instanceof AgentError && err.provider?.status === 400) return dialModel({ ...params, forceReply: false });
+    if (err instanceof AgentError && refusedTheForm(err)) return dialModel({ ...params, forceReply: false });
     throw err;
   }
   const call = r.toolCalls.find((t) => t.name === REPLY_TOOL.name);
   if (!call) return r;
   const text = typeof call.arguments?.text === 'string' ? call.arguments.text.trim() : '';
-  return { ...r, content: text || r.content, toolCalls: r.toolCalls.filter((t) => t !== call) };
+  return { ...r, content: text || r.content, toolCalls: [] };
 }
+
+const refusedTheForm = (err: AgentError): boolean => err.provider?.class === 'bad_request'
+  && (err.provider.status === 400 || err.provider.status === 422) && !isContextOverflowError(err.message);
 
 async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier, purpose } = params;

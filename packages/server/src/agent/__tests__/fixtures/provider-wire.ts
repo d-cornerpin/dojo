@@ -15,7 +15,8 @@ export const FIXED_TOOLS = ['file_read', 'load_tool_docs', 'web_fetch'].map((nam
 }));
 
 /** What the next HTTP request is answered with. */
-export type StubReply = { text: string } | { toolCall: { name: string; args: string } } | { status: number };
+export type StubReply = { text: string } | { toolCall: { name: string; args: string } } | { toolCalls: Array<{ name: string; args: string }> }
+  | { status: number; message?: string };
 
 export const wire = {
   http: [] as Array<{ url: string; body: string }>,
@@ -33,7 +34,7 @@ const chunk = (delta: Record<string, unknown>, finish: string | null = null): st
 function answer(res: http.ServerResponse, url: string, reply: StubReply): void {
   if ('status' in reply) {
     res.writeHead(reply.status, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ error: { message: 'tool_choice is not supported', type: 'invalid_request_error' } }));
+    res.end(JSON.stringify({ error: { message: reply.message ?? 'tool_choice is not supported', type: 'invalid_request_error' } }));
     return;
   }
   if (url.startsWith('/api/chat')) {
@@ -44,7 +45,10 @@ function answer(res: http.ServerResponse, url: string, reply: StubReply): void {
   }
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   if ('text' in reply) res.write(chunk({ content: reply.text }));
-  else res.write(chunk({ tool_calls: [{ index: 0, id: 'call_r', type: 'function', function: { name: reply.toolCall.name, arguments: reply.toolCall.args } }] }));
+  else {
+    const calls = 'toolCalls' in reply ? reply.toolCalls : [reply.toolCall];
+    res.write(chunk({ tool_calls: calls.map((c, index) => ({ index, id: `call_${index}`, type: 'function', function: { name: c.name, arguments: c.args } })) }));
+  }
   res.write(chunk({}, 'text' in reply ? 'stop' : 'tool_calls'));
   res.write(sse({ id: 'c1', object: 'chat.completion.chunk', created: 0, model: 'm', choices: [], usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }));
   res.end('data: [DONE]\n\n');
@@ -82,7 +86,7 @@ export function fakeAnthropicModule(): Record<string, unknown> {
     async finalMessage(): Promise<unknown> {
       if ('status' in this.reply) throw new APIError(this.reply.status);
       if ('text' in this.reply) for (const fn of this.handlers.text ?? []) fn(this.reply.text);
-      else {
+      else if ('toolCall' in this.reply) {
         const block = { type: 'tool_use', id: 'toolu_r', name: this.reply.toolCall.name, input: JSON.parse(this.reply.toolCall.args) };
         for (const fn of this.handlers.contentBlock ?? []) fn(block);
       }
@@ -158,3 +162,33 @@ export function sentBodies(form: ProviderForm): string[] {
 export function resetWire(): void {
   wire.http = []; wire.replies = []; wire.anthropic = []; wire.anthropicReplies = []; wire.sdk = [];
 }
+
+/** The stub server for the file, and a fresh seeded database and wire for each test. */
+export function useProviderWire(hooks: Pick<typeof import('vitest'), 'beforeAll' | 'afterAll' | 'beforeEach' | 'afterEach'>): void {
+  let server: http.Server;
+  hooks.beforeAll(async () => { server = await startStub(); });
+  hooks.afterAll(async () => { await new Promise<void>((r) => server.close(() => r())); });
+  hooks.beforeEach(async () => {
+    const [{ default: Database }, { runMigrations }, loader, model] = await Promise.all([
+      import('better-sqlite3'), import('../../../db/migrations.js'), import('../../../config/loader.js'), import('../../model.js')]);
+    loader.clearSecretsCache();
+    model.clearClientCache();
+    db.current = new Database(':memory:');
+    runMigrations();
+    seedProviders(loader.setProviderCredential);
+    resetWire();
+  });
+  hooks.afterEach(() => { db.current?.close(); db.current = null; });
+}
+
+/** One call on a form's agent and model, over the shared history. */
+export const callOn = async (form: ProviderForm, forceReply: boolean) => (await import('../../model.js')).callModel({
+  agentId: `a-${form}`, modelId: `m-${form}`, messages: structuredClone(HISTORY), systemPrompt: 'You are a helpful agent.', forceReply,
+});
+
+/** The JSON body of the i-th HTTP request. */
+export const bodyOf = (i: number): Record<string, unknown> => JSON.parse(wire.http[i].body) as Record<string, unknown>;
+
+/** The tool surface and the database connection, faked for `vi.mock`. */
+export const surfaceModule = (): Record<string, unknown> => ({ getFilteredTools: () => FIXED_TOOLS });
+export const connectionModule = (): Record<string, unknown> => ({ getDb: () => db.current!, closeDb: () => {}, getDbPath: () => ':memory:' });
