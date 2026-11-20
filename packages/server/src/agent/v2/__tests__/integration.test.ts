@@ -368,7 +368,7 @@ vi.mock('../steer-queue.js', async () => {
 });
 import { runV2Turn } from '../loop.js';
 import {
-  stoppedAgents, recoveryRunStreak, pendingWakeups,
+  stoppedAgents, recoveryRunStreak, pendingWakeups, preemptedAgents,
   doomedPrefillCompactionSpent, declaredPatienceHonestFailTurn,
 } from '../../shared-state.js';
 import { AgentError } from '../../errors.js';
@@ -705,9 +705,9 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // Loop should call model exactly ONCE, complete_task exits before
-    // a follow-up call.
-    expect(callModelSpy).toHaveBeenCalledTimes(1);
+    // complete_task ends the passes; the person still waiting gets the required reply, whose tool call never runs.
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    expect(callModelSpy.mock.calls[1][0].forceReply).toBe(true);
     expect(executeToolSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -933,53 +933,27 @@ describe('runV2Turn integration', () => {
     expect(args[3]).toBe('meaningful response');
   });
 
-  it('PRESERVATION #38: empty response triggers silent retry, then nudge, then toast', async () => {
-    // v1 behavior: 3-phase recovery from empty model responses.
-    //   phase 1, silent retry (no nudge, no toast)
-    //   phase 2, explicit steer injection
-    //   phase 3, chat:error toast
-    // v2 used to skip straight to phase 3. This test enforces the full chain.
+  it('PRESERVATION #38: an empty response with a person waiting gets the silent retry, then the required reply, then is held', async () => {
     let modelCallCount = 0;
     callModelSpy.mockImplementation(async () => {
       modelCallCount++;
-      // Always return empty content + no tool calls.
-      return {
-        content: '',
-        toolCalls: [],
-        inputTokens: 100,
-        outputTokens: 0,
-        stopReason: 'end_turn',
-      };
+      return { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
     });
 
     await runV2Turn('primary');
 
-    // The model should have been called THREE times:
-    //   call 1, initial empty
-    //   call 2, after silent retry
-    //   call 3, after explicit nudge
-    // After the third empty response, the loop breaks with the error toast.
+    // The empty call, its silent retry, then the required reply: no nudge in between.
     expect(modelCallCount).toBe(3);
-
-    // Exactly one chat:error event was broadcast on the final empty.
-    //
-    // ⚠ t125 CHANGED THE CODE, NOT THE COUNT, AND THE REASON IS THIS FIXTURE'S OWN SHAPE:
-    // `msg-user-1` is left UNCLAIMED here, so a person is waiting. A waiting person now
-    // gets the honest end of the ladder — `FLOOR_GHOSTED`, carrying a DURABLE role='system'
-    // row in the platform's voice — instead of `MODEL_FAILED`, which is live-only and left
-    // a reloaded page showing a turn that said nothing at all. The nobody-waiting turn still
-    // gets exactly the old `MODEL_FAILED` toast and no row; that arm is asserted in
-    // `post-call-classify/__tests__/a-turn-that-owes-a-person-never-ends-in-silence.test.ts`.
+    expect(callModelSpy.mock.calls.map((c) => c[0].forceReply === true)).toEqual([false, false, true]);
+    // The required reply came back empty too: the request is held and the owner told once, as the Dojo.
+    const ask = mockDb.current!.prepare("SELECT state FROM work WHERE agent_id = 'primary' AND kind = 'ask'").get() as { state: string };
+    expect(ask.state).toBe('blocked');
     const errors = getBroadcastEventsByType('chat:error') as Array<{ code?: string }>;
-    expect(errors).toHaveLength(1);
-    expect(errors[0].code).toBe('FLOOR_GHOSTED');
-    // The durable half, which a toast never had.
-    const ghostRows = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' AND content LIKE '%empty reply%'")
+    expect(errors.map((e) => e.code)).toEqual(['FLOOR_GHOSTED']);
+    const held = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' AND content LIKE '%stopped trying%'")
       .all();
-    expect(ghostRows).toHaveLength(1);
-
-    // No assistant message was persisted (all responses were empty).
+    expect(held).toHaveLength(1);
     const assistantMsgs = mockDb.current!
       .prepare("SELECT * FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all();
@@ -1113,11 +1087,9 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // Four model calls (the nudge resets the counter so the post-nudge
-    // sequence repeats): iter 1 → counter 1; iter 2 → counter hits 2,
-    // nudge fires, counter resets to 0; iter 3 (with nudge) → counter 1;
-    // iter 4 → counter hits 2 again, already nudged → break with NO_RESULTS.
-    expect(modelCallCount).toBe(4);
+    // Four passes (the nudge resets the counter so the post-nudge sequence repeats): iter 2 nudges, iter 4
+    // breaks with NO_RESULTS. The person still waiting then gets the required reply: a fifth call.
+    expect(modelCallCount).toBe(5);
 
     const noResultsErrors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string }>).filter(
       (e) => e.code === 'NO_RESULTS',
@@ -1170,37 +1142,16 @@ describe('runV2Turn integration', () => {
     expect(noResultsErrors).toHaveLength(0);
   });
 
-  it('PRESERVATION #38 (REWRITTEN BY t125): tool calls then empty, with a person waiting, never ends the turn silently', async () => {
-    // ════════════════════════════════════════════════════════════════════════════════════
-    // ⚠ THIS TEST ASSERTED THE DEFECT, END TO END, AND IT IS THE THIRD ONE THAT DID
-    //   (the other two are in `post-call-classify/__tests__/an-answer-in-the-wrong-channel-
-    //   is-retried.test.ts`; this one the triage did not find).
-    //
-    // AS WRITTEN: it drove a real turn on an agent holding a WAITING user message
-    // (`msg-user-1`, seeded by this file's fixture), had the model call a tool and then
-    // return empty, and asserted "two model calls, no toast — a legitimate end". That is
-    // the owner's screenshot pinned as correct behaviour: he asked his PM a question, it
-    // ran two `history_search` calls, and the turn ended with nothing on his screen.
-    //
-    // THE v1 CARVE-OUT IT CITED IS REAL AND IS KEPT — runtime.ts:1167-1171, "the agent did
-    // work and has nothing more to say" — but only for the turn it was written about: one
-    // where NOBODY IS WAITING. That half cannot be asserted here, and the reason is the
-    // finding itself: on a user-driven turn the engine's own convention is `triggerRow` set
-    // ⇒ this turn serves a waiting human (`steps/preflight/closeout-gate.ts:106`), so a
-    // user turn is never a nobody-owed turn and this fixture cannot honestly make it one.
-    // The carve-out is asserted where it is actually reachable, across all seven provider
-    // seams, in `post-call-classify/__tests__/a-turn-that-owes-a-person-never-ends-in-
-    // silence.test.ts` ("nobody is owed: the not-a-failure exit is byte-identical").
-    //
-    // What this test now asserts is the shape the owner actually met, end to end, on the
-    // default (non-DeepSeek) contract this fixture resolves.
-    // ════════════════════════════════════════════════════════════════════════════════════
+  it('PRESERVATION #38: tool calls then empty, with a person waiting, ends in the required reply, never in silence', async () => {
     const toolCall: ToolCall = { id: 'tc1', name: 'file_read', arguments: { path: '/x' } };
     let modelCallCount = 0;
     callModelSpy.mockImplementation(async () => {
       modelCallCount++;
       if (modelCallCount === 1) {
         return { content: '', toolCalls: [toolCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+      }
+      if (modelCallCount === 4) {
+        return { content: 'The file says hello.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
       }
       return { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
     });
@@ -1210,30 +1161,44 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // THE MODEL IS ASKED AGAIN rather than left alone: the ladder's silent retry, then its
-    // one-shot steer. Four calls (tool-use, empty, retry, post-steer) — bounded, and the
-    // same bound every other empty reply in this engine gets. Before t125: two.
+    // The tool call, the empty one, its silent retry, then the required reply, which the person hears.
     expect(modelCallCount).toBe(4);
-
-    // AND THE PERSON HEARS SOMETHING DURABLE. Not a live-only toast — a role='system' row
-    // in the platform's own voice (OR2: never the engine wearing the agent's face), which
-    // is still there after a reload. That is the half the owner's screen was missing.
-    const notices = mockDb.current!
-      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' AND content LIKE '%empty reply%'")
-      .all() as Array<{ content: string }>;
-    expect(notices).toHaveLength(1);
-    expect(notices[0].content).toMatch(/send it again/i);
-    // The platform speaks as the platform: no first-person line standing in for the agent.
-    expect(notices[0].content).not.toMatch(/\bI\b/);
-
-    // "THE REPLY STANDS" IS UNTOUCHED: no assistant row was forged for the person. The one
-    // assistant row this turn wrote is the tool_use itself, which carries no text — a ghost
-    // is by definition a turn with no reply to stand.
+    expect(callModelSpy.mock.calls[3][0].forceReply).toBe(true);
     const spoken = (mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all() as Array<{ content: string }>)
       .filter((r) => !r.content.includes('"type":"tool_use"'));
-    expect(spoken).toHaveLength(0);
+    expect(spoken.map((r) => r.content)).toEqual(['The file says hello.']);
+    expect(getBroadcastEventsByType('chat:error')).toHaveLength(0);
+  });
+
+  it('a required-reply pass that leaves before its call (a preempt) arms no second one', async () => {
+    const empty = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
+    callModelSpy.mockImplementationOnce(async () => empty).mockImplementationOnce(async () => {
+      preemptedAgents.add('primary');
+      return empty;
+    });
+
+    await runV2Turn('primary');
+
+    // The empty call and its silent retry; the armed pass meets the preempt at its gate and the turn ends.
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    const turn = mockDb.current!.prepare("SELECT exit_reason FROM turns WHERE agent_id = 'primary' ORDER BY turn_number DESC LIMIT 1").get() as { exit_reason: string };
+    expect(turn.exit_reason).toBe('preempt');
+  });
+
+  it('a required reply that meets a provider error is handed back by the exit table, never held as empty', async () => {
+    const empty = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
+    callModelSpy.mockImplementationOnce(async () => empty).mockImplementationOnce(async () => empty)
+      .mockRejectedValueOnce(new Error('500 Internal Server Error: something weird'));
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(3);
+    const ask = mockDb.current!.prepare("SELECT state FROM work WHERE agent_id = 'primary' AND kind = 'ask'").get() as { state: string };
+    expect(ask.state).not.toBe('blocked');
+    const held = mockDb.current!.prepare("SELECT 1 FROM messages WHERE agent_id = 'primary' AND content LIKE '%stopped trying%'").all();
+    expect(held).toHaveLength(0);
   });
 
   it('CONVERSATION INVARIANT: no system message between assistant tool_use and tool_result', async () => {
@@ -2431,8 +2396,10 @@ describe('runV2Turn integration', () => {
 // received.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const EMPTY_RESPONSE_NUDGE =
-  "[System: You returned an empty response. Please respond to TestUser's last message or call a tool to continue your task. If you are finished, say so clearly.]";
+// The steer the required reply carries: the vehicle here, since an empty turn with a person waiting makes it.
+const FORCED_REPLY_STEER = '[Engine: TestUser is waiting for your answer to their message. Write it now.]';
+const DEAD_END_STEER = '[System: Your last calls all came back empty or refused. What you need may not be there, '
+  + 'or may not be open to you. Try responding based on what you already know, or ask TestUser for clarification.]';
 
 /** The assembled shape a mid-turn steer has to survive: … assistant tool_use, tool-result carrier. */
 function toolResultTail(): Array<Record<string, unknown>> {
@@ -2475,18 +2442,15 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
   });
 
   it('delivers a steer set mid-turn to the NEXT model call even though the assembled tail is a tool-result carrier', async () => {
-    // Drive the empty-response recovery chain, which is a real in-loop steer
-    // writer: call 1 empty → silent retry; call 2 empty → enqueues the steer;
-    // call 3 must CARRY that steer. Before the fix call 3 is byte-for-byte the
-    // same array as calls 1 and 2 — the exact "logged as sent, never received"
-    // signature the kit instrument measured live.
+    // A real in-loop steer writer: call 1 empty, call 2 its silent retry, then the required reply's steer;
+    // call 3 must CARRY it. Undelivered, call 3 is byte-for-byte the same array as calls 1 and 2.
     callModelSpy.mockImplementation(recordingModel((n) => (n <= 2 ? EMPTY : DONE)));
 
     await runV2Turn('primary');
 
     expect(seenByModel.length).toBeGreaterThanOrEqual(3);
     const third = seenByModel[2];
-    expect(indexOfEntry(third, EMPTY_RESPONSE_NUDGE)).toBeGreaterThanOrEqual(0);
+    expect(indexOfEntry(third, FORCED_REPLY_STEER)).toBeGreaterThanOrEqual(0);
   });
 
   it('appends the steer as its OWN user-role message, never folded into another message', async () => {
@@ -2495,13 +2459,13 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
     await runV2Turn('primary');
 
     const third = seenByModel[2];
-    const at = indexOfEntry(third, EMPTY_RESPONSE_NUDGE);
+    const at = indexOfEntry(third, FORCED_REPLY_STEER);
     expect(at).toBeGreaterThanOrEqual(0);
     // Its own message: exact string content, user role — not appended onto the
     // tool-result carrier's block array, and not merged into a neighbour.
     expect(third[at].role).toBe('user');
     expect(typeof third[at].content).toBe('string');
-    expect(third[at].content).toBe(EMPTY_RESPONSE_NUDGE);
+    expect(third[at].content).toBe(FORCED_REPLY_STEER);
   });
 
   it('keeps alternation legal: the steer lands AFTER the tool results, never between tool_use and tool_result', async () => {
@@ -2516,7 +2480,7 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
     const resultAt = third.findIndex(
       (m) => Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some((b) => b.type === 'tool_result'),
     );
-    const steerAt = indexOfEntry(third, EMPTY_RESPONSE_NUDGE);
+    const steerAt = indexOfEntry(third, FORCED_REPLY_STEER);
     expect(useAt).toBeGreaterThanOrEqual(0);
     // The result carrier still IMMEDIATELY follows its tool_use (the conversation
     // invariant at loop.ts:6415 — nothing may be inserted between the pair).
@@ -2526,32 +2490,31 @@ describe('T1: engine steer delivery (the steer-queue drain)', () => {
   });
 
   it('marks the entry delivered on a confirmed drain: the steer rides exactly ONE model call, never repeats', async () => {
-    // Call 3 carries the steer and then calls a tool, so the loop assembles a
-    // FOURTH time. A steer that is delivered but never cleared would ride call 4
-    // as well (the engine repeating itself at the model); a steer cleared without
-    // being delivered would ride none.
-    const toolCall: ToolCall = { id: 'tc1', name: 'file_read', arguments: { path: '/x' } };
+    // Two dead-end passes file the steer, call 3 carries it and calls a tool, so the loop assembles a FOURTH
+    // time. A steer delivered but never cleared would ride call 4 as well; one cleared undelivered would ride none.
+    const search = (n: number): ToolCall => ({ id: `tc${n}`, name: 'history_search', arguments: { pattern: `p${n}` } });
     callModelSpy.mockImplementation(
       recordingModel((n) => {
-        if (n <= 2) return EMPTY;
-        if (n === 3) return { content: 'reading', toolCalls: [toolCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+        if (n <= 3) return { content: '', toolCalls: [search(n)], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
         return DONE;
       }),
     );
-    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'file_read', content: 'file body', isError: false });
+    executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => ({
+      toolCallId: tc.id, name: tc.name, isError: false,
+      content: tc.id === 'tc3' ? 'Found 2 messages' : 'No results found for that.',
+    }));
 
     await runV2Turn('primary');
 
     expect(seenByModel.length).toBeGreaterThanOrEqual(4);
-    // t210 (decision 37): a later call of a turn APPENDS to what the previous call sent, so call 4
-    // still SHOWS call 3's steer where it was. "Never repeats" means never SENT AGAIN: the steer is
-    // new in exactly one call (call 3), and every later array holds that one copy at the same index.
-    const firstAt = seenByModel.findIndex((msgs) => indexOfEntry(msgs, EMPTY_RESPONSE_NUDGE) >= 0);
+    // A later call APPENDS to what the previous call sent, so call 4 still SHOWS call 3's steer where it was.
+    // "Never repeats" means never SENT AGAIN: new in exactly one call, one copy at the same index after.
+    const firstAt = seenByModel.findIndex((msgs) => indexOfEntry(msgs, DEAD_END_STEER) >= 0);
     expect(firstAt).toBe(2);
-    const at = indexOfEntry(seenByModel[2], EMPTY_RESPONSE_NUDGE);
+    const at = indexOfEntry(seenByModel[2], DEAD_END_STEER);
     for (const later of seenByModel.slice(3)) {
-      expect(later.filter((m) => m.content === EMPTY_RESPONSE_NUDGE), 'one copy, never re-sent').toHaveLength(1);
-      expect(indexOfEntry(later, EMPTY_RESPONSE_NUDGE), 'where it was').toBe(at);
+      expect(later.filter((m) => m.content === DEAD_END_STEER), 'one copy, never re-sent').toHaveLength(1);
+      expect(indexOfEntry(later, DEAD_END_STEER), 'where it was').toBe(at);
     }
   });
 
@@ -2634,12 +2597,12 @@ describe('HL3: model-visible means logged (the runtime invariant, driven)', () =
     // It reached the model: the third call carries it (T1's property, restated here because
     // this clause is meaningless if the steer never actually shipped).
     expect(seenByModel.length).toBeGreaterThanOrEqual(3);
-    const carried = seenByModel[2].some((m) => m.content === EMPTY_RESPONSE_NUDGE);
+    const carried = seenByModel[2].some((m) => m.content === FORCED_REPLY_STEER);
     expect(carried, 'the steer never reached the model — this clause would be vacuous').toBe(true);
 
     // …and it is IN THE LOG. Byte-identical: a row that paraphrases what the model saw is
     // not a reconstruction of it.
-    const rows = durableRows().filter((r) => r.content === EMPTY_RESPONSE_NUDGE);
+    const rows = durableRows().filter((r) => r.content === FORCED_REPLY_STEER);
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows[0].turn_number).not.toBeNull();
   });

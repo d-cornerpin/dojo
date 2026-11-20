@@ -109,6 +109,9 @@ export interface TurnContext {
   abortHandBack: boolean;
   // Another agent's request this turn serves; finalize marks it served.
   servedRequest: AgentRequest | null;
+  // The required reply (v2/forced-reply.ts): armed at most once a turn, and pending until its call returns.
+  forcedReplySpent: boolean;
+  forceReplyPending: boolean;
 
   // Timer closures read it at fire time, so it lives on the bag; no driver let beside it.
   state: AgentTurnState | null;
@@ -161,6 +164,8 @@ export function openTurnContext(agentId: string): TurnContext {
     retryAt: null,
     abortHandBack: false,
     servedRequest: null,
+    forcedReplySpent: false,
+    forceReplyPending: false,
     state: null,
   };
   openContexts.set(agentId, ctx);

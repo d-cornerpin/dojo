@@ -94,8 +94,10 @@ export interface SettlementContext extends TurnEnd {
 }
 
 /** How the turn ended, beyond its exit word: the provider's reset it met, paid calls before it, the task it parked
- *  its job on, and whether it was started from a parked job. */
-export interface TurnEnd { retryAt?: number | null; paidBeforeLimit?: boolean; parkedTask?: string | null; jobTurn?: boolean }
+ *  its job on, whether it was started from a parked job, and whether its required reply came back with nothing. */
+export interface TurnEnd {
+  retryAt?: number | null; paidBeforeLimit?: boolean; parkedTask?: string | null; jobTurn?: boolean; forcedEmpty?: boolean;
+}
 
 interface AskRow {
   id: string;
@@ -603,6 +605,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     const r = transition(workId, { to: 'abandoned', by: 'agent', actorId, expectedState: ask.state, reason: why });
     return r.kind === 'applied' ? out('closed', why) : out('unchanged', `settle refused: ${r.kind}`);
   }
+  // The required reply said nothing to the person: held now, the owner told once on the request's own record.
+  if (ctx.forcedEmpty) return standDownReServe(ask, ctx, actorId, reServesSpent(workId, 'silence'), out);
   // Who ended the turn decides which count moves and when it is served again (the exit table).
   const exit = turnExitReason(ask.agent_id, ctx.turnNumber);
   const cause = handBackCauseOf(exit, ctx);
@@ -996,6 +1000,17 @@ function onRelayEnded(joinId: string, p: DeliveryCloseInput): void {
   failJoinClosed(joinId, { reason: `the helper's answer could not be sent${why ? ` (${why})` : ''}; it is in the chat`, expectedState: ask.state });
 }
 
+/** The requests this turn claimed that it still owes an answer: nothing delegated, linked, out as a job or queued. */
+export function owedAtTurnEnd(agentId: string, turnNumber: number): string[] {
+  const rows = getDb().prepare(
+    `SELECT w.id AS id, w.root_id AS root_id FROM work w
+      WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'claimed' AND w.claimed_by_turn = ?
+        AND COALESCE(w.remaining_children, 0) = 0 AND w.compile_pending = 0 AND NOT ${REPLY_IN_FLIGHT}
+        AND NOT EXISTS (SELECT 1 FROM work t WHERE ${LINKED_OPEN_TASK('w')})`,
+  ).all(agentId, turnNumber) as Array<{ id: string; root_id: string }>;
+  return rows.filter((r) => mediaJobs(r.root_id).out === 0).map((r) => r.id);
+}
+
 /** The requests a turn's reply in a conversation answers: the asks that turn holds claimed there. */
 export function asksAnsweredBy(agentId: string, turnNumber: number, conversationId: string): string[] {
   return (getDb().prepare(
@@ -1043,7 +1058,9 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
            WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered')`,
   ).all(p.agentId, p.agentId, p.turnNumber) as Array<{ id: string }>;
 
-  const turnEnd: TurnEnd = { retryAt: p.retryAt, paidBeforeLimit: p.paidBeforeLimit, parkedTask: p.parkedTask, jobTurn: p.jobTurn };
+  const turnEnd: TurnEnd = {
+    retryAt: p.retryAt, paidBeforeLimit: p.paidBeforeLimit, parkedTask: p.parkedTask, jobTurn: p.jobTurn, forcedEmpty: p.forcedEmpty,
+  };
   const seen = new Set<string>();
   const tally = (v: AskSettlementVerdict): void => {
     if (v === 'closed') result.closed++;

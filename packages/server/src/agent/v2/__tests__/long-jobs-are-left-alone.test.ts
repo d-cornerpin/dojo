@@ -770,10 +770,10 @@ describe('t137 (a): a continuation that ends quietly after its tools ends quietl
     expect(systemRowsOfTurn(2)).toEqual([]);
   });
 
-  it('CONTROL: the SAME empty ending on a turn a person IS waiting on still gets the ladder (t125\'s own guarantee stands)', async () => {
+  it('CONTROL: the SAME empty ending on a turn a person IS waiting on still gets the required reply', async () => {
     const modelCalls = await readsThenSaysNothing();
-    expect(modelCalls).toBeGreaterThan(2);
-    expect(emptyReplySteers()).toBe(1);
+    expect(modelCalls).toBe(4);
+    expect(callModelSpy.mock.calls[3][0].forceReply).toBe(true);
   });
 });
 

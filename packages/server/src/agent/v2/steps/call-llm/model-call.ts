@@ -95,6 +95,7 @@ export async function callWithRetryAndFallback(
     const forTheWire = (arr: ModelMessage[]): ModelMessage[] => hydrateCredentialsInMessages(agentId, arr);
     if (attempt > 0) forgetTurnArray(turnCtx);
 
+    const forceReply = turnCtx.forceReplyPending;
     try {
       result = await callModel({
         agentId,
@@ -116,7 +117,9 @@ export async function callWithRetryAndFallback(
         purpose: 'agent_turn',
         routerTier: routerTier ?? undefined,
         abortSignal: abortController.signal,
-        onChunk: (chunk) => {
+        // The required reply is not streamed: it is shown once, when it is persisted.
+        forceReply,
+        onChunk: forceReply ? undefined : (chunk) => {
           if (abortController.signal.aborted) return;
           // Agent-to-agent reply text is never streamed into the owner's chat, wordy or not; the client hides their reasoning and tool frames (`turnKind`) outside wordy mode.
           if (!isA2ATurn && counterparty.kind !== 'agent') {
@@ -307,6 +310,9 @@ export async function callWithRetryAndFallback(
   // The stop fence on the success path: a stop pressed after the stream ended keeps the reply from being
   // persisted or broadcast. A stop after the row is persisted deletes nothing; the person keeps it.
   if (isStopFenced(agentId)) return abandonForStop('stopped-after-call');
+  // The required reply ends the turn's work: a tool call on it (a transport that could not require the reply) never runs.
+  if (turnCtx.forceReplyPending) result = { ...result, toolCalls: [] };
+  turnCtx.forceReplyPending = false;
 
   // Learn declared secrets once, before any persist, index or broadcast; stored copies get the sentinel.
   noteDeclaredSecretsFromToolCalls(agentId, result.toolCalls);

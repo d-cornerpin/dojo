@@ -175,7 +175,9 @@ describe('the declared precedence table', () => {
     // 32: `tracker-closeout` went with the close-out gate.
     // The repeat rule replaced `thrash-gate`, `thrash-drift` and `repetition`; `dead-end` replaced
     // `spinning` and `no-results`.
-    expect(STEER_PRECEDENCE.length).toBe(27);
+    // A6-2 ADDS `forced-reply`: the steer the required reply carries; `ghosted-ask` leaves with its ladder.
+    expect(STEER_PRECEDENCE.length).toBe(28);
+    expect(STEER_PRECEDENCE.filter((f) => f.id === 'forced-reply').length).toBe(1);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
       expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);
     }

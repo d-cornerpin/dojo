@@ -22,6 +22,7 @@ import { runPostCallClassify } from './steps/post-call-classify/index.js';
 import { runPreflight } from './steps/preflight/index.js';
 import { ensureArtifactDir } from '../artifact-dir.js';
 import { handBackAsk } from '../../work/ask-settlement.js';
+import { forcedReplyDue } from './forced-reply.js';
 import { askIdForMessage } from '../../work/store.js';
 
 const logger = createLogger('v2-loop');
@@ -103,112 +104,117 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
 
 
   try {
-    // Steps rewrite `phase` mid-body, so a mid-body 'done' never survives to this check; the monotone
-    // close-out latch and spin-brake grace are read here instead, ending the turn after the iteration ran.
-    while (
-      turnCtx.state!.phase !== 'done' &&
-      !turnCtx.state!.taskClosedWithTextThisTurn &&
-      !(turnCtx.toolPhaseEndedBySpinBrake && turnCtx.spinBrakeGraceCalls < 0)
-    ) {
-      turnCtx.state = advance(turnCtx.state!, { loopCount: turnCtx.state!.loopCount + 1, phase: 'preCallGates' });
+    // The passes run until the turn would end; a turn about to end silent with someone waiting gets its required
+    // reply (forced-reply.ts), at most once.
+    for (;;) {
+      // Steps rewrite `phase` mid-body, so a mid-body 'done' never survives to this check; the monotone
+      // close-out latch and spin-brake grace are read here instead, ending the turn after the iteration ran.
+      while (
+        turnCtx.state!.phase !== 'done' &&
+        !turnCtx.state!.taskClosedWithTextThisTurn &&
+        !(turnCtx.toolPhaseEndedBySpinBrake && turnCtx.spinBrakeGraceCalls < 0)
+      ) {
+        turnCtx.state = advance(turnCtx.state!, { loopCount: turnCtx.state!.loopCount + 1, phase: 'preCallGates' });
 
-      // Each step asks to exit through its directive; the driver decides here, where nothing downstream can overwrite it.
-      const preCallGates = await runPreCallGates(turnCtx.state!, preCallGatesContext());
-      turnCtx.state = preCallGates.state;
-      if (preCallGates.directive === 'exit') break;
-      if (preCallGates.directive === 'continue') continue;
-      turnCtx.state = advance(turnCtx.state!, { phase: 'assemble' });
-      // Built per iteration: three of its inputs are rewritten between rounds.
-      const assembled = await runAssemble(turnCtx.state!, {
-        agentId, turnCtx, turnNumber, db, contextModelId, contextWindow,
-        counterparty, counterpartyIsAgentSender, chosenConvKey, hasUnansweredUser,
-        isA2ATurn, isEngineTurn, isNotificationTurn, lastUserMessageContent,
-        latestTtsEngine, latestUserSource, mostRecentIsA2A, pendingEngineEvent,
-        mostRecentInbound,
-        waitingConvs, engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
-        staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
-        startAckRepliedNow, isAutoRouted, revertTriggerStampOnAbort,
-      });
-      turnCtx.state = assembled.state;
-      if (assembled.directive === 'exit') break;
-      const { assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm, assemblyTurnContext, selection } = assembled;
-      // Capability gate, retry-fallback and true streaming; the model was chosen in `assemble`. `abandon` leaves
-      // the turn: returning skips finalize and only the `finally` runs. Six inputs come from `assemble` this round.
-      turnCtx.state = advance(turnCtx.state!, { phase: 'callLLM' });
-      const callLLMContext: CallLLMContext = {
-        agentId, turnCtx, turnNumber, db,
-        counterparty, isA2ATurn, isAutoRouted, selection,
-        messages, systemPrompt, assembled: ctx, modelContext: mctx, volatileFrom,
-        steerAwaitingConfirm, assemblyTurnContext,
-        revertTriggerStampOnAbort,
-      };
-      const callLLM = await runCallLLM(turnCtx.state!, callLLMContext);
-      turnCtx.state = callLLM.state;
-      if (callLLM.directive === 'abandon') return;
-      if (callLLM.directive === 'exit') break;
-      if (callLLM.directive === 'continue') continue;
-      const { messageId, result } = callLLM;
+        // Each step asks to exit through its directive; the driver decides here, where nothing downstream can overwrite it.
+        const preCallGates = await runPreCallGates(turnCtx.state!, preCallGatesContext());
+        turnCtx.state = preCallGates.state;
+        if (preCallGates.directive === 'exit') break;
+        if (preCallGates.directive === 'continue') continue;
+        turnCtx.state = advance(turnCtx.state!, { phase: 'assemble' });
+        // Built per iteration: three of its inputs are rewritten between rounds.
+        const assembled = await runAssemble(turnCtx.state!, {
+          agentId, turnCtx, turnNumber, db, contextModelId, contextWindow,
+          counterparty, counterpartyIsAgentSender, chosenConvKey, hasUnansweredUser,
+          isA2ATurn, isEngineTurn, isNotificationTurn, lastUserMessageContent,
+          latestTtsEngine, latestUserSource, mostRecentIsA2A, pendingEngineEvent,
+          mostRecentInbound,
+          waitingConvs, engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
+          staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
+          startAckRepliedNow, isAutoRouted, revertTriggerStampOnAbort,
+        });
+        turnCtx.state = assembled.state;
+        if (assembled.directive === 'exit') break;
+        const { assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm, assemblyTurnContext, selection } = assembled;
+        // Capability gate, retry-fallback and true streaming; the model was chosen in `assemble`. `abandon` leaves
+        // the turn: returning skips finalize and only the `finally` runs. Six inputs come from `assemble` this round.
+        turnCtx.state = advance(turnCtx.state!, { phase: 'callLLM' });
+        const callLLMContext: CallLLMContext = {
+          agentId, turnCtx, turnNumber, db,
+          counterparty, isA2ATurn, isAutoRouted, selection,
+          messages, systemPrompt, assembled: ctx, modelContext: mctx, volatileFrom,
+          steerAwaitingConfirm, assemblyTurnContext,
+          revertTriggerStampOnAbort,
+        };
+        const callLLM = await runCallLLM(turnCtx.state!, callLLMContext);
+        turnCtx.state = callLLM.state;
+        if (callLLM.directive === 'abandon') return;
+        if (callLLM.directive === 'exit') break;
+        if (callLLM.directive === 'continue') continue;
+        const { messageId, result } = callLLM;
 
-      // After the terminal spin brake ends the tool phase, tool calls return a note unexecuted; a small grace of
-      // iterations lets the model converge to text before the turn concludes. Its text is never suppressed.
-      if (turnCtx.toolPhaseEndedBySpinBrake && result.toolCalls.length > 0) {
-        turnCtx.spinBrakeGraceCalls -= 1;
-        if (turnCtx.spinBrakeGraceCalls < 0) {
-          logger.warn('v2: spin brake grace exhausted, concluding the turn', { agentId, turnNumber }, agentId);
+        // After the terminal spin brake ends the tool phase, tool calls return a note unexecuted; a small grace of
+        // iterations lets the model converge to text before the turn concludes. Its text is never suppressed.
+        if (turnCtx.toolPhaseEndedBySpinBrake && result.toolCalls.length > 0) {
+          turnCtx.spinBrakeGraceCalls -= 1;
+          if (turnCtx.spinBrakeGraceCalls < 0) {
+            logger.warn('v2: spin brake grace exhausted, concluding the turn', { agentId, turnNumber }, agentId);
+          }
         }
+
+        turnCtx.state = advance(turnCtx.state!, { phase: 'postCallClassify' });
+        // Built per iteration: the model result and message id come from `callLLM` this round.
+        const classified = await runPostCallClassify(turnCtx.state!, {
+          agentId, turnCtx, turnNumber, db, agent, counterparty, counterpartyIsAgentSender,
+          chosenConvKey, hasUnansweredUser, triggerRow, isA2ATurn, isEngineTurn,
+          isHumanContinuation, mostRecentIsA2A, mostRecentInbound, pendingEngineEvent,
+          unrepliedAssign, a2aReplyContext, a2aReplyAssignMessageId, settledContextWakeTurn,
+          waitingConvs, inboundChannel, latestUserSource, lastUserMessageContent,
+          configuredModelId, turnStartedAt, messageId, result,
+          // Closures over driver state, passed as values so they keep the bindings they closed over.
+          reArmIfStrandedNoAnswer, noteTerminalAnswer, deliverEngineUserAck,
+          persistAndBroadcastSystemRow, startAckRepliedNow,
+        });
+        turnCtx.state = classified.state;
+        if (classified.directive === 'exit') break;
+        if (classified.directive === 'continue') continue;
+        const {
+          persistedContent, interAgentTurn, hasXmlFallbackTools, effectiveModelIdForPersist,
+        } = classified;
+
+
+        // INVARIANT: never persist any message between an assistant tool_use and its tool_result (the assembler would
+        // drop the pair and the model re-issue the call); a transient indicator must be broadcast-only.
+        turnCtx.state = advance(turnCtx.state!, { phase: 'execute' });
+        // Built per iteration: four inputs come from `postCallClassify` this round.
+        const executed = await runExecute(turnCtx.state!, {
+          agentId, turnCtx, turnNumber, db, agent, counterparty, counterpartyIsAgentSender,
+          chosenConvKey, hasUnansweredUser, triggerRow, triggerWorkId, triggerConversationId,
+          turnStartedAt, persistRoutingMarker,
+          engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
+          deferredDeliveredByAck: turnCtx.deferredDeliveredByAck,
+          refusedOnceSigs,
+          startAckArmed, startAckArmedAtMs, fireStartAckIfOwed,
+          result, messageId, persistedContent, interAgentTurn, hasXmlFallbackTools,
+          effectiveModelIdForPersist,
+          staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
+          engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
+        });
+        turnCtx.state = executed.state;
+        if (executed.directive === 'exit') break;
+        if (executed.directive === 'continue') continue;
+        const { turnToolResults } = executed;
+
+        turnCtx.state = advance(turnCtx.state!, { phase: 'postExecution' });
+        const postExecution = runPostExecution(turnCtx.state!, {
+          agentId, turnNumber, turnToolResults, broadcast,
+        });
+        turnCtx.state = postExecution.state;
+        if (postExecution.directive === 'exit') break;
+        if (postExecution.directive === 'continue') continue;
+
       }
-
-      turnCtx.state = advance(turnCtx.state!, { phase: 'postCallClassify' });
-      // Built per iteration: the model result and message id come from `callLLM` this round.
-      const classified = await runPostCallClassify(turnCtx.state!, {
-        agentId, turnCtx, turnNumber, db, agent, counterparty, counterpartyIsAgentSender,
-        chosenConvKey, hasUnansweredUser, triggerRow, isA2ATurn, isEngineTurn,
-        isHumanContinuation, mostRecentIsA2A, mostRecentInbound, pendingEngineEvent,
-        unrepliedAssign, a2aReplyContext, a2aReplyAssignMessageId, settledContextWakeTurn,
-        waitingConvs, inboundChannel, latestUserSource, lastUserMessageContent,
-        configuredModelId, turnStartedAt, messageId, result,
-        // Closures over driver state, passed as values so they keep the bindings they closed over.
-        reArmIfStrandedNoAnswer, noteTerminalAnswer, deliverEngineUserAck,
-        persistAndBroadcastSystemRow, startAckRepliedNow,
-      });
-      turnCtx.state = classified.state;
-      if (classified.directive === 'exit') break;
-      if (classified.directive === 'continue') continue;
-      const {
-        persistedContent, interAgentTurn, hasXmlFallbackTools, effectiveModelIdForPersist,
-      } = classified;
-
-
-      // INVARIANT: never persist any message between an assistant tool_use and its tool_result (the assembler would
-      // drop the pair and the model re-issue the call); a transient indicator must be broadcast-only.
-      turnCtx.state = advance(turnCtx.state!, { phase: 'execute' });
-      // Built per iteration: four inputs come from `postCallClassify` this round.
-      const executed = await runExecute(turnCtx.state!, {
-        agentId, turnCtx, turnNumber, db, agent, counterparty, counterpartyIsAgentSender,
-        chosenConvKey, hasUnansweredUser, triggerRow, triggerWorkId, triggerConversationId,
-        turnStartedAt, persistRoutingMarker,
-        engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
-        deferredDeliveredByAck: turnCtx.deferredDeliveredByAck,
-        refusedOnceSigs,
-        startAckArmed, startAckArmedAtMs, fireStartAckIfOwed,
-        result, messageId, persistedContent, interAgentTurn, hasXmlFallbackTools,
-        effectiveModelIdForPersist,
-        staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
-        engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
-      });
-      turnCtx.state = executed.state;
-      if (executed.directive === 'exit') break;
-      if (executed.directive === 'continue') continue;
-      const { turnToolResults } = executed;
-
-      turnCtx.state = advance(turnCtx.state!, { phase: 'postExecution' });
-      const postExecution = runPostExecution(turnCtx.state!, {
-        agentId, turnNumber, turnToolResults, broadcast,
-      });
-      turnCtx.state = postExecution.state;
-      if (postExecution.directive === 'exit') break;
-      if (postExecution.directive === 'continue') continue;
-
+      if (!(await forcedReplyDue(turnCtx, { agentId, turnNumber, latestUserSource }))) break;
     }
 
     turnCtx.state = advance(turnCtx.state!, { phase: 'finalize' });

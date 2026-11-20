@@ -174,8 +174,8 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   state = steer.state;
   const steerAwaitingConfirm = steer.steerAwaitingConfirm;
 
-  // A zero-message assembly cannot be dialed: exit clean, and the reason says so.
-  if (messages.length === 0) {
+  // A zero-message assembly cannot be dialed (the engine's own injections are no conversation): exit clean.
+  if (volatileFrom === 0) {
     logger.info('v2: assembled context has zero messages, clean exit', {
       agentId,
       loopCount: state.loopCount,

@@ -5,6 +5,7 @@
 import type { WsEvent } from '@dojo/shared';
 import { createLogger } from '../../../../logger.js';
 import { isStopFenced, preemptedAgents } from '../../../shared-state.js';
+import { turnContext } from '../../../turn-context.js';
 import { type AgentTurnState, type TurnPhase } from '../../state.js';
 import { latchEngineCut } from '../../engine-exit.js';
 import type { TurnCounterparty } from '../../counterparty.js';
@@ -55,6 +56,8 @@ export async function runPreCallGates(
     return requestExit(latchEngineCut(state, 'preempt'), 'preempted' satisfies PreCallGatesExitReason);
   }
 
+  // The required reply is one call that may not be parked or condensed away; a stop or preempt above still ends it.
+  if (turnContext(agentId)?.forceReplyPending) return proceed(state);
   const budget = await runTurnTimeBudget(state, ctx);
   if (budget.directive !== 'proceed') return budget;
 
