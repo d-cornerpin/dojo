@@ -1,5 +1,5 @@
 // The gates that can refuse a call before it runs: the reminder-delivery lane, the main agent's warn-once
-// hurdle and the compile gate, plus the hoarding advisory, which refuses nothing. A refusal comes back as
+// hurdle, the repeat-send stop and the compile gate, plus the hoarding advisory, which refuses nothing. A refusal comes back as
 // `{ state, refusal }` and `run-one.ts` returns it as the call's result.
 
 import { broadcast } from '../../../../gateway/ws.js';
@@ -17,6 +17,11 @@ import { replyChannelWords } from '../../turn-address.js';
 import { liveAddress } from '../../turn-address-live.js';
 import { createLogger } from '../../../../logger.js';
 import { redactDeclaredSecretArgs } from '../../../../credentials/secret-fields.js';
+import { getDb } from '../../../../db/connection.js';
+import { SENT_TEXT_MAX_CHARS } from '../../../../receipts/store.js';
+import { recipientIdsMatch } from '../../../recipient-identity.js';
+import { outboundRecipientForTool } from '../../outbound.js';
+import type { TurnContext } from '../../../turn-context.js';
 import type { ToolCall } from '@dojo/shared';
 import type { ExecuteContext, PendingToolResult } from './index.js';
 
@@ -36,6 +41,32 @@ function hurdle(agentId: string, tc: ToolCall, refusedOnceSigs: Set<string>): Pe
   };
 }
 
+/** The `sent_text` each send door stores, from the call's arguments; '' for a door that stores none. */
+const sentTextOf = (tool: string, a: Record<string, unknown>): string =>
+  tool === 'imessage_send' ? String(a.message ?? '') : tool === 'sms_send' ? String(a.body ?? '')
+    : tool === 'gmail_send' || tool === 'outlook_send' ? `${String(a.subject ?? '')}: ${String(a.body ?? '').slice(0, 300)}` : '';
+
+/** Loop protection, never a block: a send this request made on an earlier turn is refused once; the identical repeat goes. */
+function repeatSend(agentId: string, tc: ToolCall, turnCtx: TurnContext, refusedOnceSigs: Set<string>): PendingToolResult | null {
+  const { root, turnNumber: turn } = turnCtx;
+  if (root?.kind !== 'ask' || turn === undefined) return null;
+  const args = (tc.arguments ?? {}) as Record<string, unknown>;
+  const tool = tc.name.replace(/^user_/, '');
+  const text = sentTextOf(tool, args).slice(0, SENT_TEXT_MAX_CHARS);
+  const recipient = outboundRecipientForTool(tc.name, args);
+  const sig = `repeat|${identicalCallSignature(tc.name, tc.arguments)}`;
+  if (!text || !recipient || refusedOnceSigs.has(sig)) return null;
+  const prior = (getDb().prepare(
+    `SELECT turn_number AS n, recipient FROM tool_receipts WHERE agent_id = ? AND tool = ? AND sent_text = ?
+        AND root_kind = 'ask' AND root_id = ? AND turn_number < ? ORDER BY turn_number DESC`,
+  ).all(agentId, tool, text, root.id, turn) as Array<{ n: number; recipient: string | null }>)
+    .find((r) => recipientIdsMatch(recipient, r.recipient));
+  if (!prior) return null;
+  refusedOnceSigs.add(sig);
+  return { toolCallId: tc.id, name: tc.name, isError: true, content: `[Engine: not sent] Turn ${prior.n} already sent this same `
+    + `message to ${recipient} for this request. If you mean to send it again, repeat the exact same call now and it will go.` };
+}
+
 /** `refusal` non-null means the call does NOT run and this is its result. */
 export function runRefusalGates(
   state: AgentTurnState,
@@ -46,6 +77,8 @@ export function runRefusalGates(
 
   const warning = hurdle(agentId, tc, refusedOnceSigs);
   if (warning) return { state, refusal: warning };
+  const repeated = repeatSend(agentId, tc, turnCtx, refusedOnceSigs);
+  if (repeated) return { state, refusal: repeated };
 
   // Reminder lane: a turn serving a kind='reminder' task delivers to the owner, so a send naming anyone
   // else is refused once (an identical re-send goes through). The owner test is `isOwnerIMessageRecipient`.
