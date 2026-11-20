@@ -75,6 +75,19 @@ describe('stop ends the request and nothing serves it again', () => {
     nothingComesBack();
   });
 
+  it('Stop ends a parked job whose hold was written before the hold named its task as evidence', async () => {
+    const ask = await ownerAsks('m-1');
+    await stretch('parks');
+    const [task] = tasksOf('m-1');
+    testDb().prepare(`UPDATE work_events SET payload = json_set(json_remove(payload, '$.evidence_ref'), '$.reason', ?)
+      WHERE id = (SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'transition')`).run(`held: its job is still running (task ${task})`, ask);
+    expect(rowOf(ask).state).toBe('blocked');
+    expect(stopByOwner(HELPER)).toMatchObject({ ended: 1 });
+    expect(rowOf(ask).state).toBe('abandoned');
+    expect(rowOf(task)).toMatchObject({ due: null, hold: 'paused' });
+    nothingComesBack();
+  });
+
   it("Stop with the agent's own task parked and no request behind it ends that job", () => {
     seedTrackerTask(testDb(), { id: 'own-task', agentId: HELPER, title: 'Tidy the archive', next_attempt_at: Date.now() - 1_000 });
     expect(nextOwed(HELPER).map((i) => i.kind)).toEqual(['job']);

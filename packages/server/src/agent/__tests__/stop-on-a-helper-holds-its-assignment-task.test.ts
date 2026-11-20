@@ -26,6 +26,7 @@ describe('stop on a helper holds its assignment task', () => {
     const out = await runPreflight(bag, preflightCtx());
     expect(out.directive).toBe('proceed');
     expect(stopByOwner(HELPER)).toMatchObject({ ended: 1 });
+    expect(stopByOwner(HELPER), 'a second press finds the request already ended').toMatchObject({ ended: 0 });
     if (out.directive === 'proceed') await finalizeTurnRecord(latchEngineCut(bag.state!, 'stop'), out.outputs.teardownContext());
     endTurnContext(HELPER);
 

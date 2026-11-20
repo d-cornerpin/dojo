@@ -25,6 +25,13 @@ export function serveLater(subject: Owed, at: number | null, why: string, opts: 
   }
   logger.info('owed: serve again at', { subject, at, why });
   afterCommit(() => void import('./owed.js').then((m) => m.armOwedClock()));
+  if (subject.kind === 'task') announceTaskLiveWork(subject.id);
+}
+
+/** A task's due or hold changed, so whether its agent has a parked job Stop would end may have: say so once committed. */
+export function announceTaskLiveWork(taskId: string): void {
+  const row = getDb().prepare('SELECT agent_id FROM work WHERE id = ?').get(taskId) as { agent_id: string } | undefined;
+  if (row) afterCommit(() => void import('../live-work.js').then((m) => m.announceLiveWork(row.agent_id)));
 }
 
 /** A serve of a message row (another agent's request, or an engine event) is spent: count it, and with a backoff

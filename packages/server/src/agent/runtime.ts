@@ -394,7 +394,7 @@ export function stopByOwner(agentId: string): { ended: number; repliesNotSent: n
   } catch (err) {
     logger.error('stop: the request being served could not be read', { error: String(err) }, agentId);
   }
-  const toEnd = s.asks.length + s.runTasks.length + s.requests.length + s.jobs.length;
+  const toEnd = s.asks.length + s.runTasks.length + s.requests.length;
   if (toEnd === 0 && !runIsLive(agentId)) return { ended: 0, repliesNotSent: 0, nothingRunning: true };
   try {
     return withUnit(() => {
