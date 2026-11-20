@@ -37,6 +37,13 @@ describe('a helper cannot change the goal or the measure it was given', () => {
     expect(log.map((e) => e.actor)).toContain(`agent:${MAIN}`);
   });
 
+  it('the main agent holding a task the owner gave it changes the goal and the measure', async () => {
+    doneDb().prepare("UPDATE work SET requester = 'owner', requester_id = NULL, agent_id = ?, assignee_agent = ? WHERE id = ?").run(MAIN, MAIN, TASK);
+    expect((await editGoal(MAIN)).content).not.toMatch(/^Error/);
+    expect(goal()).toBe('Any report at all');
+    expect(editMeasure(MAIN, TASK, READING)).toHaveProperty('line');
+  });
+
   it('a worker that created its own task may change its goal', async () => {
     doneDb().prepare('UPDATE work SET requester_id = ? WHERE id = ?').run(WORKER, TASK);
     expect((await editGoal(WORKER)).content).not.toMatch(/^Error/);
