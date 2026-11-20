@@ -1,6 +1,6 @@
-// A send-back reaches someone who can act on it: the worker, or, when the worker was a helper that has
-// ended, the agent that spawned it, else the main agent. That agent becomes the row's worker. The owner's
-// send-back reaches it as his, never as a message from the project manager.
+// A send-back reaches someone who can act on it, as an event the one clock serves: the worker, or, when the
+// worker was a helper that has ended, the agent that spawned it, else the main agent. That agent becomes the
+// row's worker. The owner's send-back reaches it as his, never as a message from the project manager.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -14,7 +14,7 @@ import { freshBoard, handedIn, call, stateOf, PM, MAIN, WORKER, OTHER, TASK } fr
 import { doneDb } from './helpers/done-db.js';
 
 const hintTo = (agentId: string): string | undefined => (doneDb().prepare(
-  "SELECT content FROM messages WHERE agent_id = ? AND source_agent_id = ? AND content LIKE '%was sent back%'",
+  "SELECT content FROM messages WHERE agent_id = ? AND source_agent_id = ? AND lane = 'events' AND content LIKE '%was sent back%'",
 ).get(agentId, PM) as { content: string } | undefined)?.content;
 
 async function sendBack(): Promise<void> {
@@ -28,7 +28,7 @@ describe('a send-back reaches the worker of record', () => {
     freshBoard();
     await handedIn();
     await sendBack();
-    expect(hintTo(WORKER)).toContain('The totals page is missing');
+    await vi.waitFor(() => expect(hintTo(WORKER)).toContain('The totals page is missing'));
     expect(workerOf(TASK)).toBe(WORKER);
   });
 
@@ -37,7 +37,7 @@ describe('a send-back reaches the worker of record', () => {
     await handedIn();
     doneDb().prepare("UPDATE agents SET status = 'terminated', parent_agent = ? WHERE id = ?").run(OTHER, WORKER);
     await sendBack();
-    expect(hintTo(OTHER)).toContain('it is yours now');
+    await vi.waitFor(() => expect(hintTo(OTHER)).toContain('it is yours now'));
     expect(hintTo(WORKER)).toBeUndefined();
     expect(workerOf(TASK)).toBe(OTHER);
   });
@@ -57,7 +57,7 @@ describe('a send-back reaches the worker of record', () => {
     await handedIn();
     doneDb().prepare("UPDATE agents SET status = 'terminated', parent_agent = NULL WHERE id = ?").run(WORKER);
     await sendBack();
-    expect(hintTo(MAIN)).toContain('The totals page is missing');
+    await vi.waitFor(() => expect(hintTo(MAIN)).toContain('The totals page is missing'));
     expect(workerOf(TASK)).toBe(MAIN);
   });
 });
