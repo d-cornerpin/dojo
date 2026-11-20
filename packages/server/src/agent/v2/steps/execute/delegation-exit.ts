@@ -24,6 +24,7 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
 
   // This turn's reply-warranting sends that went out, whichever tool made them, keyed by turn number on their own
   // delivery rows: a2a rows are stored to the whole second, so a clock bound would sweep in the previous turn's sends.
+  // Read per turn, not per response: once the turn has delegated, any later tool step ends it after the one status-line steer.
   const sentRows = counterparty.kind === 'agent' ? [] : db.prepare(
     `SELECT m.a2a_thread_id AS a2a_thread_id, m.agent_id AS agent_id, m.a2a_intent AS a2a_intent
        FROM deliveries d JOIN messages m ON m.id = d.message_id

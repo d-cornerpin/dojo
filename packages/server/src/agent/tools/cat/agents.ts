@@ -374,7 +374,7 @@ export async function sendToAgent(agentId: string, input: {
     if (result.autoCreatedTaskId) {
       const taskShort = result.autoCreatedTaskId.slice(0, 8);
       content += result.autoTaskIsNew
-        ? `\nTask ${taskShort} is the board task for this work, held by "${agentRef}". Their reply on this thread is the answer, and it wakes you.`
+        ? `\nTask ${taskShort} is the board task for this work, held by "${agentRef}". Their final reply on this thread is the answer, and it wakes you.`
         : `\nContinuing on existing task ${taskShort} (created by an earlier ASSIGN on this thread).`;
     }
     // The hand-off outcome is composed by the transport; only relayed here.

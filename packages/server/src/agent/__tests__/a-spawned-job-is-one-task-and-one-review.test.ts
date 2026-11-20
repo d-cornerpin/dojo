@@ -58,7 +58,7 @@ describe('a spawned job is one task and one review', () => {
     expect(assign.content).toContain('Write the report.');
     expect(assign.content).toContain('complete_task');
     expect(assign.content).toContain('reply on this thread with the result (COMPLETE, or FAIL if it cannot be done); that reply hands the task in.');
-    expect(r.content).toMatch(/is the board task for this work, held by ".+"\. Their reply on this thread is the answer, and it wakes you\./);
+    expect(r.content).toMatch(/is the board task for this work, held by ".+"\. Their final reply on this thread is the answer, and it wakes you\./);
     expect(assign.content).toContain('reply on this thread with send_to_agent(intent="COMPLETE", thread_id=<the thread_id named at the end of this message>, payload=<your full result>). That reply hands your task in.');
     expect(threadOf('task-mine-0001')).toBe(assign.thread);
     expect(tasksHeldBy(helper).map((t) => t.id)).toEqual(['task-mine-0001']);
