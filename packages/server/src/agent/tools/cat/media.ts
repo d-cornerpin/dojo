@@ -583,7 +583,7 @@ const handlers = {
     } catch { /* best effort */ }
 
     try {
-      enqueueVideoJob(submit.jobId); noteJobStartedIn(agentId, submit.jobId);   // loop guard: see wake-with-notice.ts
+      void enqueueVideoJob(submit.jobId); noteJobStartedIn(agentId, submit.jobId);   // loop guard: see wake-with-notice.ts
     } catch (err) {
       logger.error('video_create: failed to enqueue poller (job will resume on next boot)', {
         jobId: submit.jobId, error: err instanceof Error ? err.message : String(err),

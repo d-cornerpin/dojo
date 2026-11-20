@@ -1,5 +1,6 @@
 // The one delivery of a finished picture, speech, song or video: copied into the agent's uploads, posted in its chat
-// with no caption, and queued for a phone by iMessage when the request came by iMessage or the owner is away.
+// with no caption, and queued for a phone by iMessage (a video as its link) when the request came by iMessage or the
+// owner is away.
 import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
@@ -15,6 +16,7 @@ import { engineMayRouteTo } from '../agent/access/engine-route.js';
 import { replyAddressFor, type ReplyAddress } from '../agent/v2/channel-sender.js';
 import { queueReply } from '../agent/v2/deliveries.js';
 import { getPresence, isImessageConfigured } from './presence.js';
+import { createPublicShare } from './public-share.js';
 
 const logger = createLogger('media-delivery');
 
@@ -59,7 +61,7 @@ export async function deliverMedia(m: FinishedMedia): Promise<void> {
   const phone = await queueForPhone(m, file);
   postAgentNotice({
     toAgentId: m.agentId, fromName: 'Media delivery', intent: 'image_delivery_outcome', selfIntro: false,
-    brief: `your ${MEDIA_WORD[m.kind]} was posted in the dashboard${phone ? ` and is being texted to ${phone} by iMessage` : ''}, with no caption: the Dojo wrote no words around it. If you want to say something about it, say it in your own words.`,
+    brief: `your ${MEDIA_WORD[m.kind]} was posted in the dashboard${phone ? ` and is being texted to ${phone} by iMessage${m.kind === 'video' ? ' as a link' : ''}` : ''}, with no caption: the Dojo wrote no words around it. If you want to say something about it, say it in your own words.`,
   });
 }
 
@@ -75,7 +77,9 @@ async function queueForPhone(m: FinishedMedia, file: string): Promise<string | n
       : getPresence() === 'away' && isImessageConfigured() ? { channel: 'imessage', to: null } : null;
     if (!address) return null;
     const root = m.requestMessageId ? { kind: 'ask' as const, id: m.requestMessageId, sourceMessageId: m.requestMessageId, conversationId: m.conversationId } : null;
-    const queued = await queueReply({ agentId: m.agentId, turnNumber: null, root, text: '', address, files: [file], kind: 'download-links' });
+    // A video is too big for a text, so its link goes instead.
+    const link = m.kind === 'video' ? `Download: ${createPublicShare({ sourcePath: file }).url}` : '';
+    const queued = await queueReply({ agentId: m.agentId, turnNumber: null, root, text: link, address, files: link ? [] : [file], kind: 'download-links' });
     return queued ? (address.to === null ? 'the owner' : 'the person who asked') : null;
   } catch (err) {
     logger.warn('media delivery: the phone copy was not queued', { jobId: m.jobId, error: err instanceof Error ? err.message : String(err) });
