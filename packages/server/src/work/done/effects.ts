@@ -87,22 +87,23 @@ export async function finalWordsBack(p: {
   workerId: string; taskId: string | null; text: string; outcome: 'COMPLETE' | 'FAIL'; orNewThread: boolean;
 }): Promise<void> {
   const db = getDb();
-  // Without a task the job is the helper's first ASSIGN, so a job already handed in by its reply is not answered twice.
-  const task = (p.taskId ? db.prepare('SELECT a2a_thread_id AS thread, opened_at FROM work WHERE id = ?').get(p.taskId)
-    : db.prepare(`SELECT a2a_thread_id AS thread, created_at AS opened_at FROM messages WHERE agent_id = ? AND a2a_intent = 'ASSIGN'
-       AND source_agent_id IS NOT NULL ORDER BY seq ASC LIMIT 1`).get(p.workerId)) as { thread: string | null; opened_at: number } | undefined;
-  const thread = task?.thread ?? null;
-  const giver = thread ? db.prepare(
-    `SELECT source_agent_id AS id FROM messages WHERE agent_id = ? AND a2a_thread_id = ? AND a2a_intent = 'ASSIGN'
-       AND source_agent_id IS NOT NULL ORDER BY seq ASC LIMIT 1`,
-  ).get(p.workerId, thread) as { id: string } | undefined : undefined;
-  const maker = giver?.id ?? (db.prepare('SELECT parent_agent FROM agents WHERE id = ?').get(p.workerId) as
+  const task = p.taskId ? db.prepare('SELECT a2a_thread_id AS thread, opened_at FROM work WHERE id = ?').get(p.taskId) as
+    { thread: string | null; opened_at: number } | undefined : undefined;
+  // The giver is the sender of the job's first ASSIGN; without a task that ASSIGN is the job, so a job already handed
+  // in by its reply is not answered twice.
+  const assign = p.taskId && !task?.thread ? undefined : db.prepare(
+    `SELECT a2a_thread_id AS thread, created_at AS at, source_agent_id AS giver FROM messages WHERE agent_id = @worker
+       AND a2a_intent = 'ASSIGN' AND source_agent_id IS NOT NULL AND (@thread IS NULL OR a2a_thread_id = @thread) ORDER BY seq ASC LIMIT 1`,
+  ).get({ worker: p.workerId, thread: task?.thread ?? null }) as { thread: string; at: number; giver: string } | undefined;
+  const thread = task ? task.thread : assign?.thread ?? null;
+  const since = task?.opened_at ?? assign?.at ?? 0;
+  const maker = assign?.giver ?? (db.prepare('SELECT parent_agent FROM agents WHERE id = ?').get(p.workerId) as
     { parent_agent: string | null } | undefined)?.parent_agent;
   if (!maker || maker === p.workerId || !p.text.trim() || isDreamerAgent(p.workerId) || (!thread && !p.orNewThread)) return;
   // Held back only by the helper's own final reply on the thread: a STATUS, a question or the Dojo's copy of a note is not one.
   const answered = thread && db.prepare(`SELECT 1 FROM messages m JOIN deliveries d ON d.message_id = m.id AND d.tool = 'send_to_agent'
     WHERE m.agent_id = ? AND m.source_agent_id = ? AND m.a2a_thread_id = ? AND m.created_at >= ?
-      AND m.a2a_intent IN ('ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL')`).get(maker, p.workerId, thread, task?.opened_at ?? 0);
+      AND m.a2a_intent IN ('ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL')`).get(maker, p.workerId, thread, since);
   if (thread && (answered || resultForEndedRequest(maker, thread))) return;
   await import('../../agent/a2a-transport.js')
     .then(({ deliverA2AMessage }) => deliverA2AMessage({

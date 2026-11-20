@@ -363,10 +363,8 @@ export interface A2ADeliveryResult {
 }
 
 /** The sender's declared hand-off, beside the envelope: a platform fact, not a message fact. */
-export type A2ADeliveryOptions = A2AEnvelope & {
-  handsOffThread?: string | null; work?: EngineEventWork | null;   // the work a wake belongs to, as the serve-boundary columns
-  taskId?: string | null;   // an ASSIGN's given task, from engine state only (a spawn's transfer)
-};
+export type A2ADeliveryOptions = A2AEnvelope & { handsOffThread?: string | null; work?: EngineEventWork | null;
+  taskId?: string | null };   // `work`: the serve-boundary columns of a wake; `taskId`: a spawn's transferred task, engine state only
 
 /** It must not hard-name a recipient or channel: the deliverable is owed to whoever asked, on their channel. */
 export function deliverableArrivedNote(senderName: string): string {

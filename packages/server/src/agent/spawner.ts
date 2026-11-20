@@ -349,21 +349,21 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
 
 /** The working rules a new helper's job carries in its ASSIGN: the caller's own first message, else the default. */
-export function jobBrief(p: { systemPrompt: string; initialMessage?: string; taskId?: string | null }): string {
+export function jobBrief({ systemPrompt, initialMessage }: { systemPrompt: string; initialMessage?: string }): string {
   let taskMessage: string;
 
-  if (p.initialMessage) {
+  if (initialMessage) {
     // Custom initial message provided, use it, but always remind about complete_task
-    taskMessage = p.initialMessage;
-    if (!p.initialMessage.toLowerCase().includes('complete_task')) {
+    taskMessage = initialMessage;
+    if (!initialMessage.toLowerCase().includes('complete_task')) {
       taskMessage += '\n\nIMPORTANT: When you are finished, you MUST call complete_task with status="complete" and a summary. Do NOT just stop responding.';
     }
-  } else if (p.systemPrompt.toLowerCase().includes('complete_task')) {
+  } else if (systemPrompt.toLowerCase().includes('complete_task')) {
     // System prompt already mentions complete_task, don't inject default instructions
-    taskMessage = `Your task: ${p.systemPrompt}\n\nBegin working immediately.`;
+    taskMessage = `Your task: ${systemPrompt}\n\nBegin working immediately.`;
   } else {
     // Default: inject complete_task instructions
-    taskMessage = `Your task: ${p.systemPrompt}
+    taskMessage = `Your task: ${systemPrompt}
 
 IMPORTANT INSTRUCTIONS:
 1. Begin working immediately.
@@ -372,11 +372,6 @@ IMPORTANT INSTRUCTIONS:
 4. When you have completed the task, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.
 5. If you get stuck or cannot complete the task, call complete_task with status="blocked" or status="fallen" and explain why.
 6. Do not wait for further instructions unless you need clarification, just do the work and report back via complete_task.`;
-  }
-
-  // Append task ID context if this agent has an associated tracker task
-  if (p.taskId) {
-    taskMessage += `\n\nYour tracker task ID is: ${p.taskId}, update its status when you finish.`;
   }
   return taskMessage;
 }
