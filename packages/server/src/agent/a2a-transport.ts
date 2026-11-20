@@ -1142,9 +1142,7 @@ function answerBackInView(join: JoinState, kind: PutBackKind, evidence: string |
         settledOnPriorRelay(join.id);
         return false;
       }
-    } else if (!instead) {
-      appendWorkEvent(join.id, 'compile_resolved', 'engine', { reason: kind === 'late' ? 'its helper answered after all' : 'its helper corrected its work', kind, evidence });
-    }
+    } else if (!instead) appendWorkEvent(join.id, 'compile_resolved', 'engine', { reason: kind === 'late' ? 'its helper answered after all' : 'its helper corrected its work', kind, evidence });
     if (instead) return true;
     const state = joinState(join.id)?.parentState;
     const reason = 'its delegated work is back';
@@ -1225,6 +1223,7 @@ function deliverLateAnswerIfJoinFailedClosed(p: LandInput): boolean {
 /** Corrected work for a request already answered: the helper's job was sent back after its piece landed. The piece
  *  takes the corrected text and delivery, and the request goes back to its person; false when this is not that. */
 function updateAfterSendBack(p: LandInput): boolean {
+  if (p.intent === 'FAIL' || !p.payload.trim()) return false;
   const r = getDb().prepare(
     `SELECT c.id AS pieceId, c.parent_id AS joinId FROM work c JOIN work a ON a.id = c.parent_id
       WHERE c.agent_id = ? AND c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.root_id = ? AND c.state = 'done' AND a.state = 'done'

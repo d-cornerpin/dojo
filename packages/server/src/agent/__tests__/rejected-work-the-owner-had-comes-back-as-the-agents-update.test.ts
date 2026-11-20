@@ -12,7 +12,7 @@ vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => ne
 
 import { claimAsk, stampClaimingTurn } from '../../work/store.js';
 import { newestPutBack, recordPiecesShown, settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
-import { joinOrderFor, resolveJoinsAtBoot, sweepExpiredJoins } from '../a2a-transport.js';
+import { deliverA2AMessage, joinOrderFor, resolveJoinsAtBoot, sweepExpiredJoins } from '../a2a-transport.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import {
@@ -106,6 +106,18 @@ describe('rejected work the person had comes back as the agent\'s Update', () =>
     await deliverDueReplies(Date.now());
     expect(textsSent()).toEqual([relayed('The venue is free on the 12th.'), 'Dojo: Update: Helper corrected its work after review. Corrected: the 14th.']);
     expect(requestState()).toBe('done');
+  });
+
+  it('a FAIL after a send-back is no Update, and the good piece keeps its text', async () => {
+    await helperAnswers('The venue is free on the 12th.');
+    agentAnswers(2);
+    managerSendsItBack();
+    const r = await deliverA2AMessage({ intent: 'FAIL', threadId: THREAD, requiresResponse: false, payload: 'I could not recheck the date.', toAgent: AGENT, fromAgent: HELPER } as never);
+    expect(r.delivered).toBe(true);
+    expect([requestState(), putBackKinds()]).toEqual(['done', ['compile']]);
+    expect(testDb().prepare("SELECT notes FROM work WHERE parent_id = ? AND kind = 'task'").get(ASK)).toEqual({ notes: 'The venue is free on the 12th.' });
+    await deliverDueReplies(Date.now());
+    expect(textsSent().some((t) => t.includes('Update:'))).toBe(false);
   });
 
   it('a correction for a request never answered is no Update: the request keeps its first put-back', async () => {
