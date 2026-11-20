@@ -1472,7 +1472,8 @@ export async function tellHelpersTheRequestEnded(pieces: Array<{ helper: string 
     await redriveWithoutReply({
       toAgentId: piece.helper, fromAgentId: null, taskId: task?.id ?? null,
       content: `[Engine] The request this work was for was called off${byOwner ? ' by the owner' : ''}. Stop working on ${what}: `
-        + 'hand it in as can\'t be done with that reason (work_update action="hand_in", outcome="cant_be_done"), or, if you were made for this job, '
+        + 'hand it in as can\'t be done (work_update action="hand_in", outcome="cant_be_done", proof=[{kind:"remainder", ref:"<what is left>", '
+        + 'reason:"the request it was for was called off"}]), or, if you were made for this job, '
         + 'end with complete_task(status="fallen"). Send nothing more about it.',
     });
   }

@@ -13,6 +13,7 @@ vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => ne
 import { stopByOwner, getAgentRuntime } from '../runtime.js';
 import { sweepExpiredJoins } from '../a2a-transport.js';
 import { trackerHandlers } from '../tools/cat/tracker.js';
+import { executeTool } from '../tools/index.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
@@ -41,8 +42,14 @@ describe("ending a request ends its helpers' work", () => {
     expect([requestState(), pieceState()]).toEqual(['abandoned', 'abandoned']);
     await settled();
     expect(toldToStop()).toEqual(['[Engine] The request this work was for was called off. Stop working on "Check the venue" [task-helper-1]: '
-      + 'hand it in as can\'t be done with that reason (work_update action="hand_in", outcome="cant_be_done"), or, if you were made for this job, '
+        + 'hand it in as can\'t be done (work_update action="hand_in", outcome="cant_be_done", proof=[{kind:"remainder", ref:"<what is left>", '
+        + 'reason:"the request it was for was called off"}]), or, if you were made for this job, '
       + 'end with complete_task(status="fallen"). Send nothing more about it.']);
+    const handIn = await executeTool(HELPER, { id: 'tc-h', name: 'work_update', arguments: {
+      action: 'hand_in', task_id: 'task-helper-1', outcome: 'cant_be_done',
+      proof: [{ kind: 'remainder', ref: 'the venue check', reason: 'the request it was for was called off' }],
+    } });
+    expect(handIn.isError, handIn.content).toBeFalsy();   // the hand-in the helper is told to make is accepted
     await helperAnswers('The venue is free on the 14th.');
     expect(relayRows()).toEqual([]);
   });
