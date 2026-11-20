@@ -39,6 +39,7 @@ export interface RowFacts {
   /** The creator, when an agent created it. */
   creator: string | null;
   holderLive: boolean;
+  goal: string | null; measureJson: string | null;
 }
 
 /** A live agent: its row exists and it is not terminated (a parked `paused`/`error` agent is still live). */
@@ -54,19 +55,19 @@ export function isLiveAgent(agentId: string | null | undefined): boolean {
 
 export function rowFacts(id: string): RowFacts | null {
   const r = getDb().prepare(
-    `SELECT id, kind, title, state, agent_id, assignee_agent, assigned_to_group, requester, requester_id
+    `SELECT id, kind, title, state, agent_id, assignee_agent, assigned_to_group, requester, requester_id, goal, measure_json
        FROM work WHERE id = ? AND kind IN ('task', 'project')`,
   ).get(id) as {
     id: string; kind: string; title: string | null; state: WorkState; agent_id: string;
     assignee_agent: string | null; assigned_to_group: string | null;
-    requester: string | null; requester_id: string | null;
+    requester: string | null; requester_id: string | null; goal: string | null; measure_json: string | null;
   } | undefined;
   if (!r) return null;
   const holder = r.assignee_agent ?? r.agent_id;
   return {
     id: r.id, kind: r.kind, title: r.title ?? '(untitled)', state: r.state, holder,
     groupId: r.assigned_to_group, creator: r.requester === 'agent' ? r.requester_id : null,
-    holderLive: isLiveAgent(holder),
+    holderLive: isLiveAgent(holder), goal: r.goal, measureJson: r.measure_json,
   };
 }
 
@@ -156,9 +157,8 @@ export function taskWriteRefusal(actorId: string, workId: string, what: string):
 export function standardEditRefusal(actorId: string, workId: string, next: { goal?: string; measure?: unknown }): string | null {
   const f = rowFacts(workId);
   if (!f || !isOwn(f, actorId) || actorId === f.creator || isPrimaryAgent(actorId)) return null;
-  const now = getDb().prepare('SELECT goal, measure_json FROM work WHERE id = ?').get(workId) as { goal: string | null; measure_json: string | null };
-  if ((next.goal === undefined || next.goal.trim() === now.goal)
-    && (next.measure === undefined || JSON.stringify(next.measure) === now.measure_json)) return null;
+  if ((next.goal === undefined || next.goal.trim() === f.goal)
+    && (next.measure === undefined || JSON.stringify(next.measure) === f.measureJson)) return null;
   return `Error: the goal and the measure of ${f.kind} "${f.title}" (${f.id.slice(0, 8)}) belong to whoever gave you the work, `
     + 'so you cannot change them. If they are wrong, tell whoever gave you the work: an agent with send_to_agent, the owner in your reply.';
 }

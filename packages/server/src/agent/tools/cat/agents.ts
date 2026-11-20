@@ -60,7 +60,7 @@ import { resolveUpdateGrants, grantsDelta, GrantRefusedError } from '../../acces
 import { inspectGainRefusal } from '../../../inspect/grant.js';
 import { getAccessGrants, readStoredGrants, mayUseChannel, channelTierFor } from '../../access/read.js';
 import { writeGrants } from '../../access/materialize.js';
-import { ACCESS_CHANNELS, MOST_RESTRICTIVE_GRANTS, techniqueGrantOf } from '@dojo/shared';
+import { ACCESS_CHANNELS, FINAL_REPLY_INTENTS, MOST_RESTRICTIVE_GRANTS, techniqueGrantOf } from '@dojo/shared';
 import type { AccessChannel, AccessGrants } from '@dojo/shared';
 import type { ToolHandlerMap } from '../handler.js';
 import { refuseAgentModel } from '../../main-model-floor.js';
@@ -377,7 +377,7 @@ export async function sendToAgent(agentId: string, input: {
     }
     // The hand-off outcome is composed by the transport; only relayed here.
     if (result.handOff) content += `\n${result.handOff.message}`;
-    else if (handsOffThread) content += `\n[Engine: hands_off_thread was not applied. A hand-off counts only on an ANSWER, DELIVERABLE, COMPLETE or FAIL reply; this message was sent as ${effectiveIntent}.]`;
+    else if (handsOffThread && !FINAL_REPLY_INTENTS.has(effectiveIntent)) content += `\n[Engine: hands_off_thread was not applied. A hand-off counts only on an ANSWER, DELIVERABLE, COMPLETE or FAIL reply; this message was sent as ${effectiveIntent}.]`;
   } else {
     // A protocol drop is expected behavior: log the reason, do not error.
     auditLog(agentId, 'tool_call', 'send_to_agent', 'success',

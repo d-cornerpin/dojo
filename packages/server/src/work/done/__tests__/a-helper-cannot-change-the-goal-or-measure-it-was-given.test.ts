@@ -1,5 +1,6 @@
 // The goal and the measure of a task are its creator's: the agent working a task another agent gave it cannot
-// change them; the main agent can, and its change is on the record with who made it.
+// change them; the main agent can, and its change is on the record with who made it. A measure change goes
+// through `editMeasure`, the half of the work_update door that writes it, since the door's count needs a live account.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
