@@ -43,7 +43,7 @@ function ctxFor(toolCalls: ToolCall[], toolPhaseEnded = false): ExecuteContext {
     agentId: AGENT,
     turnCtx: {
       agentId: AGENT, convKey: 'ck-a2a', conversationId: 'conv-a2a', servedWork: undefined,
-      toolPhaseEndedBySpinBrake: toolPhaseEnded, anyToolStartedThisTurn: false,
+      toolPhaseEndedByRepeats: toolPhaseEnded, anyToolStartedThisTurn: false,
       startAckSteerRequested: false, startAckSteerArmedThisTurn: false,
     } as unknown as ExecuteContext['turnCtx'],
     turnNumber: 6560,

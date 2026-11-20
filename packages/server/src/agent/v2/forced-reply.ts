@@ -39,6 +39,6 @@ export async function forcedReplyDue(
     content: `[Engine: ${owed}. Write it now.]`,
   }, { broadcast });
   turnCtx.forceReplyPending = true;
-  turnCtx.spinBrakeGraceCalls = 0;
+  turnCtx.repeatGraceCalls = 0;
   return true;
 }

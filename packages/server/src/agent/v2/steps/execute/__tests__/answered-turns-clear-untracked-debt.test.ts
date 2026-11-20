@@ -124,7 +124,7 @@ function teardownCtx(
     chosenConvKey: opts.convKey === undefined ? CONV : opts.convKey,
     chosenConversationId: CONVERSATION_ID, lastAssembledAtIso: null,
     terminalAnswerRowId: opts.answerRowId, triggerWorkId: null,
-    toolPhaseEndedBySpinBrake: false,
+    toolPhaseEndedByRepeats: false,
     counterparty: USER, isA2ATurn: false, isEngineTurn: false,
     turnStartedAt: new Date(Date.now() - 60_000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''),
     inboundChannel: 'dashboard', inboundContext: null,

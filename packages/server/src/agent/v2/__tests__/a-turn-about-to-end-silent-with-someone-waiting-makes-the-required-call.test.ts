@@ -39,7 +39,7 @@ beforeEach(() => {
   endTurnContext(AGENT);
   turnCtx = openTurnContext(AGENT);
   turnCtx.address = { kind: 'person', name: 'Sam' } as TurnContext['address'];
-  turnCtx.spinBrakeGraceCalls = -1;
+  turnCtx.repeatGraceCalls = -1;
   turnCtx.state = turnState();
 });
 
@@ -48,7 +48,7 @@ describe('the required reply is armed when the turn would end silent with someon
     expect(await due()).toBe(true);
     expect(turnCtx.forcedReplySpent).toBe(true);
     expect(turnCtx.forceReplyPending).toBe(true);
-    expect(turnCtx.spinBrakeGraceCalls).toBe(0);
+    expect(turnCtx.repeatGraceCalls).toBe(0);
     expect(turnCtx.state!.phase).toBe('preCallGates');
     expect(turnCtx.state!.steerQueue.pending.map((e) => [e.floor, e.content])).toEqual([
       ['forced-reply', '[Engine: Sam is waiting for your answer to their message. Write it now.]'],

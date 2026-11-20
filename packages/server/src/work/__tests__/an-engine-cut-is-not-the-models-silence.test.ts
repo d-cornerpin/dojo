@@ -9,7 +9,7 @@
 //
 // That teardown derives the exit reason from what it can see, and it cannot see the cap:
 //
-//     const exitReason = toolPhaseEndedBySpinBrake ? 'brake'
+//     const exitReason = toolPhaseEndedByRepeats ? 'brake'
 //       : answerRow ? 'answered' : parkedRow ? 'park' : handoffRow ? 'handoff'
 //       : 'no_reply_intended';                         // ← the cap lands HERE
 //

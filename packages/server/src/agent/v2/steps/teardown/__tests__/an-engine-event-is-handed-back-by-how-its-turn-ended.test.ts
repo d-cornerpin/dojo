@@ -27,7 +27,7 @@ const fresh = (): AgentTurnState => initState({
 const turnEnds = (state: AgentTurnState, bag: { retryAt?: number; abortHandBack?: boolean } = {}): Promise<void> =>
   finalizeTurnRecord(state, {
     agentId: AGENT, turnNumber: TURN, db: testDb(), chosenConvKey: null, chosenConversationId: null, lastAssembledAtIso: null,
-    terminalAnswerRowId: null, triggerWorkId: null, toolPhaseEndedBySpinBrake: false,
+    terminalAnswerRowId: null, triggerWorkId: null, toolPhaseEndedByRepeats: false,
     counterparty: { kind: 'user', name: 'the engine', relation: 'engine', channel: 'engine', senderId: null, threadId: null, senderIsAgent: false },
     isA2ATurn: false, isEngineTurn: true, turnStartedAt: '2030-01-01 00:00:00', inboundChannel: 'dashboard', inboundContext: null,
     reArmIfStrandedNoAnswer: () => {}, stopStatusHeartbeat: () => {},

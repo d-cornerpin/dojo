@@ -62,7 +62,7 @@ const bagFor = (over: Record<string, unknown> = {}): Bag => ({
   agentId: AGENT, root: undefined, servedWork: undefined, convKey: 'dashboard:owner',
   startAckSteerRequested: false, startAckSteerArmedThisTurn: false,
   engineStartAckDeliveredThisTurn: false, startAckSteersInjected: 0,
-  anyToolStartedThisTurn: false, toolPhaseEndedBySpinBrake: false,
+  anyToolStartedThisTurn: false, toolPhaseEndedByRepeats: false,
   lastAssembledAtIso: null,
   ...over,
 });
@@ -72,7 +72,7 @@ function ctxFor(over: Partial<TeardownContext> = {}, bag: Record<string, unknown
     agentId: AGENT, turnCtx: bagFor(bag) as never, turnNumber: TURN, db: db(),
     chosenConvKey: 'dashboard:owner', chosenConversationId: CONV, lastAssembledAtIso: null,
     terminalAnswerRowId: null, triggerWorkId: null,
-    toolPhaseEndedBySpinBrake: false,
+    toolPhaseEndedByRepeats: false,
     counterparty: {
       kind: 'user', name: 'the owner', relation: 'owner', channel: 'dashboard',
       senderId: 'owner', senderIsAgent: false,
@@ -158,7 +158,7 @@ describe('§1 each cause the engine knows about reaches the row as itself', () =
   }
 
   it('identical_call — the engine refused this turn\'s repeated calls', async () => {
-    const state = advance(freshState(), { identicalCallRefusedThisTurn: true });
+    const state = advance(freshState(), { repeatRefusedThisTurn: true });
     expect((await record(state)).exit_reason).toBe('identical_call');
   });
 
@@ -198,7 +198,7 @@ describe('§2 an ordinary turn lands exactly the word it always did', () => {
        VALUES ('m-answer', ?, 'assistant', 'Coerced wrap-up.', 'owner', ?, ?)`,
     ).run(AGENT, CONV, TURN);
     const row = await record(freshState(), {
-      toolPhaseEndedBySpinBrake: true, terminalAnswerRowId: 'm-answer',
+      toolPhaseEndedByRepeats: true, terminalAnswerRowId: 'm-answer',
     });
     expect(row.exit_reason).toBe('brake');
   });
@@ -206,7 +206,7 @@ describe('§2 an ordinary turn lands exactly the word it always did', () => {
   it('brake — and it outranks a latched cut too, which is the precedence this task chose', async () => {
     // Both words are engine cuts in the exit table, so the settlement treats them alike; the
     // order is kept because an existing guard pins it for a measured defect class.
-    expect((await record(cut('stop'), { toolPhaseEndedBySpinBrake: true })).exit_reason).toBe('brake');
+    expect((await record(cut('stop'), { toolPhaseEndedByRepeats: true })).exit_reason).toBe('brake');
   });
 
   it('iteration_cap: the checkpoint is a cut, and it outranks a delivered reply', async () => {
@@ -236,7 +236,7 @@ describe('§2 an ordinary turn lands exactly the word it always did', () => {
   });
 
   it('identical_call sits BELOW the cap and the handoff, never above them', async () => {
-    const refused = advance(freshState(), { identicalCallRefusedThisTurn: true });
+    const refused = advance(freshState(), { repeatRefusedThisTurn: true });
     expect((await record(latchEngineCut(refused, 'iteration_cap'))).exit_reason).toBe('iteration_cap');
   });
 });
@@ -347,7 +347,7 @@ describe('§4 an owner\'s stop is not the model\'s silence, all the way through'
     let turn = 1;
     for (const reason of reasons) {
       const state = reason === 'identical_call'
-        ? advance(freshState(), { identicalCallRefusedThisTurn: true })
+        ? advance(freshState(), { repeatRefusedThisTurn: true })
         : cut(reason as EngineCutReason);
       await finalizeAs(turn, state);
       expect(rowFor(turn).exit_reason, reason).toBe(reason);

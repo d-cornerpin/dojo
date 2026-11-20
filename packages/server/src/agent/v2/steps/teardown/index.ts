@@ -34,7 +34,7 @@ export interface TeardownContext {
   readonly triggerWorkId: string | null;
   /** The engine event this turn won at pickup (null: none); finalize hands it back by the turn's exit. */
   readonly claimedEngineEvent: { rowid: number; turnNumber: number } | null;
-  readonly toolPhaseEndedBySpinBrake: boolean;
+  readonly toolPhaseEndedByRepeats: boolean;
   readonly counterparty: TurnCounterparty;
   readonly counterpartyIsAgentSender: boolean;
   readonly isA2ATurn: boolean;
