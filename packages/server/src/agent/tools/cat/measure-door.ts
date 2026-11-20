@@ -19,7 +19,7 @@ async function refusalFor(agentId: string, m: Measure): Promise<string | null> {
   for (const gate of gatesForCall(m.tool, args)) {
     // eslint-disable-next-line no-await-in-loop -- the gates are evaluated in their declared order, as the executor does
     const { verdict } = await evaluateGate(gate, { agentId, name: m.tool, args, resolveRef: () => null });
-    if (!verdict.allowed) return verdict.blockedMessage;
+    if (!verdict.allowed) return verdict.blockedMessage || 'refused by its gate';
   }
   return null;
 }

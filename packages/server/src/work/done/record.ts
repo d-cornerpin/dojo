@@ -6,6 +6,8 @@ import type { WorkOutcome, WorkState } from '../store.js';
 import type { HandInOutcome, ResolvedItem } from './proof-kinds.js';
 
 export const OWNER_ID = 'user';
+/** The engine as a decider: it decides a counted run on its own fresh count (`decide.ts`). */
+export const ENGINE_ID = 'engine';
 
 /** `run`: one run of a live schedule, which goes on; `schedule`: the scheduled work as a whole. */
 export type HandInScope = 'run' | 'schedule';

@@ -3,7 +3,8 @@
 //   - approve / send_back decide a waiting hand-in, by `whoDecides` (never the worker) or the owner. An agent
 //     approves only after opening every proof item (`open-proof.ts`); the reason is one line.
 //   - owner_done / cancel are the owner's, from the dashboard, from any open state; the main agent may cancel on his words.
-//   - a run of a live schedule (scope `run`) is decided on its own: approve or send back returns it to Open.
+//   - a run of a live schedule (scope `run`) is decided on its own: approve or send back returns it to Open;
+//     the engine approves a finished run whose creator's measure it counted at 0 itself.
 // The owner may also decide by words an agent relays from the message it answers (`deciderOf`).
 // One unit per row (`applyDecision`): adjudication, `decided` event, transition (`claim: 'decided'`), effects.
 import { getDb } from '../../db/connection.js';
@@ -13,9 +14,10 @@ import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.j
 import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
 import { tellUnfinishedTasks } from './project-state.js';
-import { latestHandIn, workersOf, unitOrRollback, recordAdjudication, OWNER_ID } from './record.js';
+import { latestHandIn, workerOf, workersOf, unitOrRollback, recordAdjudication, OWNER_ID, ENGINE_ID } from './record.js';
 import { openedEveryItem } from './open-proof.js';
-import { proofDelivery } from './proof.js';
+import { proofDelivery, engineProof } from './proof.js';
+import { inFlightOccurrence } from '../occurrences.js';
 import { recordOwnerRemainder } from '../measure-close-gate.js';
 import { whoDecides } from './who-decides.js';
 import { onDecided } from './effects.js';
@@ -74,8 +76,25 @@ function deciderOf(input: DecideInput): Who | { refused: string } {
   return proof.ok ? { owner: true } : no(`the owner's words could not be verified: ${proof.why}.`);
 }
 
-/** Why this agent may not decide this hand-in, or null. */
+/** The task's measure was last set by its creator, and at its opening when the creator also works it. */
+function measureSetByCreator(workId: string): boolean {
+  const r = getDb().prepare(
+    `SELECT w.requester_id AS creator, json_extract(e.payload, '$.set_by') AS setBy, json_extract(e.payload, '$.at_open') AS atOpen
+       FROM work w JOIN work_events e ON e.work_id = w.id AND e.kind = 'measured' AND json_extract(e.payload, '$.set_by') IS NOT NULL
+      WHERE w.id = ? ORDER BY e.id DESC LIMIT 1`,
+  ).get(workId) as { creator: string | null; setBy: string; atOpen: number | null } | undefined;
+  return !!r && r.setBy === r.creator && (r.creator !== workerOf(workId) || r.atOpen === 1);
+}
+
+/** Why this agent may not decide this hand-in, or null. The engine decides only the approval of a finished
+ *  run whose measure, set by the task's creator, it counted at 0 itself. */
 function agentRefusal(agentId: string, workId: string, name: string, verdict: Verdict): string | null {
+  if (agentId === ENGINE_ID) {
+    const h = latestHandIn(workId);
+    const counted = verdict === 'approve' && h?.scope === 'run' && h.outcome === 'finished'
+      && engineProof(workId).some((i) => i.kind === 'measure') && measureSetByCreator(workId);
+    return counted ? null : `${name} is not a counted run the engine decides.`;
+  }
   if (workersOf(workId).has(agentId)) return `${name} is your own work; no agent decides work it worked or handed in.`;
   const decider = whoDecides(workId);
   if (decider?.kind !== 'agent' || decider.agentId !== agentId) {
@@ -107,6 +126,7 @@ function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): 
     return transition(id, {
       to, by: p.by, actorId: p.deciderId, reason: `${p.verdict}: ${p.reason}`, expectedState: from,
       claim: to === 'sent_back' ? undefined : 'decided', resultDeliveryId,
+      evidenceRef: p.by === 'engine' ? inFlightOccurrence(id, { anyState: true })?.id : undefined,
     });
   });
   if (moved.kind === 'applied') { onDecided(id, decisionId); endStallCard(id); }
@@ -136,7 +156,7 @@ export function decide(input: DecideInput): DecideResult {
   }
 
   const deciderId = who.owner ? OWNER_ID : who.agentId;
-  const by: Actor = who.owner ? 'owner' : deciderId === getPMAgentId() ? 'pm' : 'agent';
+  const by: Actor = who.owner ? 'owner' : deciderId === ENGINE_ID ? 'engine' : deciderId === getPMAgentId() ? 'pm' : 'agent';
   const last = row.state === 'handed_in' ? latestHandIn(row.id) : null;
   const outcome = last?.outcome ?? 'finished';
   const run = last?.scope === 'run' && (input.verdict === 'approve' || input.verdict === 'send_back');

@@ -303,11 +303,11 @@ export function deleteOccurrencesOf(workIds: string[]): number {
 }
 
 /** The occurrence this schedule has in flight, if any: a crashed fire leaves exactly this row behind. */
-export function inFlightOccurrence(workId: string): { id: string; sequence: number } | null {
+export function inFlightOccurrence(workId: string, opts: { anyState?: true } = {}): { id: string; sequence: number } | null {
   const r = getDb().prepare(
     `SELECT id, sequence FROM work
-      WHERE kind = ? AND parent_id = ? AND state = 'open'
+      WHERE kind = ? AND parent_id = ? AND (? OR state = 'open')
       ORDER BY sequence DESC LIMIT 1`,
-  ).get(OCCURRENCE_KIND, workId) as { id: string; sequence: number } | undefined;
+  ).get(OCCURRENCE_KIND, workId, opts.anyState ? 1 : 0) as { id: string; sequence: number } | undefined;
   return r ?? null;
 }

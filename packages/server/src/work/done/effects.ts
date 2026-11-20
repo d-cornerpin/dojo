@@ -1,6 +1,6 @@
 // What happens at the two moments of board work, each a short ordered list of calls.
 //   At the hand-in (the work is delivered): a run's schedule advances, the agent that gave the job hears
-//   the helper's last words, prompts queued for the work retire, and the decider is woken.
+//   the helper's last words, prompts queued for the work retire, and the engine decides a counted run or the decider is woken.
 //   At the decision (the work is accepted, or not): dependents unblock, the project is derived from its
 //   tasks, a finished schedule stops, and a send-back reaches the worker of record.
 import { getDb } from '../../db/connection.js';
@@ -12,7 +12,9 @@ import { setTrackerStatus } from '../tracker-store.js';
 import { getPMAgentId, getPrimaryAgentId, isDreamerAgent } from '../../config/platform.js';
 import { workerOfRecord, rehome } from '../row-authority.js';
 import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
-import { latestHandIn, workerOf, OWNER_ID, type HandInRecord } from './record.js';
+import { latestHandIn, workerOf, OWNER_ID, ENGINE_ID, type HandInRecord } from './record.js';
+import { decide } from './decide.js';
+import { remeasureTask } from '../../agent/tools/cat/measure-door.js';
 import { settleProject } from './project-state.js';
 import { FINAL_REPLY_SQL } from '@dojo/shared';
 
@@ -24,13 +26,25 @@ let pmAgent: Promise<typeof import('../../tracker/pm-agent.js')> | null = null;
 export function onHandedIn(workId: string, handInEventId: number, wordsFollow?: true): void {
   const h = latestHandIn(workId, handInEventId);
   if (!h) return;
-  if (h.scope === 'run') {
-    void import('../../scheduler/runner.js')
-      .then(({ onTaskRunComplete }) => onTaskRunComplete(workId, h.outcome === 'finished' ? 'complete' : 'failed', h.note))
-      .catch((err: unknown) => logger.warn('run hand-in: the schedule did not advance', { workId, error: String(err) }));
-  }
+  const advanced = h.scope !== 'run' ? Promise.resolve() : import('../../scheduler/runner.js')
+    .then(({ onTaskRunComplete }) => onTaskRunComplete(workId, h.outcome === 'finished' ? 'complete' : 'failed', h.note))
+    .catch((err: unknown) => logger.warn('run hand-in: the schedule did not advance', { workId, error: String(err) }));
   if (!wordsFollow) void handInHeard(workId, h);
   retireQueuedPrompts(workerOf(workId), workId);
+  void advanced.then(() => decideOrReview(workId, h));
+}
+
+/** A finished run is decided by the engine on its own fresh count, after its schedule advanced; anything the
+ *  engine does not decide goes to its decider's review. */
+async function decideOrReview(workId: string, h: HandInRecord): Promise<void> {
+  try {
+    if (h.scope === 'run' && h.outcome === 'finished') {
+      await remeasureTask(ENGINE_ID, workId);
+      if (decide({ workId, deciderAgentId: ENGINE_ID, verdict: 'approve', reason: 'its own count reads 0 for this run' }).kind === 'decided') return;
+    }
+  } catch (err) {
+    logger.warn('hand-in: the engine could not decide the run', { workId, error: String(err) });
+  }
   void (pmAgent ??= import('../../tracker/pm-agent.js')).then(({ armDebouncedReview }) => armDebouncedReview(workId, 'hand-in'))
     .catch((err: unknown) => logger.warn('hand-in: the decider could not be woken', { workId, error: String(err) }));
 }
