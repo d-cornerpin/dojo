@@ -63,7 +63,7 @@ vi.mock('../../../effects/fs.js', () => ({ existsSync: () => true, mkdirSync: ()
 vi.mock('../../../turn-context.js', () => ({ turnContext: () => undefined }));
 
 import { mediaHandlers } from '../media.js';
-import { sendIMessage, sendIMessageWithAttachment } from '../../../../services/imessage-bridge.js';
+import { sendIMessage } from '../../../../services/imessage-bridge.js';
 import { tellAgentAndWake } from '../../../wake-with-notice.js';
 import { postAgentNotice } from '../../../agent-notice.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
@@ -134,18 +134,15 @@ describe('image_create success: no engine-written words in the agent\'s voice (P
     const f = path.join(os.tmpdir(), `dojo-img-${Date.now()}.png`); fs.writeFileSync(f, 'png');
     vi.mocked(generateImage).mockResolvedValueOnce({ ok: true, filePath: f, filename: 'x.png', sizeBytes: 3, latencyMs: 1, providerId: 'p', width: 1, height: 1, inputTokens: 0, outputTokens: 0 } as never);
   };
-  it('posts the image with NO caption text, texts it with NO caption, and tells the agent it was delivered', async () => {
-    hoisted.recipient = '+15550100';
+  it('posts the image with NO caption text and tells the agent where it went', async () => {
     await okImage();
     await call();
     await vi.waitFor(() => expect(vi.mocked(insertMessageIfAbsent)).toHaveBeenCalled());
     const row = vi.mocked(insertMessageIfAbsent).mock.calls[0][0] as { content: string; attachments?: string };
     expect(row.content).toBe('');
     expect(row.attachments).toBeTruthy();
-    await vi.waitFor(() => expect(vi.mocked(sendIMessageWithAttachment)).toHaveBeenCalled());
-    expect(vi.mocked(sendIMessageWithAttachment).mock.calls[0][2]).toBe('');
     await vi.waitFor(() => expect(vi.mocked(postAgentNotice)).toHaveBeenCalled());
-    expect(vi.mocked(postAgentNotice).mock.calls[0][0].brief).toMatch(/delivered/i);
+    expect(vi.mocked(postAgentNotice).mock.calls[0][0].brief).toMatch(/posted in the dashboard/);
     expect(vi.mocked(tellAgentAndWake)).not.toHaveBeenCalled();   // success never wakes (the 2026-06-09 re-generation loop)
   });
 });

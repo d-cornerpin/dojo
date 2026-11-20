@@ -1,19 +1,14 @@
 // Async video job worker: polls the provider for each `video_jobs` row, downloads the asset, records cost and
-// delivers the mp4 as a synthetic assistant message. Open rows resume on boot; `inFlight` allows one loop
+// hands the mp4 to `deliverMedia`. Open rows resume on boot; `inFlight` allows one loop
 // per job, and WHERE-guarded status transitions honor a cancel landing mid-poll.
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
-import { deliveredResult, insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
-import { settleAskOnAsyncResult, settleAskOnJobEnded } from '../work/ask-settlement.js';
+import { settleAskOnJobEnded } from '../work/ask-settlement.js';
 import { announceLiveWork } from '../agent/live-work.js';
 import { pollProviderVideo, fetchVideoAsset, cancelProviderVideo } from './video-generation.js';
 import { openAgentCall, type AgentCallSlot } from '../agent/abortable-call.js';
-import { homeDir } from '../home.js';
 import { TERMINAL_JOB_STATUS_SQL } from './media-job-status.js';
 import {
   pollerSignal, pollerStopped, rearmVideoJobPoller, detachPollLoop,
@@ -74,10 +69,6 @@ function emitUpdate(row: { id: string; agent_id: string; status: string; prompt:
   announceLiveWork(row.agent_id);
 }
 
-function slugify(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50);
-}
-
 /**
  * The backoff sleep is interruptible so a stop can wake the loop. It resolves rather than rejects: what a
  * stop means is decided once, by the loop's own top-of-iteration check.
@@ -93,57 +84,6 @@ const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) 
   if (typeof timer.unref === 'function') timer.unref();
   signal?.addEventListener('abort', finish, { once: true });
 });
-
-/** Deliver the finished video into the agent's chat as a synthetic assistant message (no LLM turn). */
-function deliverVideo(row: VideoJobRow, assetPath: string, sizeBytes: number): void {
-  const recipientDir = path.join(homeDir(), '.dojo', 'uploads', row.agent_id);
-  if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
-  const titleSlug = row.title ? slugify(row.title) : '';
-  const shortId = row.id.replace(/^vid_/, '').slice(0, 8);
-  const stableFilename = titleSlug ? `${titleSlug}-${shortId}.mp4` : `video_${shortId}.mp4`;
-  const stablePath = path.join(recipientDir, stableFilename);
-  let deliveredPath = assetPath;
-  try {
-    fs.copyFileSync(assetPath, stablePath);
-    deliveredPath = stablePath;
-  } catch (err) {
-    logger.warn('video delivery: copy to caller uploads dir failed — using shared path', {
-      jobId: row.id, error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  const attachment = {
-    fileId: uuidv4(),
-    filename: path.basename(deliveredPath),
-    mimeType: 'video/mp4',
-    size: sizeBytes,
-    path: deliveredPath,
-    category: 'video' as const,
-  };
-
-  const caption = '';   // no engine-written caption in the agent's voice; the agent is told below
-
-  const msgId = uuidv4();
-  insertMessageIfAbsent({
-    id: msgId, agentId: row.agent_id, role: 'assistant', content: caption,
-    attachments: JSON.stringify([attachment]),
-    ...deliveredResult(row.conversation_id, row.source_message_id) });
-  broadcast({
-    type: 'chat:message', agentId: row.agent_id,
-    message: {
-      id: msgId, agentId: row.agent_id, role: 'assistant' as const,
-      content: caption, attachments: [attachment],
-      tokenCount: null, modelId: null, cost: null, latencyMs: null,
-      createdAt: new Date().toISOString(),
-    },
-  });
-  broadcast({ type: 'chat:chunk', agentId: row.agent_id, messageId: msgId, content: '', done: true, modelId: null });
-  settleAskOnAsyncResult({ agentId: row.agent_id, askMessageId: row.source_message_id, resultMessageId: msgId });
-  void import('../agent/agent-notice.js').then((n) => n.postAgentNotice({
-    toAgentId: row.agent_id, fromName: 'Media delivery', intent: 'image_delivery_outcome', selfIntro: false,
-    brief: 'your video was delivered in the dashboard with no caption: the Dojo wrote no words around it. If you want to say something about it, say it in your own words.',
-  })).catch(() => undefined);
-}
 
 function deliverError(row: VideoJobRow, error: string): void {
   // No engine failure bubble in the agent's voice: the agent is told and woken so it tells the person.
@@ -242,7 +182,9 @@ async function handleSuccess(row: VideoJobRow, durationSeconds: number | null): 
     return;
   }
 
-  deliverVideo(row, asset.filePath, asset.sizeBytes);
+  const { deliverMedia } = await import('./media-delivery.js');   // lazy: keeps the poller's import graph light
+  await deliverMedia({ kind: 'video', agentId: row.agent_id, jobId: row.id, title: row.title, filePath: asset.filePath, mimeType: 'video/mp4',
+    sizeBytes: asset.sizeBytes, conversationId: row.conversation_id ?? null, requestMessageId: row.source_message_id ?? null });
   const fresh = getJob(row.id);
   if (fresh) emitUpdate(fresh);
   logger.info('video job succeeded + delivered', { jobId: row.id, durationSeconds, costUsd });
@@ -375,9 +317,11 @@ async function pollLoop(jobId: string): Promise<void> {
   }
 }
 
-/** Start polling a single job immediately (called right after submit). */
-export function enqueueVideoJob(jobId: string): void {
-  detachPollLoop(jobId, pollLoop(jobId));
+/** Start polling a single job immediately (called right after submit); the promise ends with the loop. */
+export function enqueueVideoJob(jobId: string): Promise<void> {
+  const loop = pollLoop(jobId);
+  detachPollLoop(jobId, loop);
+  return loop;
 }
 
 /** Boot-time resume: pick up every job still in flight and poll it. */
