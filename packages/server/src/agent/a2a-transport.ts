@@ -39,7 +39,7 @@ import {
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, replyInFlight, handBackAsk, newestPutBack } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, replyInFlight, handBackAsk, newestPutBack, type PutBackKind } from '../work/ask-settlement.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
 import { afterCommit, withUnit } from '../db/unit.js';
 import { serveLater } from './v2/serve-later.js';
@@ -966,8 +966,6 @@ function recordPieceDelivery(p: {
   }), 'a2a: piece delivery', { from: p.fromAgent, to: p.toAgent });
 }
 
-type PutBackKind = 'compile' | 'late';
-
 /** The order handed to the turn serving the request: what it asked, the files, every piece quoted whole. */
 function orderText(join: JoinState, kind: PutBackKind, evidence: string | null): string {
   const ask = askRowForJoin(join);
@@ -1002,7 +1000,7 @@ interface LandInput {
  *  wake is cleared before any await, and the caller suppresses the ordinary deliverable hint. */
 async function landReplyOnJoin(p: LandInput): Promise<{ handled: boolean; handOff?: { applied: boolean; message: string } }> {
   const child = findJoinChildByThread(p.agentId, p.threadId);
-  const handled = child !== null || deliverLateAnswerIfJoinFailedClosed(p);
+  const handled = child !== null || deliverLateAnswerIfJoinFailedClosed(p) || updateAfterSendBack(p);
   if (handled && p.messageId) getDb().prepare('UPDATE messages SET a2a_requires_response = 0 WHERE id = ?').run(p.messageId);
   if (!child) {
     return {
@@ -1144,7 +1142,9 @@ function answerBackInView(join: JoinState, kind: PutBackKind, evidence: string |
         settledOnPriorRelay(join.id);
         return false;
       }
-    } else if (!instead) appendWorkEvent(join.id, 'compile_resolved', 'engine', { reason: 'its helper answered after all', kind, evidence });
+    } else if (!instead) {
+      appendWorkEvent(join.id, 'compile_resolved', 'engine', { reason: kind === 'late' ? 'its helper answered after all' : 'its helper corrected its work', kind, evidence });
+    }
     if (instead) return true;
     const state = joinState(join.id)?.parentState;
     const reason = 'its delegated work is back';
@@ -1187,9 +1187,10 @@ export async function relayPiecesWhole(joinId: string, kind: PutBackKind, eviden
   const answer = pieces.length === 1 ? (pieces[0].content ?? '').trim() : pieces.map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}${
     p.state === 'done' ? '' : p.state === 'failed' ? ' (it reported a failure)' : ' (it never answered)'}:\n${(p.content ?? '').trim()}`)
     .join('\n\n');
-  const frame = kind === 'late' ? `Update: ${helperOf(pieces, evidence)} answered after all. ` : `${engineRelayPreface(pieces.length)}\n\n`;
+  const frame = kind === 'compile' ? `${engineRelayPreface(pieces.length)}\n\n`
+    : `Update: ${helperOf(pieces, evidence)} ${kind === 'late' ? 'answered after all' : 'corrected its work after review'}. `;
   tellAgentWhatTheRelaySent(join, await relayToAsker(join, {
-    tool: kind === 'late' ? 'a2a-join-late' : 'a2a-join-relay', frame, answer,
+    tool: kind === 'compile' ? 'a2a-join-relay' : 'a2a-join-late', frame, answer,
     files: pieceFiles(join.id), reports: kind === 'compile' ? newestPieceDelivery(pieces) : evidence,
   }));
 }
@@ -1218,6 +1219,29 @@ function deliverLateAnswerIfJoinFailedClosed(p: LandInput): boolean {
       agentId: p.agentId, thread: p.threadShort, error: err instanceof Error ? err.message : String(err),
     });
   }
+  return true;
+}
+
+/** Corrected work for a request already answered: the helper's job was sent back after its piece landed. The piece
+ *  takes the corrected text and delivery, and the request goes back to its person; false when this is not that. */
+function updateAfterSendBack(p: LandInput): boolean {
+  const r = getDb().prepare(
+    `SELECT c.id AS pieceId, c.parent_id AS joinId FROM work c JOIN work a ON a.id = c.parent_id
+      WHERE c.agent_id = ? AND c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.root_id = ? AND c.state = 'done' AND a.state = 'done'
+        AND EXISTS (SELECT 1 FROM work t JOIN work_events e ON e.work_id = t.id AND e.kind = 'decided'
+                     WHERE t.kind = 'task' AND t.agent_id = ? AND t.a2a_thread_id = c.root_id
+                       AND json_extract(e.payload, '$.verdict') = 'send_back' AND e.created_at > c.closed_at)
+      ORDER BY c.opened_at DESC LIMIT 1`,
+  ).get(p.agentId, p.threadId, p.fromAgent) as { pieceId: string; joinId: string } | undefined;
+  const join = r ? joinState(r.joinId) : null;
+  const evidence = r && join ? recordPieceDelivery({ fromAgent: p.fromAgent, toAgent: p.agentId, messageId: p.messageId, intent: p.intent }) : null;
+  if (!r || !join || !evidence) return false;
+  withUnit(() => {
+    // The piece closes again on the correction, so only a newer send-back makes the next reply an Update.
+    getDb().prepare('UPDATE work SET notes = ?, result_delivery_id = ?, closed_at = ?, updated_at = ? WHERE id = ?')
+      .run(p.payload, evidence, Date.now(), Date.now(), r.pieceId);
+    answerBackInView(join, 'update', evidence);
+  });
   return true;
 }
 

@@ -60,12 +60,15 @@ export function replyInFlight(askId: string): boolean {
   return getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${REPLY_IN_FLIGHT}`).get(askId) !== undefined;
 }
 
+/** Why a helper's answer went back to the agent: its first answer, one after the request failed, or a correction. */
+export type PutBackKind = 'compile' | 'late' | 'update';
+
 /** The newest time this request's delegated answer went back to the agent (a `compile_resolved` event with a kind). */
-export function newestPutBack(askId: string): { id: number; kind: 'compile' | 'late'; evidence: string | null } | null {
+export function newestPutBack(askId: string): { id: number; kind: PutBackKind; evidence: string | null } | null {
   return (getDb().prepare(
     `SELECT id, json_extract(payload, '$.kind') AS kind, json_extract(payload, '$.evidence') AS evidence FROM work_events
       WHERE work_id = ? AND kind = 'compile_resolved' AND json_extract(payload, '$.kind') IS NOT NULL ORDER BY id DESC LIMIT 1`,
-  ).get(askId) as { id: number; kind: 'compile' | 'late'; evidence: string | null } | undefined) ?? null;
+  ).get(askId) as { id: number; kind: PutBackKind; evidence: string | null } | undefined) ?? null;
 }
 
 /** The request has a put-back that turn `turn` was not shown (no `pieces_shown` of that turn after it). */
