@@ -1,9 +1,11 @@
 // Read-only renderers over the work spine: the per-turn OPEN WORK block and the daily-brief
 // section for aged obligations. Nothing here writes; `work.state` moves only in work/store.ts.
 
+import { a2aThreadShort } from '@dojo/shared';
 import { getOwnerName } from '../config/platform.js';
-import { agedObligations, openObligations, type Obligation } from './store.js';
+import { agedObligations, isTerminal, joinPieces, openObligations, type Obligation } from './store.js';
 import { recordedInstant } from '../memory/message-stamp.js';
+import { resolveAgentDisplayName } from '../agent/tool-helpers.js';
 
 /** Character budget for the whole block, so a backlog cannot crowd the volatile lane. */
 const INJECTION_MAX_CHARS = 600;
@@ -36,6 +38,13 @@ function split(agentId: string, currentConversationId: string | null): { current
   return { current, other: other.slice(0, CROSS_CONV_OVERFLOW_MAX) };
 }
 
+/** The helpers a delegated ask still waits on, from its open pieces; empty when it waits on none. */
+function waitingOn(o: Obligation): string {
+  const open = o.kind === 'ask' ? joinPieces(o.id).filter((p) => !isTerminal(p.state)) : [];
+  const who = open.map((p) => `${resolveAgentDisplayName(p.assigneeAgent) ?? 'a helper'} (thread ${a2aThreadShort(p.threadId)})`);
+  return who.length > 0 ? ` waiting on ${who.join(', ')}` : '';
+}
+
 const HEADER = 'OPEN WORK (still owed; close each one when it is delivered):';
 
 // When the budget binds, rows give way in a declared order (cross-conversation overflow, then the oldest
@@ -47,7 +56,7 @@ export function buildOpenWorkInjection(agentId: string, currentConversationId: s
 
   const what = (o: Obligation): string => (o.kind === 'ask' ? 'they asked' : 'you promised');
   const body = (o: Obligation, crossConv: boolean): string =>
-    `[${o.id}] ${what(o)}: ${o.title ?? '(no description)'} (${party(o)}, opened ${openedStamp(o.openedAt)})${crossConv ? ' [other conversation]' : ''}`;
+    `[${o.id}] ${what(o)}: ${o.title ?? '(no description)'} (${party(o)}, opened ${openedStamp(o.openedAt)})${waitingOn(o)}${crossConv ? ' [other conversation]' : ''}`;
 
   const shown = [
     ...current.map((o) => ({ o, crossConv: false })),

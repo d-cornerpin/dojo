@@ -810,7 +810,7 @@ export function landPiece(
     to: 'done', by: 'agent', actorId: p.actorId ?? 'a2a',
     reason: 'the delegated piece came back',
     resultDeliveryId: p.deliveryId,
-    note: body.slice(0, 4000),
+    note: body,
   }));
   return { result, join: joinAfter(childId) };
 }
@@ -823,7 +823,7 @@ export function settlePieceWithoutResult(
 ): PieceSettleResult {
   const result = loudOnPieceAbort(childId, () => transition(childId, {
     to: p.to, by: 'agent', actorId: p.actorId ?? 'a2a', reason: p.reason,
-    note: p.content ? p.content.slice(0, 4000) : null,
+    note: p.content || null,
   }));
   return { result, join: joinAfter(childId) };
 }
