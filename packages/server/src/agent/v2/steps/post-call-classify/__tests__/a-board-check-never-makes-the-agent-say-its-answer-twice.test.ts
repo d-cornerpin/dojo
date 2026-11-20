@@ -95,7 +95,6 @@ const turnCtxFor = (): Bag => ({
 /** The truthful-answer key, as `turn-closures.ts` keeps it: ONE setter, last write wins. */
 let answerKey: string | null;
 const noteTerminalAnswer = vi.fn((rowId: string) => { answerKey = rowId; });
-const persistAndBroadcastSystemRow = vi.fn();
 const deliverEngineUserAck = vi.fn(async () => undefined);
 
 const modelResult = (content: string, toolCalls: ToolCall[] = []): PostCallClassifyContext['result'] => ({
@@ -120,7 +119,7 @@ function ctxFor(turnCtx: Bag, messageId: string, content: string): PostCallClass
     result: modelResult(content),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer,
     deliverEngineUserAck: deliverEngineUserAck as never,
-    persistAndBroadcastSystemRow, startAckRepliedNow: () => false,
+    startAckRepliedNow: () => false,
   } as unknown as PostCallClassifyContext;
 }
 

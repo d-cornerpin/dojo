@@ -44,7 +44,7 @@ function ctx(): PostCallClassifyContext {
       toolCalls: [{ id: 'tc1', name: 'file_read', input: { path: '/x/page-93.txt' } }] as ToolCall[],
       inputTokens: 10, outputTokens: 5, stopReason: 'tool_use' } as unknown as PostCallClassifyContext['result'],
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
-    deliverEngineUserAck: vi.fn(async () => undefined), persistAndBroadcastSystemRow: vi.fn(), startAckRepliedNow: () => false,
+    deliverEngineUserAck: vi.fn(async () => undefined), startAckRepliedNow: () => false,
   } as unknown as PostCallClassifyContext;
 }
 const scratch = (): PostCallScratch => ({ persistedContent: null, interAgentTurn: false, deliberateSurfaceTurn: false,

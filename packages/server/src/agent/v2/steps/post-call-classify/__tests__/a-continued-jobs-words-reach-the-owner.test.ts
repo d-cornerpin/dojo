@@ -98,7 +98,7 @@ async function continuedTurn(taskId: string, text: string, work: { from: number;
       latestUserSource: null, lastUserMessageContent: null, configuredModelId: 'test-model',
       turnStartedAt: new Date(lastStart).toISOString(), messageId: `msg-${msg}`, result,
       reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
-      deliverEngineUserAck: vi.fn(async () => undefined), persistAndBroadcastSystemRow: vi.fn(), startAckRepliedNow: () => false,
+      deliverEngineUserAck: vi.fn(async () => undefined), startAckRepliedNow: () => false,
       ...over,
     } as unknown as PostCallClassifyContext;
   };

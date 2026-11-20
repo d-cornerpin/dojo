@@ -145,7 +145,6 @@ const deliverEngineUserAck = vi.fn(
 );
 
 const noteTerminalAnswer = vi.fn();
-const persistAndBroadcastSystemRow = vi.fn();
 
 function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): PostCallClassifyContext {
   return {
@@ -165,7 +164,6 @@ function ctxFor(turnCtx: Bag, over: Partial<PostCallClassifyContext> = {}): Post
     result: modelResult(),
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer,
     deliverEngineUserAck: deliverEngineUserAck as never,
-    persistAndBroadcastSystemRow,
     startAckRepliedNow: () => false,
     ...over,
   } as unknown as PostCallClassifyContext;
@@ -258,7 +256,7 @@ beforeEach(() => {
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`,
   ).run(CONV, AGENT);
   broadcastSpy.mockClear(); deliverEngineUserAck.mockClear();
-  noteTerminalAnswer.mockClear(); persistAndBroadcastSystemRow.mockClear();
+  noteTerminalAnswer.mockClear();
   state = initState({ agentId: AGENT } as Parameters<typeof initState>[0]);
 });
 

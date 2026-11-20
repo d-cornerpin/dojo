@@ -89,7 +89,6 @@ function seamCtx(turnCtx: unknown): PostCallClassifyContext {
     },
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(async () => undefined),
-    persistAndBroadcastSystemRow: vi.fn(),
     startAckRepliedNow: () => false,
   } as unknown as PostCallClassifyContext;
 }

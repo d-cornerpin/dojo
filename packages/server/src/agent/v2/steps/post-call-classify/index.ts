@@ -67,7 +67,6 @@ export interface PostCallClassifyContext {
   readonly deliverEngineUserAck: (
     text: string, originIntent: string | null, reuseId?: string | null, displayKind?: DisplayKind | null,
   ) => Promise<void>;
-  readonly persistAndBroadcastSystemRow: (content: string) => void;
   readonly startAckRepliedNow: () => boolean;
 }
 

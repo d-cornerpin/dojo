@@ -76,7 +76,6 @@ vi.mock('../../../../../db/connection.js', () => ({ getDb: () => fakeDb }));
 const reArmIfStrandedNoAnswerSpy = vi.fn();
 const noteTerminalAnswerSpy = vi.fn();
 const deliverEngineUserAckSpy = vi.fn(async () => undefined);
-const persistAndBroadcastSystemRowSpy = vi.fn();
 const startAckRepliedNowSpy = vi.fn(() => false);
 
 function turnCtxFor(over: Record<string, unknown> = {}): PostCallClassifyContext['turnCtx'] {
@@ -137,7 +136,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     reArmIfStrandedNoAnswer: reArmIfStrandedNoAnswerSpy,
     noteTerminalAnswer: noteTerminalAnswerSpy,
     deliverEngineUserAck: deliverEngineUserAckSpy,
-    persistAndBroadcastSystemRow: persistAndBroadcastSystemRowSpy,
     startAckRepliedNow: startAckRepliedNowSpy,
     ...over,
   } as PostCallClassifyContext;
@@ -289,7 +287,6 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
       ctxFor({ result: modelResult({ content: '', toolCalls: [] }), hasUnansweredUser: false }),
     );
     expect(out.directive).toBe('exit');
-    expect(persistAndBroadcastSystemRowSpy).not.toHaveBeenCalled();
     expect(noteTerminalAnswerSpy).not.toHaveBeenCalled();
     expect(out.state.steerQueue.fired).toHaveLength(0);
   });

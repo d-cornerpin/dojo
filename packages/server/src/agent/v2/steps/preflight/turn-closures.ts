@@ -1,4 +1,4 @@
-// The turn's closures handed to later steps: the stranded-ask re-arm, the two row writers, the answer-key
+// The turn's closures handed to later steps: the stranded-ask re-arm, the routing pill, the answer-key
 // setter, the per-turn registers and the engine ack. Functions, not values, because they read the bag live.
 
 import { v4 as uuidv4 } from 'uuid';
@@ -26,7 +26,6 @@ export interface TurnClosuresInputs {
 export interface TurnClosuresOutputs {
   readonly reArmIfStrandedNoAnswer: () => void;
   readonly persistRoutingMarker: (label: string) => void;
-  readonly persistAndBroadcastSystemRow: (content: string) => string;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly refusedOnceSigs: Set<string>;
   readonly deliverEngineUserAck: (
@@ -58,22 +57,6 @@ export function runTurnClosures(
 
   // The dashboard's routing pill for this turn; the deliveries row is written by the send's own door.
   const persistRoutingMarker = (label: string): void => { void writeRoutingPill(agentId, turnNumber, label); };
-
-  // Persists a system row and broadcasts it, so wordy mode shows it live and not only after a refresh.
-  const persistAndBroadcastSystemRow = (content: string): string => {
-    const rowId = uuidv4();
-    insertMessageIfAbsent({ id: rowId, agentId, role: 'system', content, turnNumber });
-    broadcast({
-      type: 'chat:message',
-      agentId,
-      message: {
-        id: rowId, agentId, role: 'system' as const, content,
-        tokenCount: null, modelId: null, cost: null, latencyMs: null,
-        createdAt: new Date().toISOString(),
-      },
-    });
-    return rowId;
-  };
 
   /** The one setter of the truthful-answer key; that key alone decides whether the turn answered. */
   const noteTerminalAnswer = (rowId: string, surface: string): void => {
@@ -154,8 +137,7 @@ export function runTurnClosures(
   };
 
   return {
-    reArmIfStrandedNoAnswer, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer,
+    reArmIfStrandedNoAnswer, persistRoutingMarker, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
   };
 }

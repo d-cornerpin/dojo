@@ -36,8 +36,7 @@
 // ── WHAT COUNTS AS A DURABLE ROW, AND WHY IT IS NOT AN EVENTS-LANE ROW ──────────────────
 // A `messages` row carrying the steer's content, written at injection time with the turn
 // number. The sanctioned writers are `persistEngineSteer` (which does the row AND the queue
-// entry in one call — RC-19's door), `persistAndBroadcastSystemRow`, `insertMessageIfAbsent`
-// and `insertEngineEventIfAbsent`.
+// entry in one call), `insertMessageIfAbsent` and `insertEngineEventIfAbsent`.
 //
 // HL3's text says "events-lane row". The eight sites this task repaired write `role='system'`
 // rows through `persistEngineSteer` instead, and the reason is a measured one rather than a

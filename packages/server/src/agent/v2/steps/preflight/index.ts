@@ -88,7 +88,6 @@ export interface PreflightOutputs {
   // The turn's closures.
   readonly reArmIfStrandedNoAnswer: () => void;
   readonly persistRoutingMarker: (label: string) => void;
-  readonly persistAndBroadcastSystemRow: (content: string) => string;
   readonly noteTerminalAnswer: (rowId: string, surface: string) => void;
   readonly refusedOnceSigs: Set<string>;
   readonly deliverEngineUserAck: (
@@ -158,8 +157,7 @@ export async function runPreflight(
   });
 
   const {
-    reArmIfStrandedNoAnswer, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer,
+    reArmIfStrandedNoAnswer, persistRoutingMarker, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
   } = runTurnClosures(turnCtx, ctx, sc, {
     counterparty, turnNumber, revertTriggerStampOnAbort,
@@ -193,8 +191,7 @@ export async function runPreflight(
     isEngineTurn, settledContextWakeTurn, isNotificationTurn, a2aReplyContext,
     a2aReplyAssignMessageId,
     counterparty, turnNumber, turnStartedAt,
-    reArmIfStrandedNoAnswer, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer,
+    reArmIfStrandedNoAnswer, persistRoutingMarker, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck,
     counterpartyIsAgentSender, startAckArmed, startAckArmedAtMs, startAckRepliedNow,
     fireStartAckIfOwed,

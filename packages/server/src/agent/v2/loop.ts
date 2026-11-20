@@ -95,8 +95,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     latestTtsEngine, inboundChannel, unrepliedAssign, mostRecentInbound, mostRecentIsA2A,
     hasUnansweredUser, isA2ATurn, pendingEngineEvent, isEngineTurn, settledContextWakeTurn,
     isNotificationTurn, a2aReplyContext, a2aReplyAssignMessageId, counterparty, turnNumber,
-    turnStartedAt, reArmIfStrandedNoAnswer, persistRoutingMarker,
-    persistAndBroadcastSystemRow, noteTerminalAnswer,
+    turnStartedAt, reArmIfStrandedNoAnswer, persistRoutingMarker, noteTerminalAnswer,
     refusedOnceSigs, deliverEngineUserAck, counterpartyIsAgentSender, startAckArmed,
     startAckArmedAtMs, startAckRepliedNow, fireStartAckIfOwed, finalizeContext,
     teardownContext, preCallGatesContext,
@@ -171,8 +170,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           waitingConvs, inboundChannel, latestUserSource, lastUserMessageContent,
           configuredModelId, turnStartedAt, messageId, result,
           // Closures over driver state, passed as values so they keep the bindings they closed over.
-          reArmIfStrandedNoAnswer, noteTerminalAnswer, deliverEngineUserAck,
-          persistAndBroadcastSystemRow, startAckRepliedNow,
+          reArmIfStrandedNoAnswer, noteTerminalAnswer, deliverEngineUserAck, startAckRepliedNow,
         });
         turnCtx.state = classified.state;
         if (classified.directive === 'exit') break;

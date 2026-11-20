@@ -97,7 +97,6 @@ function ctxFor(turnCtx: Record<string, unknown>, over: Partial<PostCallClassify
     reArmIfStrandedNoAnswer: vi.fn(),
     noteTerminalAnswer: vi.fn(),
     deliverEngineUserAck: vi.fn(async () => undefined),
-    persistAndBroadcastSystemRow: vi.fn(),
     startAckRepliedNow: () => false,
     ...over,
   } as unknown as PostCallClassifyContext;

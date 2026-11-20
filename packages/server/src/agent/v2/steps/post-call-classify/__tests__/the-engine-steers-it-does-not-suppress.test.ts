@@ -39,7 +39,6 @@ const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 
 const reArmIfStrandedNoAnswerSpy = vi.fn();
 const noteTerminalAnswerSpy = vi.fn();
 const deliverEngineUserAckSpy = vi.fn(async () => undefined);
-const persistAndBroadcastSystemRowSpy = vi.fn();
 const startAckRepliedNowSpy = vi.fn(() => false);
 
 function turnCtxFor(over: Record<string, unknown> = {}): PostCallClassifyContext['turnCtx'] {
@@ -101,7 +100,6 @@ function ctxFor(over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     reArmIfStrandedNoAnswer: reArmIfStrandedNoAnswerSpy,
     noteTerminalAnswer: noteTerminalAnswerSpy,
     deliverEngineUserAck: deliverEngineUserAckSpy,
-    persistAndBroadcastSystemRow: persistAndBroadcastSystemRowSpy,
     startAckRepliedNow: startAckRepliedNowSpy,
     ...over,
   } as PostCallClassifyContext;

@@ -49,7 +49,7 @@ export function endTurn(
     turnStartedAt: new Date().toISOString(), messageId: `msg-${++n}`,
     result: { content: reply, toolCalls: [], inputTokens: 10, outputTokens: 5, stopReason: 'end_turn' },
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(), deliverEngineUserAck: vi.fn(async () => undefined),
-    persistAndBroadcastSystemRow: vi.fn(), startAckRepliedNow: () => false,
+    startAckRepliedNow: () => false,
   } as unknown as PostCallClassifyContext;
   return runPostCallClassify(state, ctx);
 }
