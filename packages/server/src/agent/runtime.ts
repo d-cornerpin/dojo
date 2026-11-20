@@ -20,7 +20,7 @@ import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
 import { handBackOrphansOf } from '../work/orphaned-claims.js';
-import { transition, joinPieces, isTerminal } from '../work/store.js';
+import { transition } from '../work/store.js';
 import { withUnit, afterCommit } from '../db/unit.js';
 import { suppressQueuedReplies } from './v2/deliveries.js';
 import { setAgentModel } from './model-switch.js';
@@ -383,8 +383,8 @@ export function stopAgent(agentId: string): void {
   logger.info('Agent stop requested', { runInFlight, callsAborted: cut }, agentId);
 }
 
-/** The owner's Stop ends the request being served (`stoppedRequestsOf`) in one transaction: its unsent replies, its
- *  pieces, the request, its job tasks (no due; held unless a schedule); then the agent stops, whatever that did, and
+/** The owner's Stop ends the request being served (`stoppedRequestsOf`) in one transaction: its unsent replies, the
+ *  request (with its pieces, in `transition`), its job tasks (no due; held unless a schedule); then the agent stops, and
  *  the run is settled. Nothing running and nothing to end: nothing is done. What the Stop button does, for every door;
  *  import and terminate call `stopAgent`. */
 export function stopByOwner(agentId: string): { ended: number; repliesNotSent: number; nothingRunning?: true } {
@@ -402,10 +402,6 @@ export function stopByOwner(agentId: string): { ended: number; repliesNotSent: n
       const dropped = suppressQueuedReplies(agentId, s.liveRun || isRunUnwinding(agentId) ? s.asks : undefined);
       let ended = s.requests.length + s.runTasks.length;
       for (const id of new Set([...s.asks, ...dropped.askIds])) {
-        for (const p of joinPieces(id)) {
-          if (isTerminal(p.state)) continue;
-          transition(p.childId, { to: 'abandoned', by: 'owner', reason: 'the owner stopped the request this piece was for' });
-        }
         const r = transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop' });
         if (r.kind === 'applied') ended++;
         else logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);

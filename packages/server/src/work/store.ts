@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
-import { withUnit } from '../db/unit.js';
+import { afterCommit, withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { isPrimaryAgent } from '../config/platform.js';
 // `work/outcome.ts` declares the boundary's answer; re-exported here so callers keep one import path.
@@ -231,6 +231,22 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   const at = now();
 
   withUnit(() => {
+    // A request that ends ends its open pieces with it: called off, they are abandoned and their helpers told;
+    // failed, they fail, nobody is told, and a late answer takes the late road.
+    const ends = row.kind === 'ask' && (input.to === 'abandoned' || input.to === 'failed') && !isTerminal(from);
+    const pieces = ends ? db.prepare("SELECT id FROM work WHERE parent_id = ? AND kind = 'task' AND state IN ('open','claimed','blocked')").all(workId) as Array<{ id: string }> : [];
+    for (const p of pieces) {
+      transition(p.id, {
+        to: input.to, by: input.by, actorId, evidenceRef: input.evidenceRef,
+        reason: input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',
+      });
+    }
+    if (pieces.length > 0 && input.to === 'abandoned') {
+      afterCommit(() => void import('../agent/a2a-transport.js')
+        .then((m) => m.tellHelpersTheRequestEnded(pieces.map((p) => p.id), input.by === 'owner'))
+        .catch((err: unknown) => logger.warn('the helpers of an ended request were not told', { workId, error: String(err) })));
+    }
+
     db.prepare(
       `UPDATE work SET
          state = ?,

@@ -360,13 +360,11 @@ describe('#19: the reaper reaches a join whose parent has already closed', () =>
       ttlAt: Date.now() - 600 * 60_000, threads: [{ threadId: T1, assigneeAgent: 'ana' }],
     });
 
-    // Pass 1: the first arm fails it closed and delivers ONE notice. That leaves the parent
-    // `failed` with `remaining_children` still 1 — the exact shape the second arm hunts, which
-    // is how the first draft of this fix produced a duplicate notice on every pass.
+    // Pass 1: the first arm fails it closed and delivers ONE notice; its open piece fails with it.
     const one = await sweep();
     expect(one.failedClosed).toBe(1);
     expect(workRow(parent).state).toBe('failed');
-    expect(Number(workRow(parent).remaining_children)).toBeGreaterThan(0);
+    expect(Number(workRow(parent).remaining_children)).toBe(0);
     expect(ownerFacing()).toHaveLength(1);
     expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(parent);
 

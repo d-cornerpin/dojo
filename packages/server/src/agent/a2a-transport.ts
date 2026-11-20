@@ -11,7 +11,7 @@ import { patienceFloorFor } from '../tracker/assignee-patience.js';
 import {
   A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX,
 } from '@dojo/shared';
-import { postAgentNotice } from './agent-notice.js';
+import { postAgentNotice, redriveWithoutReply } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
@@ -894,10 +894,9 @@ async function relayToAsker(
 
 /** The honest "no answer" notice in the PLATFORM's voice; the AGENT is told separately.
  *  Exactly-once is the `work` transition before the send, not this text. */
-function failClosedNotice(join: JoinState, askedNameHint?: string | null): string {
-  // The wording lives in `join-failure-notice.ts`, which reads the pieces' own states.
+function failClosedNotice(join: JoinState, askedNameHint?: string | null, pieces = joinPieces(join.id)): string {
+  // The wording lives in `join-failure-notice.ts`, which reads the pieces' states (before the fail, when given).
   const ask = askRowForJoin(join);
-  const pieces = joinPieces(join.id);
   const names = [...new Set(pieces.map((p) => resolveAgentDisplayName(p.assigneeAgent))
     .filter((n): n is string => Boolean(n)))];
   return joinFailureNotice({
@@ -1539,7 +1538,7 @@ function landedContentNotice(
   join: JoinState, snapshot: JoinPiece[], parentAnswered: boolean, askedNameHint?: string | null,
 ): string {
   const landed = snapshot.filter((p) => (p.state === 'done' || p.state === 'failed') && (p.content ?? '').trim().length > 0);
-  if (landed.length === 0) return failClosedNotice(join, askedNameHint);
+  if (landed.length === 0) return failClosedNotice(join, askedNameHint, snapshot);
   const missing = snapshot.filter((p) => !isTerminal(p.state));
   const names = missing.map((p) => resolveAgentDisplayName(p.assigneeAgent) ?? askedNameHint ?? 'another agent');
   const who = names.length === 1 ? names[0] : `${names.length} of the agents it asked`;
@@ -1712,6 +1711,25 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
     }
   }
   return out;
+}
+
+/** A request was called off: the helper on each of its pieces is told once to stop that work. */
+export async function tellHelpersTheRequestEnded(pieceIds: string[], byOwner: boolean): Promise<void> {
+  for (const id of pieceIds) {
+    const piece = getDb().prepare('SELECT assignee_agent AS helper, root_id AS thread FROM work WHERE id = ?')
+      .get(id) as { helper: string | null; thread: string } | undefined;
+    if (!piece?.helper) continue;
+    const task = getDb().prepare(
+      "SELECT id, title FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
+    ).get(piece.helper, piece.thread) as { id: string; title: string | null } | undefined;
+    const what = task ? `"${task.title ?? 'this work'}" [${task.id}]` : `the work on thread ${piece.thread.slice(0, A2A_THREAD_SHORT_LENGTH)}`;
+    await redriveWithoutReply({
+      toAgentId: piece.helper, fromAgentId: null, taskId: task?.id ?? null,
+      content: `[Engine] The request this work was for was called off${byOwner ? ' by the owner' : ''}. Stop working on ${what}: `
+        + 'hand it in as can\'t be done with that reason (work_update action="hand_in", outcome="cant_be_done"), or, if you were made for this job, '
+        + 'end with complete_task(status="fallen"). Send nothing more about it.',
+    });
+  }
 }
 
 /** When the engine gives up a request the asked agent never answered (its pickup past the budget), the asker
