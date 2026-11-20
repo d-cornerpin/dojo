@@ -12,7 +12,8 @@ vi.mock('../classifiers/inbound-routing.js', async (orig) => ({
 
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
-import { askIdForMessage, claimAsk, stampClaimingTurn } from '../../../work/store.js';
+import { askIdForMessage, claimAsk, stampClaimingTurn, transition } from '../../../work/store.js';
+import { openTrackerTask } from '../../../work/tracker-store.js';
 import { openTurnContext, endTurnContext, type TurnContext } from '../../turn-context.js';
 import { advance, initState, type AgentTurnState } from '../state.js';
 import { forcedReplyDue } from '../forced-reply.js';
@@ -84,6 +85,24 @@ describe('the required reply is armed when the turn would end silent with someon
     turnCtx.state = turnState({ engineCutExit: 'stop' });
     expect(await due()).toBe(false);
     expect(turnCtx.forcedReplySpent).toBe(false);
+  });
+
+  it('a turn that hands in the task behind the request and says nothing is made to answer', async () => {
+    const task = openTrackerTask({ title: 'Compare the quotes', status: 'in_progress', assignedTo: AGENT, createdBy: AGENT,
+      origin: { kind: 'user', sourceMessageId: 'm-1', turn: TURN, convKey: 'dashboard:owner' } });
+    expect(await due()).toBe(false);
+    expect(transition(task, { to: 'handed_in', by: 'agent', actorId: AGENT, reason: 'handed in: compared all three' }).kind)
+      .toBe('applied');
+    expect(await due()).toBe(true);
+  });
+
+  it('a turn that only sent to another agent, with no join open, is made to answer', async () => {
+    testDb().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at, updated_at)
+      VALUES ('d-a2a', ?, ?, 'send_to_agent', 'a2a', 'delivered', datetime('now'), datetime('now'))`).run(AGENT, TURN);
+    testDb().prepare("UPDATE work SET remaining_children = 1 WHERE kind = 'ask'").run();
+    expect(await due()).toBe(false);
+    testDb().prepare("UPDATE work SET remaining_children = 0 WHERE kind = 'ask'").run();
+    expect(await due()).toBe(true);
   });
 
   it('a reminder run that said nothing is made to say it', async () => {
