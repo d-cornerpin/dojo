@@ -470,16 +470,6 @@ function endApprentices(agentId: string): void {
 }
 
 
-// SQLite writes created_at via datetime('now'): UTC wall-clock text with no zone, which bare
-// `new Date(text)` reads as LOCAL time. Read it as an instant, the timeout_at way; 0 when unparseable.
-export function runtimeSecondsSince(createdAt: string, nowMs: number = Date.now()): number {
-  const iso = createdAt.replace(' ', 'T');
-  const zoned = createdAt.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(createdAt) ? iso : `${iso}Z`;
-  const ms = new Date(zoned).getTime();
-  if (Number.isNaN(ms)) return 0;
-  return Math.floor((nowMs - ms) / 1000);
-}
-
 export async function completeAgent(
   agentId: string,
   status: 'complete' | 'fallen' | 'blocked',
@@ -493,7 +483,6 @@ export async function completeAgent(
     parent_agent: string | null;
     task_id: string | null;
     config: string;
-    created_at: string;
     classification: string | null;
     agent_type: string | null;
   } | undefined;
@@ -502,23 +491,6 @@ export async function completeAgent(
     logger.warn('Cannot complete: agent not found', { agentId });
     return;
   }
-
-  const messageStats = db.prepare(`
-    SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as total_tokens
-    FROM messages WHERE agent_id = ?
-  `).get(agentId) as { count: number; total_tokens: number };
-
-  const costStats = db.prepare(`
-    SELECT COALESCE(SUM(cost), 0) as total_cost
-    FROM audit_log WHERE agent_id = ? AND action_type = 'model_call'
-  `).get(agentId) as { total_cost: number };
-
-  const toolStats = db.prepare(`
-    SELECT COUNT(*) as count FROM audit_log
-    WHERE agent_id = ? AND action_type IN ('tool_call', 'file_read', 'file_write', 'exec')
-  `).get(agentId) as { count: number };
-
-  const durationSeconds = runtimeSecondsSince(agent.created_at);
 
   // Sensei agents and anything marked `agent_type='persistent'` are persistent regardless of the
   // config JSON: completeAgent does its own raw status write, so the terminateAgent guard cannot help.
@@ -621,15 +593,6 @@ export async function completeAgent(
     name: agent.name,
     status,
     summary: summary.slice(0, 200),
-    // The queries above are unbounded (WHERE agent_id only), so these are LIFETIME totals: for a
-    // RESIDENT (hundreds of batches) they accumulate across months; label them as such.
-    lifetimeStats: {
-      messages: messageStats.count,
-      tokens: messageStats.total_tokens,
-      cost: costStats.total_cost,
-      duration: durationSeconds,
-      toolCalls: toolStats.count,
-    },
   }, agentId);
 
   // Broadcast the agent's new status
