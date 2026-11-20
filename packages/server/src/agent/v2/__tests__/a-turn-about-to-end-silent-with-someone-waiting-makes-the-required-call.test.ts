@@ -91,5 +91,8 @@ describe('the required reply is armed when the turn would end silent with someon
     turnCtx.root = { kind: 'occurrence', id: 'occ-1', sourceMessageId: null };
     turnCtx.servedWork = { taskId: 't-1', runId: 'r-1', taskKind: 'reminder', originConvKey: null };
     expect(await due()).toBe(true);
+    expect(turnCtx.state!.steerQueue.pending.map((e) => e.content)).toEqual([
+      '[Engine: this run is due to deliver its reminder and has said nothing yet. Write it now.]',
+    ]);
   });
 });

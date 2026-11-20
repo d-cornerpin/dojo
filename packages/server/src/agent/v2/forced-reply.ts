@@ -29,12 +29,16 @@ export async function forcedReplyDue(
   const owesItsDeliverable = turnCtx.root?.kind === 'occurrence'
     && DELIVERABLE_OWING_TASK_KINDS.includes(turnCtx.servedWork?.taskKind ?? '')
     && !turnDeliveredToPerson(p.agentId, p.turnNumber);
-  if (owedAtTurnEnd(p.agentId, p.turnNumber).length === 0 && !owesItsDeliverable) return false;
+  const aPersonWaits = owedAtTurnEnd(p.agentId, p.turnNumber).length > 0;
+  if (!aPersonWaits && !owesItsDeliverable) return false;
   if (await inboundAsksNothing(turnCtx)) return false;
+  const kind = turnCtx.servedWork?.taskKind === 'notify' ? 'message' : turnCtx.servedWork?.taskKind;
+  const owed = aPersonWaits ? `${userWords(turnCtx.address)} is waiting for your answer to their message`
+    : `this run is due to deliver its ${kind} and has said nothing yet`;
   turnCtx.forcedReplySpent = true;
   turnCtx.state = persistEngineSteer(advance(state, { phase: 'preCallGates' }), {
     agentId: p.agentId, turnNumber: p.turnNumber, floor: 'forced-reply', atLoop: state.loopCount,
-    content: `[Engine: ${userWords(turnCtx.address)} is waiting for your answer to their message. Write it now.]`,
+    content: `[Engine: ${owed}. Write it now.]`,
   }, { broadcast });
   turnCtx.forceReplyPending = true;
   turnCtx.spinBrakeGraceCalls = 0;
