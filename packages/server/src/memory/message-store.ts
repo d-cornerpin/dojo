@@ -153,7 +153,7 @@ const INSERT_SQL = `
     )`;
 
 // Every own row is labelled at birth from the turn record, the turn's bag or an earlier row of the turn; an
-// unlabelled row would be kept by the scopers as the owner's own work.
+// unlabelled row would read as the owner's own work.
 interface OwnSubject { subjectKind: SubjectKind | null; conversationId: string | null; a2aThreadId: string | null }
 
 function ownRowSubject(m: NewMessage, lane: Lane): OwnSubject {

@@ -173,12 +173,12 @@ describe('the hand-back facts, in the real model context', () => {
     for (const f of FACTS) expect(wire, `the serving turn's context is missing: ${f}`).toContain(f);
   });
 
-  it('another conversation\'s turn is given none of them', async () => {
+  it('another conversation\'s turn sees the owner\'s conversation labelled as his, and none of the hand-back', async () => {
     await ownerAskStrandedByADeadTurn();
     const owner = await turnSees('Checking whether the text reached them first.');
     for (const f of FACTS) expect(owner, `the serving turn's context is missing: ${f}`).toContain(f);
-    // Then a contact writes. Their turn is another conversation: an events-lane notice would still
-    // be in view here (the lane is shown on every human turn); the per-ask facts must not be.
+    // Then a contact writes. Their turn sees the owner's conversation, labelled as his; the hand-back's
+    // instructions belong to the turn that serves his request and are not on this one.
     mockDb.current!.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-contact', ?, 'imessage', '+15550100')`).run(AGENT);
     insertMessage({
       id: 'm-contact', agentId: AGENT, role: 'user', content: 'Hi, is the garden party still on Saturday?',
@@ -187,8 +187,9 @@ describe('the hand-back facts, in the real model context', () => {
     } as never);
     const wire = await turnSees('Yes, Saturday at two.');
     expect(wire, 'this turn must be the contact\'s').toContain('garden party');
-    for (const f of ['roofer@example.com', 'may not have gone', 'Booked the roofer', 'book the roofer', 'Answer it now']) {
-      expect(wire, `a contact's turn was shown: ${f}`).not.toContain(f);
+    expect(wire, 'the owner\'s request is in view, labelled as his').toMatch(/dashboard conversation with TestUser\] Could you book the roofer/);
+    for (const f of ['may not have gone', 'Answer it now']) {
+      expect(wire, `a contact's turn was handed the hand-back: ${f}`).not.toContain(f);
     }
   });
 });
@@ -217,7 +218,7 @@ describe('the inherited-backlog notice (review R3-3): the list only on the turn 
     expect(stored).not.toContain('dishwasher');
   });
 
-  it('the turn the notice drives is given the list whole; a later contact turn sees nothing of it', async () => {
+  it('the turn the notice drives is given the list whole; a later contact turn sees only the owner\'s labelled conversation', async () => {
     await inheritedOwnerAsk();
     const engine = await turnSees('I will look at these and decide.');
     expect(engine, 'the driven turn must see the list').toContain('dishwasher');
@@ -231,6 +232,7 @@ describe('the inherited-backlog notice (review R3-3): the list only on the turn 
     } as never);
     const wire = await turnSees('Yes, Sunday at ten.');
     expect(wire, 'this turn must be the contact\'s').toContain('bake sale');
-    for (const f of ['dishwasher', 'warranty', 'from the owner']) expect(wire, `a contact's turn was shown: ${f}`).not.toContain(f);
+    expect(wire, 'the owner\'s old request is in view, labelled as his').toMatch(/dashboard conversation with TestUser\] Can you find the warranty card/);
+    for (const f of ['from the owner', '9 days ago']) expect(wire, `a contact's turn was handed the notice: ${f}`).not.toContain(f);
   });
 });

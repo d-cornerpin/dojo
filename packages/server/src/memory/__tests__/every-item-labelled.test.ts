@@ -620,7 +620,9 @@ describe('round 2 — delegated work cancelled midway, then re-asked (plan backw
     await submitUserMessage(AGENT, 'So, the HERON report?');
     const t = await turn({ content: 'All clear.' });
     const all = wireText(t[0]);
-    expect(all.split('all clear at every site').length - 1, 'shown once').toBe(1);
+    // In view twice: the relay he has, then the helper's own report on its thread, labelled as delegated work.
+    expect(all.split('all clear at every site').length - 1, 'the relay and the helper\'s report').toBe(2);
+    expect(all).toMatch(/work you delegated to Peer for the request of the person you are talking with\] \[A2A:DELIVERABLE thread:7e1f2a3b/);
     expect(headerBefore(all, 'all clear at every site'), 'labelled with THE REQUEST it answers')
       // t196: the engine's relay says it was SENT, still naming the request it answers.
       .toMatch(/sent to TestUser on dashboard at [^\]]* as the result of the request of [^\]]*"Please try the HERON report again\."/);

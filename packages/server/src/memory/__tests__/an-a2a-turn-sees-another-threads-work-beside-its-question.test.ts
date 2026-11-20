@@ -1,21 +1,6 @@
-// t161 — AN A2A TURN SEES ITS OWN TOOL WORK FOR THIS THREAD ONLY, never another thread's.
-//
-// ── THE WITNESS (ritual run 7, S3, measured from a box's rows) ──
-// An agent answered a QUESTION on thread A with three tool calls (docs load, a mailbox search, a
-// send). Its next turn was woken by an ANSWER on thread B. The first model call held thread A's
-// six tool rows plus thread B's trigger, and NOT thread A's question that explains them:
-// `scopeToA2AThread` kept an own tool row whatever thread it was stamped for, while it scoped the
-// INBOUND rows to the live thread. The model was handed another conversation's tool output with
-// the question removed.
-//
-// ── THE RULE ──
-// An own row stamped (`a2a_thread_id`) for a DIFFERENT A2A thread is dropped from an A2A turn, the
-// way an own row stamped for a human conversation already is. THIS thread's own rows stay (short
-// and full id forms both match). A row with no thread stamp is judged as it always was: kept.
-//
-// Driven through the real assembler (`assembleContext`) on the measured row shapes, with the real
-// migrations on a fixture database. Fingerprints are tokens the test put in the rows, so "did it
-// reach the model" is a substring test on the assembled messages.
+// An A2A turn sees the agent's work on another thread beside the question that explains it, each row labelled
+// with its thread; the thread it serves keeps its own rows. Driven through the real assembler (`assembleContext`)
+// on a migrated fixture database; fingerprints are tokens the test put in the rows.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -45,10 +30,9 @@ vi.mock('../../agent/model.js', () => ({
 }));
 vi.mock('../vector-search.js', () => ({ vectorSearch: async () => [] }));
 
-import { assembleContext, scopeToA2AThread, scopeToHumanConversation } from '../assembler.js';
+import { assembleContext } from '../assembler.js';
 import { runMigrations } from '../../db/migrations.js';
 import type { TurnCounterparty } from '../../agent/v2/counterparty.js';
-import type { Message, MessageOrigin } from '@dojo/shared';
 
 const AGENT = 'agent-t161-main';
 const PEER = 'agent-t161-peer';
@@ -150,16 +134,17 @@ afterEach(() => {
   mockDb.current = null;
 });
 
-describe('t161 (i): two A2A threads in a row — the second turn does not carry the first thread\'s tool work', () => {
-  it('the trigger and the live thread are in view; the other thread\'s own tool rows are not', async () => {
+describe('two A2A threads in a row: the second turn sees the first thread\'s work with its question', () => {
+  it('the other thread\'s question and its tool rows are in view, labelled with that thread, beside the trigger', async () => {
     seedTwoThreadsInARow();
     const ctx = await assembleContext(AGENT, MODEL, { counterparty: peerOn(short(THREAD_B)) });
     const seen = textOf(ctx.messages);
     expect(seen).toContain(B_TRIGGER_FP);
     expect(seen).toContain(B_EARLIER_FP);
-    expect(seen).not.toContain(A_TOOL_FP);
-    expect(seen).not.toContain('load_tool_docs');
-    expect(seen).not.toContain('email_search');
+    expect(seen).toContain(A_QUESTION_FP);
+    expect(seen).toContain(A_TOOL_FP);
+    expect(seen).toContain(`agent thread ${short(THREAD_A)} with T161Peer`);
+    expect(seen.indexOf(A_QUESTION_FP)).toBeLessThan(seen.indexOf(A_TOOL_FP));
     expect(ctx.messageEntryIds).not.toContain('lane.empty-context-fallback');
   });
 
@@ -170,15 +155,14 @@ describe('t161 (i): two A2A threads in a row — the second turn does not carry 
     const seen = textOf(ctx.messages);
     expect(seen).toContain(B_TRIGGER_FP);
     expect(seen).toContain(B_TOOL_FP);
-    expect(seen).not.toContain(A_TOOL_FP);
   });
 
-  it('the full-id counterparty form drops the other thread the same way', async () => {
+  it('the full-id counterparty form sees the same view', async () => {
     seedTwoThreadsInARow();
     const ctx = await assembleContext(AGENT, MODEL, { counterparty: peerOn(THREAD_B) });
     const seen = textOf(ctx.messages);
     expect(seen).toContain(B_TRIGGER_FP);
-    expect(seen).not.toContain(A_TOOL_FP);
+    expect(seen).toContain(A_TOOL_FP);
   });
 
   it('a tool-only remainder cannot starve the turn: the trigger is the first row and survives the integrity pass', async () => {
@@ -194,7 +178,7 @@ describe('t161 (i): two A2A threads in a row — the second turn does not carry 
   });
 });
 
-describe('t161 (ii): a same-thread continuation still sees its own tool work', () => {
+describe('a same-thread continuation still sees its own tool work', () => {
   for (const [stampForm, cpForm] of [['full', 'short'], ['short', 'full'], ['full', 'full'], ['short', 'short']] as const) {
     it(`rows stamped with the ${stampForm} id, counterparty carrying the ${cpForm} id`, async () => {
       seedAgents();
@@ -210,7 +194,7 @@ describe('t161 (ii): a same-thread continuation still sees its own tool work', (
   }
 });
 
-describe('t161 (iii): own rows with no thread stamp behave as before', () => {
+describe('own rows with no thread stamp, and engine turns', () => {
   it('an unstamped own tool pair on the a2a lane stays in an A2A turn\'s view', async () => {
     seedAgents();
     seedEarlierThreadBMessage();
@@ -222,34 +206,7 @@ describe('t161 (iii): own rows with no thread stamp behave as before', () => {
     expect(seen).toContain(B_TRIGGER_FP);
   });
 
-  it('with no live thread id at all (terminal wake shape) nothing is dropped for its stamp', () => {
-    const own = (id: string, threadId: string | null): Message => ({
-      id, agentId: AGENT, role: 'tool', content: toolResult(id, 'x'),
-      tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: '2026-10-13 22:10:00',
-      origin: selfOrigin(threadId),
-    } as Message);
-    const kept = scopeToA2AThread([own('stamped-a', THREAD_A), own('unstamped', null)], null).map((m) => m.id);
-    expect(kept).toEqual(['stamped-a', 'unstamped']);
-  });
-});
-
-function selfOrigin(threadId: string | null): MessageOrigin {
-  return { kind: 'self', relation: 'agent', channel: 'a2a', senderName: null, senderId: null, threadId, intent: null, authorized: true };
-}
-
-describe('t161 (iv): the human-conversation and engine scopers are unchanged', () => {
-  const stampedToThread = (id: string): Message => ({
-    id, agentId: AGENT, role: 'tool', content: toolResult(id, 'x'),
-    tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: '2026-10-13 22:10:00',
-    origin: selfOrigin(THREAD_A), subjectKind: 'a2a_thread',
-  } as unknown as Message);
-
-  it('the human scoper keeps an own row stamped for an A2A thread (it only drops a person\'s other conversation)', () => {
-    const cp: TurnCounterparty = { kind: 'user', name: 'the owner', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
-    expect(scopeToHumanConversation([stampedToThread('x')], cp, 'conv-1', null).map((m) => m.id)).toEqual(['x']);
-  });
-
-  it('an engine turn still keeps own rows stamped for an A2A thread', async () => {
+  it('an engine turn keeps own rows stamped for an A2A thread', async () => {
     seedAgents();
     insertRow({ id: 't161-engine-trigger', role: 'user', lane: 'events', originIntent: 'scheduler', content: 'A scheduled task fired: ENGINE-TRIGGER-FINGERPRINT-3c19', turn: 0 });
     ownToolWork({ id: 'call_a1', name: 'email_search', fp: A_TOOL_FP, turn: 1, threadId: THREAD_A });

@@ -1,6 +1,5 @@
-// Names the agent's other live human threads (party, channel, recency) and live channels: every default surface
-// is filtered to the served conversation, and a silent absence reads as incapability.
-// NO MESSAGE CONTENT: quoting another thread would reintroduce the cross-conversation bleed the filters prevent.
+// Names the agent's other live human threads (party, channel, recency) and live channels, so a waiting thread is
+// seen even when its rows have left the view. No message content: the rows are in the history, labelled.
 // A tail lane after `volatileFrom`: it moves whenever any thread moves, so it must never sit in the cached prefix.
 
 import { getDb } from '../db/connection.js';
@@ -82,10 +81,9 @@ export const OTHER_THREADS_HEAD = '═══ YOUR OTHER LIVE THREADS — LIVE PL
 export const OTHER_THREADS_TAIL = '═══ END OTHER THREADS ═══';
 
 export const OTHER_THREADS_HEADLINE =
-  'The conversation above is ONE thread, filtered to it on purpose. These other threads are live on '
-  + 'this platform right now, and their messages are in your own history even though they are not '
-  + 'shown above — so "I have no way to see that" is FALSE and must never be said. No content is '
-  + 'listed here by design';
+  'The history above holds all of your conversations, each row labelled with the one it belongs to; this turn '
+  + 'answers only its own. These other threads are live on this platform right now and older messages of theirs '
+  + 'may have left the view, so "I have no way to see that" is FALSE and must never be said';
 
 /** Names only tools this agent can call: default grants may omit Conversation Recall, and naming an
  *  ungranted tool would contradict platform truth. */

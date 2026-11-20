@@ -223,7 +223,7 @@ describe('§2 the render', () => {
     withOneThread();
     const text = buildOtherThreadsInjection(AGENT, SERVED)!;
     expect(text).toContain('"I have no way to see that" is FALSE');
-    expect(text).toContain('ONE thread');
+    expect(text).toContain('each row labelled with the one it belongs to');
   });
 
   it('the elision is never silent', () => {

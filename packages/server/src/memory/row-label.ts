@@ -6,7 +6,6 @@ import type { Message } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { getOwnerName } from '../config/platform.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
-import type { PromptTurnContext } from '../prompt/assembler.js';
 import { renderInstant, renderMessageTimeStamp } from './message-stamp.js';
 import { subjectKindsBySeq, type SubjectKind } from './message-store.js';
 import { readRelayReceipt, readDelegatedForAsk, readCounterparty } from './relay-facts.js';
@@ -14,8 +13,8 @@ import { readRelayReceipt, readDelegatedForAsk, readCounterparty } from './relay
 export type LabelledMessage = Message & { subjectKind?: SubjectKind | null };
 
 /** What an OWN row belongs to; a row read without its label (a fixture, a bypassing writer) is judged by its
- *  stamp, so no input shape changes which rows a scoper keeps. */
-export function subjectOf(m: LabelledMessage): SubjectKind | null {
+ *  stamp, so no input shape changes how a row is labelled. */
+function subjectOf(m: LabelledMessage): SubjectKind | null {
   return m.subjectKind ?? (m.conversationId ? 'conv' : null);
 }
 
@@ -250,18 +249,6 @@ export function labelRows(agentId: string, rows: Message[]): Map<string, string>
     }
   }
   return out;
-}
-
-/** The conversation a turn's tail is scoped to. An EMAIL WAKE serves none, yet its counterparty IS the owner on
- *  the dashboard, so it sees that conversation WHOLE, each row labelled. */
-export function servedConversationId(agentId: string, turnContext: PromptTurnContext | undefined): string | null {
-  const live = liveTurnContext(agentId)?.conversationId ?? null;
-  if (live || !turnContext?.isNotificationTurn) return live;
-  try {
-    return (getDb().prepare(`SELECT id FROM conversations WHERE agent_id = ? AND channel = 'dashboard'
-                               AND provider IS NULL AND counterparty_id = 'owner' AND thread_root IS NULL LIMIT 1`)
-      .get(agentId) as { id: string } | undefined)?.id ?? null;
-  } catch { return null; }
 }
 
 /** EVENTS' HANDLED line: the trigger (`seq`) of the last finished turn that SHOWS EVENTS and whose model RAN on
