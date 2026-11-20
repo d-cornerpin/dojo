@@ -463,7 +463,7 @@ const handlers = {
     auditLog(agentId, name, null, 'success',
       `Job ${jobId} queued (${kind}, ${promptText.length} chars)`);
 
-    enqueueAudioOrMusicJob(jobId);
+    void enqueueAudioOrMusicJob(jobId);
 
     content =
       `${isMusic ? 'Music' : 'Audio'} generation started (job_id: ${jobId}). The engine is generating the asset in the background. When it's ready the engine will post it directly to the chat. You do NOT get a second turn and must NOT call ${name} again. The engine adds no caption: the words you write in this turn are the only text that arrives with the ${kind}, so write them now, in your next reply (it is text only, no more tools run).` +
