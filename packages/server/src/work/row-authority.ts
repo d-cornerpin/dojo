@@ -151,11 +151,14 @@ export function taskWriteRefusal(actorId: string, workId: string, what: string):
     + 'Tell its holder what you need with send_to_agent, or leave a note with work_note.';
 }
 
-/** The goal and the measure are the creator's: an agent working a row it did not create may not change them.
- *  The main agent's change stands and is on the record. */
-export function standardEditRefusal(actorId: string, workId: string): string | null {
+/** The goal and the measure are the creator's: an agent working a row it did not create may not change them (the
+ *  same value sent back is no change). The main agent's change stands and is on the record. */
+export function standardEditRefusal(actorId: string, workId: string, next: { goal?: string; measure?: unknown }): string | null {
   const f = rowFacts(workId);
   if (!f || !isOwn(f, actorId) || actorId === f.creator || isPrimaryAgent(actorId)) return null;
+  const now = getDb().prepare('SELECT goal, measure_json FROM work WHERE id = ?').get(workId) as { goal: string | null; measure_json: string | null };
+  if ((next.goal === undefined || next.goal.trim() === now.goal)
+    && (next.measure === undefined || JSON.stringify(next.measure) === now.measure_json)) return null;
   return `Error: the goal and the measure of ${f.kind} "${f.title}" (${f.id.slice(0, 8)}) belong to whoever gave you the work, `
     + 'so you cannot change them. If they are wrong, tell whoever gave you the work: an agent with send_to_agent, the owner in your reply.';
 }

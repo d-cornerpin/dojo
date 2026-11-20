@@ -1103,7 +1103,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     // Goal edits are special: PM watches for goalpost-narrowing, so both old and new are logged with a
     // diff.
     if (goal !== undefined) {
-      const refused = standardEditRefusal(agentId, taskId);
+      const refused = standardEditRefusal(agentId, taskId, { goal });
       if (refused) return refused;
       const goalTrimmed = goal.trim();
       if (!goalTrimmed) {

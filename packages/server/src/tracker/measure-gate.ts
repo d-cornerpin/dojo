@@ -18,6 +18,6 @@ export function applyMeasureToTask(taskId: string, r: MeasureReading, by: Measur
 export function editMeasure(agentId: string, rawTaskId: string, r: MeasureReading): { line: string } | { error: string } {
   const resolved = resolveTaskId(rawTaskId, agentId);
   if (!resolved.ok) return { error: formatResolveError('task', rawTaskId, resolved) };
-  const refused = taskWriteRefusal(agentId, resolved.id, 'edit') ?? standardEditRefusal(agentId, resolved.id);
+  const refused = taskWriteRefusal(agentId, resolved.id, 'edit') ?? standardEditRefusal(agentId, resolved.id, { measure: r.measure });
   return refused ? { error: refused } : { line: applyMeasureToTask(resolved.id, r, { setBy: agentId }) };
 }

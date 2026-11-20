@@ -30,6 +30,12 @@ describe('a helper cannot change the goal or the measure it was given', () => {
     expect(goal()).toBe('The owner has the report');
   });
 
+  it('the worker sending the unchanged goal back with another edit is not refused', async () => {
+    const r = await call(WORKER, 'work_update', { action: 'edit', task_id: TASK, goal: 'The owner has the report', title: 'The report, final' });
+    expect(r.content).not.toMatch(/^Error/);
+    expect((doneDb().prepare('SELECT title FROM work WHERE id = ?').get(TASK) as { title: string }).title).toBe('The report, final');
+  });
+
   it('the main agent changes the goal, and the change is logged as its own', async () => {
     expect((await editGoal(MAIN)).content).not.toMatch(/^Error/);
     expect(goal()).toBe('Any report at all');
