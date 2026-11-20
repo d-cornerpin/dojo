@@ -1185,6 +1185,18 @@ describe('runV2Turn integration', () => {
     expect(nudged).toBe(true);
   });
 
+  it('a peer Dojo box\'s message that goes empty gets no nudge and no empty-reply toast', async () => {
+    mockDb.current!.prepare("UPDATE messages SET channel = 'imessage', inbound_meta = ? WHERE id = 'msg-user-1'")
+      .run(JSON.stringify({ channel: 'imessage', relation: 'third_party', senderIsAgent: true }));
+    callModelSpy.mockResolvedValue({ content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' });
+
+    await runV2Turn('primary');
+
+    // The empty call and its silent retry, then the turn ends.
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    expect(getBroadcastEventsByType('chat:error')).toHaveLength(0);
+  });
+
   it('a turn that throws after its required reply returned is handed back, never held as empty', async () => {
     const empty = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
     callModelSpy.mockResolvedValueOnce(empty).mockResolvedValueOnce(empty)

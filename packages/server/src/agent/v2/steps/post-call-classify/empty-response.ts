@@ -121,6 +121,8 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       state = advance(state, { retriedEmptyResponse: true });
       return continueLoop(state);
     }
+    // Silence to another Dojo box is an allowed answer: no nudge, no toast; finalize settles its request.
+    if (ctx.counterpartyIsAgentSender) return requestExit(state, 'empty-response-peer-box');
     // A person still owed is answered by the required reply at the loop's exit, where one follows.
     const followed = replyCanBeRequired(ctx.latestUserSource, ctx.inboundChannel, ctx.counterpartyIsAgentSender);
     if (owesAPerson && followed) return requestExit(state, 'empty-response-owed');
