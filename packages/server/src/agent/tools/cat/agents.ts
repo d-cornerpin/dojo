@@ -1383,7 +1383,7 @@ export const agentsHandlers: ToolHandlerMap = {
       const members = groupDb.prepare("SELECT id, name, classification FROM agents WHERE group_id = ? AND status != 'terminated'").all(groupId) as Array<{ id: string; name: string; classification: string }>;
       for (const member of members) {
         if (member.classification === 'sensei' || member.classification === 'ronin') {
-          skipped.push(`${member.name} (${member.classification}, protected)`);
+          skipped.push(`${member.name} (${member.classification}: a group delete does not end it; kill_agent does)`);
           continue;
         }
         try {
