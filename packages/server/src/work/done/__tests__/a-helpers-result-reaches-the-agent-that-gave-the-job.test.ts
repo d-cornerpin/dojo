@@ -2,7 +2,8 @@
 // the job (the sender of the job's ASSIGN, not the task's creator or the helper's parent), on the job's
 // thread, after its hand-in is applied. A refused hand-in sends nothing and the helper works on. A note the
 // engine filed goes labelled as the Dojo's, and a join piece whose helper handed in but was never heard lands
-// with the hand-in note on the reaper's next pass.
+// with the hand-in note on the reaper's next pass. Only the helper's own final reply holds the words back: a
+// STATUS on the thread, or the note the Dojo sent for a work_update hand-in, does not.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -12,7 +13,7 @@ vi.mock('../../../agent/runtime.js', () => ({
 }));
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
-import { freshBoard, deliveredToOwner, call, stateOf, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
+import { freshBoard, deliveredToOwner, call, handedIn, stateOf, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 import { engineHandIn, handIn } from '../hand-in.js';
 import { latestHandIn } from '../record.js';
@@ -59,6 +60,27 @@ describe("a helper's result reaches the agent that gave the job", () => {
     expect(stateOf()).toBe('claimed');
     expect(wordsFromTheHelper()).toHaveLength(0);
     expect((doneDb().prepare('SELECT status FROM agents WHERE id = ?').get(WORKER) as { status: string }).status).not.toBe('terminated');
+  });
+
+  it('a STATUS on the job thread, then complete_task: the full results still go', async () => {
+    aHelperGivenAJob();
+    deliveredToOwner();
+    await call(WORKER, 'send_to_agent', { agent: MAIN, intent: 'STATUS', thread_id: THREAD, payload: 'Halfway through the sections.' });
+    const r = await call(WORKER, 'complete_task', { status: 'complete', summary: 'The report is written.', results: 'Totals: 12, 40, 7.' });
+    expect(r.isError, r.content).toBe(false);
+    const words = wordsFromTheHelper().filter((w) => w.a2a_intent === 'COMPLETE');
+    expect(words).toHaveLength(1);
+    expect(words[0].content).toContain('Totals: 12, 40, 7.');
+  });
+
+  it('a work_update hand-in, then complete_task a turn later: the full results still go', async () => {
+    aHelperGivenAJob();
+    await handedIn(WORKER);
+    await vi.dynamicImportSettled();
+    const r = await call(WORKER, 'complete_task', { status: 'complete', summary: 'The report is written.', results: 'Totals: 12, 40, 7.' });
+    expect(r.isError, r.content).toBe(false);
+    const words = wordsFromTheHelper().filter((w) => w.a2a_intent === 'COMPLETE');
+    expect(words.some((w) => w.content.includes('Totals: 12, 40, 7.')), 'the full results reach the giver').toBe(true);
   });
 
   it("an engine-filed hand-in reaches the giver labelled as the Dojo's note, never as the helper's words", async () => {

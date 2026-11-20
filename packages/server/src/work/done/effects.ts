@@ -6,7 +6,7 @@
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { retireEngineEventsForTask, resultForEndedRequest } from '../../agent/v2/counterparty.js';
-import { claimTrackerNoticeForTask, repliedOnThread } from '../../memory/message-store.js';
+import { claimTrackerNoticeForTask } from '../../memory/message-store.js';
 import { taskScope, STATE_TO_STATUS_SQL, heldByOwnerSql, stateToStatus } from '../tracker-view.js';
 import { setTrackerStatus } from '../tracker-store.js';
 import { getPMAgentId, getPrimaryAgentId, isDreamerAgent } from '../../config/platform.js';
@@ -81,8 +81,8 @@ export function handInHeard(workId: string, h: HandInRecord): Promise<void> {
 }
 
 /** A helper's last words reach the agent that gave it the job, once and at once: on the job's thread when it has
- *  one and the helper said nothing there since the job opened; else, from `complete_task`, to its maker on a new
- *  thread. Nothing goes for a request that was called off, or from the Dreamer's nightly batches. */
+ *  one and the helper has not already given its final answer there by its own send; else, from `complete_task`, to
+ *  its maker on a new thread. Nothing goes for a request that was called off, or from the Dreamer's nightly batches. */
 export async function finalWordsBack(p: {
   workerId: string; taskId: string | null; text: string; outcome: 'COMPLETE' | 'FAIL'; orNewThread: boolean;
 }): Promise<void> {
@@ -99,7 +99,11 @@ export async function finalWordsBack(p: {
   const maker = giver?.id ?? (db.prepare('SELECT parent_agent FROM agents WHERE id = ?').get(p.workerId) as
     { parent_agent: string | null } | undefined)?.parent_agent;
   if (!maker || maker === p.workerId || !p.text.trim() || isDreamerAgent(p.workerId) || (!thread && !p.orNewThread)) return;
-  if (thread && (repliedOnThread(p.workerId, maker, thread, task?.opened_at ?? 0) || resultForEndedRequest(maker, thread))) return;
+  // Held back only by the helper's own final reply on the thread: a STATUS, a question or the Dojo's copy of a note is not one.
+  const answered = thread && db.prepare(`SELECT 1 FROM messages m JOIN deliveries d ON d.message_id = m.id AND d.tool = 'send_to_agent'
+    WHERE m.agent_id = ? AND m.source_agent_id = ? AND m.a2a_thread_id = ? AND m.created_at >= ?
+      AND m.a2a_intent IN ('ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL')`).get(maker, p.workerId, thread, task?.opened_at ?? 0);
+  if (thread && (answered || resultForEndedRequest(maker, thread))) return;
   await import('../../agent/a2a-transport.js')
     .then(({ deliverA2AMessage }) => deliverA2AMessage({
       intent: p.outcome, threadId: thread ?? '', requiresResponse: true, toAgent: maker, fromAgent: p.workerId, payload: p.text,

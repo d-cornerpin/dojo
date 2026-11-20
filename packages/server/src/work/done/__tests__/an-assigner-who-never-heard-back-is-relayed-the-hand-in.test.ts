@@ -1,6 +1,6 @@
 // The agent that gave a job hears back: when its worker hands the job's task in without ever replying on
 // the job's thread, the hand-in note goes at once to the agent that sent the job's ASSIGN, on that thread,
-// even when the task was created by someone else. A worker that did reply there is not relayed over.
+// even when the task was created by someone else. A worker that gave its final reply there is not relayed over.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -42,11 +42,16 @@ describe('an assigner who never heard back is relayed the hand-in', () => {
     });
   });
 
-  it('a worker that replied on the thread is not relayed over', async () => {
+  it('a worker that gave its final reply on the thread by its own send is not relayed over', async () => {
     assignedOnAThread();
     doneDb().prepare(
-      "INSERT INTO messages (id, agent_id, lane, role, content, source_agent_id, a2a_thread_id, sent_at, created_at) VALUES ('m-reply', ?, 'a2a', 'user', 'Here it is', ?, 'thr-relay-1', ?, ?)",
+      `INSERT INTO messages (id, agent_id, lane, role, content, source_agent_id, a2a_thread_id, a2a_intent, sent_at, created_at)
+       VALUES ('m-reply', ?, 'a2a', 'user', 'Here it is', ?, 'thr-relay-1', 'COMPLETE', ?, ?)`,
     ).run(MAIN, WORKER, Date.now(), Date.now());
+    doneDb().prepare(
+      `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, message_id, outcome, created_at, updated_at)
+       VALUES ('dlv-reply', ?, 'send_to_agent', 'a2a', ?, 'm-reply', 'delivered', datetime('now'), datetime('now'))`,
+    ).run(WORKER, MAIN);
     handTheTaskIn();
     await vi.dynamicImportSettled();
     expect(relay).not.toHaveBeenCalled();
