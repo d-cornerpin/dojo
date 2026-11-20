@@ -73,6 +73,18 @@ describe("a helper's result reaches the agent that gave the job", () => {
     expect(words[0].content).toContain('Totals: 12, 40, 7.');
   });
 
+  it('a final reply whose send failed does not hold the results back', async () => {
+    aHelperGivenAJob();
+    deliveredToOwner();
+    doneDb().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, source_agent_id, a2a_thread_id, a2a_intent, created_at)
+      VALUES ('m-lost', ?, 'a2a', 'user', 'The report.', ?, ?, 'COMPLETE', ?)`).run(MAIN, WORKER, THREAD, Date.now());
+    doneDb().prepare(`INSERT INTO deliveries (id, agent_id, tool, channel, message_id, outcome, created_at)
+      VALUES ('d-lost', ?, 'send_to_agent', 'a2a', 'm-lost', 'failed', datetime('now'))`).run(WORKER);
+    const r = await call(WORKER, 'complete_task', { status: 'complete', summary: 'The report is written.', results: 'Totals: 12, 40, 7.' });
+    expect(r.isError, r.content).toBe(false);
+    expect(wordsFromTheHelper().some((w) => w.content.includes('Totals: 12, 40, 7.'))).toBe(true);
+  });
+
   it('a work_update hand-in, then complete_task a turn later: the full results still go', async () => {
     aHelperGivenAJob();
     await handedIn(WORKER);

@@ -102,7 +102,7 @@ export async function finalWordsBack(p: {
     { parent_agent: string | null } | undefined)?.parent_agent;
   if (!maker || maker === p.workerId || !p.text.trim() || isDreamerAgent(p.workerId) || (!thread && !p.orNewThread)) return;
   // Held back only by the helper's own final reply on the thread: a STATUS, a question or the Dojo's copy of a note is not one.
-  const answered = thread && db.prepare(`SELECT 1 FROM messages m JOIN deliveries d ON d.message_id = m.id AND d.tool = 'send_to_agent'
+  const answered = thread && db.prepare(`SELECT 1 FROM messages m JOIN deliveries d ON d.message_id = m.id AND d.tool = 'send_to_agent' AND d.outcome = 'delivered'
     WHERE m.agent_id = ? AND m.source_agent_id = ? AND m.a2a_thread_id = ? AND m.created_at >= ?
       AND m.a2a_intent IN (${FINAL_REPLY_SQL})`).get(maker, p.workerId, thread, since);
   if (thread && (answered || resultForEndedRequest(maker, thread))) return;
