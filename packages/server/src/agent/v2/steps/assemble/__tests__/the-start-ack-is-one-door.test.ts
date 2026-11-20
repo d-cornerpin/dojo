@@ -160,7 +160,9 @@ describe('the work opener says the start line once', () => {
     const opened = async (turnCtx: Bag, loopCount: number, delivered = false): Promise<string[]> => (await detectMultistepAndScaffold(
       advance(initState({ agentId: AGENT } as Parameters<typeof initState>[0]), { loopCount }), {
         agentId: AGENT, turnNumber: 9, turnCtx: turnCtx as never, db: {} as never,
-        counterparty: { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null } as never,
+        counterparty: {
+          kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null,
+        } as never,
         counterpartyIsAgentSender: false, lastUserMessageContent: 'Book the flights for Friday.',
         engineStartAckDeliveredThisTurn: delivered, staleTaskWindowMinutes: 45,
       })).steerQueue.pending.map((e) => e.floor);
