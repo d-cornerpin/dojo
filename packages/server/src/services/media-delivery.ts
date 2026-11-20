@@ -49,19 +49,32 @@ export async function deliverMedia(m: FinishedMedia): Promise<void> {
     fs.copyFileSync(m.filePath, file);
   } catch (err) {
     file = m.filePath;
-    logger.warn('media delivery: the copy into the uploads folder failed, the generated file is posted', { jobId: m.jobId, error: err instanceof Error ? err.message : String(err) });
+    logger.warn('media delivery: the copy into the uploads folder failed, the generated file is posted', {
+      jobId: m.jobId, error: err instanceof Error ? err.message : String(err),
+    });
   }
   const attachment = { fileId: uuidv4(), filename: path.basename(file), mimeType: m.mimeType, size: m.sizeBytes, path: file, category: CATEGORY[m.kind] };
   const id = uuidv4();
   // The engine writes no caption in the agent's voice: the agent is told where the file went and adds its own words.
-  insertMessageIfAbsent({ id, agentId: m.agentId, role: 'assistant', content: '', attachments: JSON.stringify([attachment]), ...deliveredResult(m.conversationId, m.requestMessageId) });
-  broadcast({ type: 'chat:message', agentId: m.agentId, message: { id, agentId: m.agentId, role: 'assistant' as const, content: '', attachments: [attachment], tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
+  insertMessageIfAbsent({
+    id, agentId: m.agentId, role: 'assistant', content: '', attachments: JSON.stringify([attachment]),
+    ...deliveredResult(m.conversationId, m.requestMessageId),
+  });
+  broadcast({
+    type: 'chat:message', agentId: m.agentId,
+    message: {
+      id, agentId: m.agentId, role: 'assistant' as const, content: '', attachments: [attachment],
+      tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString(),
+    },
+  });
   broadcast({ type: 'chat:chunk', agentId: m.agentId, messageId: id, content: '', done: true, modelId: null });
   settleAskOnAsyncResult({ agentId: m.agentId, askMessageId: m.requestMessageId, resultMessageId: id });
   const phone = await queueForPhone(m, file);
   postAgentNotice({
     toAgentId: m.agentId, fromName: 'Media delivery', intent: 'image_delivery_outcome', selfIntro: false,
-    brief: `your ${MEDIA_WORD[m.kind]} was posted in the dashboard${phone ? ` and is being texted to ${phone} by iMessage${m.kind === 'video' ? ' as a link' : ''}` : ''}, with no caption: the Dojo wrote no words around it. If you want to say something about it, say it in your own words.`,
+    brief: `your ${MEDIA_WORD[m.kind]} was posted in the dashboard`
+      + `${phone ? ` and is being texted to ${phone} by iMessage${m.kind === 'video' ? ' as a link' : ''}` : ''}`
+      + ', with no caption: the Dojo wrote no words around it. If you want to say something about it, say it in your own words.',
   });
 }
 
