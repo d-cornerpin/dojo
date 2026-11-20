@@ -960,7 +960,7 @@ describe('runV2Turn integration', () => {
     expect(assistantMsgs).toHaveLength(0);
   });
 
-  it('PRESERVATION #40: identical response on a NO-TRIGGER turn is not double-persisted', async () => {
+  it('PRESERVATION #40: identical response on a NO-TRIGGER turn is held once and the agent told, never dropped unseen', async () => {
     // Scoped by G-SUP-3 (comms-audit, 1f8b9b4 2026-07-02): the identical-
     // response dedup now fires ONLY on turns with no waiting human (a genuine
     // mid-stall regeneration). Claim the seeded user message so nothing is
@@ -988,13 +988,12 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // The model ran (this is not a vacuous no-turn), but the dup was rejected:
-    // still exactly one assistant message.
-    expect(callModelSpy).toHaveBeenCalledTimes(1);
+    // The repeat is held once and the agent is told (the near-duplicate floor); written again, it goes out.
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
     const assistantMsgs = mockDb.current!
       .prepare("SELECT id FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all();
-    expect(assistantMsgs).toHaveLength(1);
+    expect(assistantMsgs).toHaveLength(2);
   });
 
   it('PRESERVATION #40 / G-SUP-3: identical reply on a USER turn IS delivered (never eaten)', async () => {

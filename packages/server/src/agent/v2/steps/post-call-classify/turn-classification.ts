@@ -3,9 +3,8 @@
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { type AgentTurnState } from '../../state.js';
-import { isNearDuplicateText } from '../../classifiers/loop.js';
 import { sanitizeAssistantText } from '../../classifiers/output.js';
-import { proceed, requestExit, type StepOutcome } from '../step-outcome.js';
+import { proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -17,7 +16,7 @@ export function runTurnClassification(
   sc: PostCallScratch,
 ): StepOutcome {
   const {
-    agentId, chosenConvKey, counterparty, db, hasUnansweredUser, isA2ATurn,
+    agentId, chosenConvKey, counterparty, hasUnansweredUser, isA2ATurn,
     isEngineTurn, isHumanContinuation, mostRecentInbound, mostRecentIsA2A,
     pendingEngineEvent, result, triggerRow, turnCtx, turnNumber, waitingConvs,
   } = ctx;
@@ -27,21 +26,6 @@ export function runTurnClassification(
   const deliberateSurfaceTurn =
     mostRecentInbound?.origin_intent === 'scheduler' || mostRecentInbound?.origin_intent === 'completion_report' ||
     (isEngineTurn && (pendingEngineEvent?.originIntent === 'scheduler' || pendingEngineEvent?.originIntent === 'completion_report'));
-
-  // Never dedup a human or deliberate-surface turn: a re-ask or a daily reminder legitimately repeats.
-  if (result.content && result.toolCalls.length === 0 && !triggerRow && !deliberateSurfaceTurn) {
-    const lastAssistant = db
-      .prepare(
-        "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1",
-      )
-      .get(agentId) as { content: string } | undefined;
-    if (lastAssistant && isNearDuplicateText(lastAssistant.content, result.content)) {
-      logger.warn('v2: skipping duplicate assistant response (identical or near-identical to last message)', {
-        loopCount: state.loopCount,
-      }, agentId);
-      return requestExit(state, 'duplicate-assistant-response');
-    }
-  }
 
   // A user-less turn that messages an agent is coordination, never text for the owner.
   const spontaneousA2ATurn =

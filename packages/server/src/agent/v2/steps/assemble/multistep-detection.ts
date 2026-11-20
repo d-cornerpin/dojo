@@ -7,7 +7,7 @@ import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/pla
 import { notWaitingForItsTimeSql, taskScope } from '../../../../work/tracker-view.js';
 import { type AgentTurnState } from '../../state.js';
 import type { TurnContext } from '../../../turn-context.js';
-import { engineAckReachesTheirChannel, type TurnCounterparty } from '../../counterparty.js';
+import { type TurnCounterparty } from '../../counterparty.js';
 import { createLogger } from '../../../../logger.js';
 import { armStartAck, startAckDoorOpen } from './start-ack-door.js';
 import { workingExpr } from '../../../../work/done/hold.js';
@@ -49,16 +49,10 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
   // Engine classifies rather than trusting prompt instructions: first loop with a real user message.
   // PM/Healer/Dreamer skip: their engine-synthetic rows are not user asks; the Healer has no tracker tools.
   if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId) && !isHealerAgent(agentId) && !isDreamerAgent(agentId)) {
-    // A routed-channel ask reaches the person only via a routing pass, so the door opens pre-call.
-    if (engineAckReachesTheirChannel(counterparty) && thisOpenerMayArm()) {
-      state = arm(state);
-      logger.info('v2 start-ack steer armed pre-call: the ask arrived on a routed channel, where nothing reaches the person but a routing pass', {
-        agentId, channel: counterparty.kind === 'user' ? counterparty.channel : null,
-      }, agentId);
-    }
     try {
-      // Skip only on an open task touched inside the stale window that can be worked now: a quick follow-up
-      // rides under the task it continues; a stale task or a schedule waiting for its time must not suppress.
+      // The verdict is recorded whatever tasks exist. The start line is skipped only on an open task touched inside
+      // the stale window that can be worked now (a quick follow-up rides under the task it continues); a stale task
+      // or a schedule waiting for its time does not skip it.
       const db = getDb();
       const existingTask = db.prepare(`
         SELECT w.id AS id FROM work w
@@ -71,13 +65,13 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
       const bootstrapTwin = db.prepare(
         `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'system' AND content = ? LIMIT 1`,
       ).get(agentId, lastUserMessageContent);
-      if (!existingTask && !bootstrapTwin && !looksLikeEngineMessage(lastUserMessageContent)) {
+      if (!bootstrapTwin && !looksLikeEngineMessage(lastUserMessageContent)) {
         const explicit = userExplicitlyAsksToCreateTracker(lastUserMessageContent);
         const work = !explicit && await inboundIsWork(turnCtx, agentId, lastUserMessageContent) === true;
         turnCtx.inboundClassifiedAsWork = work || explicit;
         logger.info('v2 inbound judged', { agentId, work, explicit }, agentId);
         // Nothing is created on a prediction: the >=6 engine floor opens the row only on OBSERVED work.
-        if (work && thisOpenerMayArm()) state = arm(state);
+        if (work && !existingTask && thisOpenerMayArm()) state = arm(state);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -1,6 +1,5 @@
 // The start line is skipped only when a fresh task the agent can work now is open: a quick follow-up rides under it.
-// A schedule that was just set up and is waiting for its time is not such a task, so a new work request is judged
-// and its start line armed.
+// A schedule that was just set up and is waiting for its time is not such a task. A new request is judged either way.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -53,8 +52,8 @@ describe('a new work request while a task is open', () => {
     expect(await arrive()).toEqual({ judged: 1, armed: true });
   });
 
-  it('with a fresh task really being worked, the request rides under it', async () => {
+  it('with a fresh task really being worked, the request is judged and rides under it: no start line', async () => {
     task('t-working', 'claimed', null);
-    expect(await arrive()).toEqual({ judged: 0, armed: false });
+    expect(await arrive()).toEqual({ judged: 1, armed: false });
   });
 });
