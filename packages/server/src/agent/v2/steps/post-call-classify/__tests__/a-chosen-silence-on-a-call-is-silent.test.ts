@@ -28,7 +28,7 @@ const assistantWords = (): string[] => [
 
 describe('a chosen silence on a call', () => {
   it.each([
-    ['a voice turn', { latestUserSource: 'voice' }],
+    ['a voice or plain turn', {}],
     ['a phone turn', { inboundChannel: 'phone' }],
   ])('%s that answers [no-reply] speaks nothing and persists no words', async (_name, over) => {
     insertSpy.mockClear(); broadcastSpy.mockClear();

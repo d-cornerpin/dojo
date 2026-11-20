@@ -48,7 +48,8 @@ describe('a re-served request does not send the same message twice', () => {
 
   it('the same text by iMessage, the number spelled another way, and the user account twin are the same send', () => {
     sentOnTurnOne(ASK, 'imessage_send', '+15550100100', 'On my way.');
-    expect(sendOnTurnTwo({ recipient: '+1 (555) 010-0100', message: 'On my way.' }, new Set(), 'imessage_send')).toMatch(/^\[Engine: not sent\] Turn 1/);
+    expect(sendOnTurnTwo({ recipient: '+1 (555) 010-0100', message: 'On my way.' }, new Set(), 'imessage_send'))
+      .toMatch(/^\[Engine: not sent\] Turn 1/);
     sentOnTurnOne(ASK);
     expect(sendOnTurnTwo(EMAIL, new Set(), 'user_gmail_send')).toMatch(/^\[Engine: not sent\] Turn 1/);
   });

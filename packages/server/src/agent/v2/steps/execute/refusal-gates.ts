@@ -1,6 +1,6 @@
 // The gates that can refuse a call before it runs: the reminder-delivery lane, the main agent's warn-once
-// hurdle, the repeat-send stop and the compile gate, plus the hoarding advisory, which refuses nothing. A refusal comes back as
-// `{ state, refusal }` and `run-one.ts` returns it as the call's result.
+// hurdle, the repeat-send stop and the compile gate, plus the hoarding advisory, which refuses nothing.
+// A refusal comes back as `{ state, refusal }` and `run-one.ts` returns it as the call's result.
 
 import { broadcast } from '../../../../gateway/ws.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
