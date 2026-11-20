@@ -82,7 +82,8 @@ export async function completeTaskHandIn(agentId: string, status: 'complete' | '
     return `You are not ended: you still own open steps ${others.map((t) => `"${t.title}" (${t.id.slice(0, 8)})`).join(', ')}. Hand in each step you can with work_update(action="hand_in", ...); when a step waits on the owner, end with complete_task(status="blocked") and say why.`;
   }
   if (!taskId) return null;
-  const row = getDb().prepare('SELECT state FROM work WHERE id = ?').get(taskId) as { state: string } | undefined;
+  const row = getDb().prepare('SELECT state, a2a_thread_id AS thread FROM work WHERE id = ?').get(taskId) as
+    { state: string; thread: string | null } | undefined;
   if (!row || !['open', ...WORKING_STATES].includes(row.state)) return null;
   await remeasureTask(agentId, taskId);
   const r = handIn({
@@ -91,6 +92,8 @@ export async function completeTaskHandIn(agentId: string, status: 'complete' | '
       : [{ kind: 'remainder', ref: 'what was not done', facts: { reason: summary } }],
     note: summary, wordsFollow: true,
   });
-  return r.kind === 'handed_in' ? null
+  if (r.kind === 'handed_in') return null;
+  return row.thread
+    ? `${r.text}\nYou are not ended. If your result is your answer, reply on your job's thread with send_to_agent(intent="COMPLETE", thread_id="${row.thread}", payload=<your result>); that reply hands the task in. Then call complete_task again.`
     : `${r.text}\nYou are not ended. Hand the task in yourself with work_update(action="hand_in", task_id="${taskId}", outcome, proof, note), then call complete_task again.`;
 }

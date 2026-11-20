@@ -101,6 +101,21 @@ describe('a spawned job is one task and one review', () => {
     expect(words.all(helper), 'its reply was its answer; complete_task sends no second copy').toEqual([{ thread: own.thread }]);
   });
 
+  it('a helper whose result is only text is told the one step that works, and finishes in it', async () => {
+    await spawn({});
+    const helper = helperId()!;
+    const thread = assignsTo(helper)[0].thread;
+    const refused = await call(helper, 'complete_task', { status: 'complete', summary: 'The report is written.' });
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toContain(`send_to_agent(intent="COMPLETE", thread_id="${thread}"`);
+    await call(helper, 'send_to_agent', { agent: 'main', intent: 'COMPLETE', thread_id: thread, payload: 'The report is written.' });
+    const done = await call(helper, 'complete_task', { status: 'complete', summary: 'The report is written.' });
+    expect(done.isError, done.content).toBeFalsy();
+    expect(tasksHeldBy(helper)[0].state).toBe('handed_in');
+    const words = db().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = 'main' AND source_agent_id = ? AND a2a_intent = 'COMPLETE'");
+    expect(words.get(helper)).toEqual({ n: 1 });
+  });
+
   it('an undeclared task_id on send_to_agent is never read', async () => {
     const r = await call('main', 'send_to_agent', {
       agent: 'peer', intent: 'ASSIGN', payload: 'Pull the numbers.', task_id: 'task-mine-0001',
