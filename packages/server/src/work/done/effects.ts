@@ -87,8 +87,10 @@ export async function finalWordsBack(p: {
   workerId: string; taskId: string | null; text: string; outcome: 'COMPLETE' | 'FAIL'; orNewThread: boolean;
 }): Promise<void> {
   const db = getDb();
-  const task = p.taskId ? db.prepare('SELECT a2a_thread_id AS thread, opened_at FROM work WHERE id = ?').get(p.taskId) as
-    { thread: string | null; opened_at: number } | undefined : undefined;
+  // Without a task the job is the helper's first ASSIGN, so a job already handed in by its reply is not answered twice.
+  const task = (p.taskId ? db.prepare('SELECT a2a_thread_id AS thread, opened_at FROM work WHERE id = ?').get(p.taskId)
+    : db.prepare(`SELECT a2a_thread_id AS thread, created_at AS opened_at FROM messages WHERE agent_id = ? AND a2a_intent = 'ASSIGN'
+       AND source_agent_id IS NOT NULL ORDER BY seq ASC LIMIT 1`).get(p.workerId)) as { thread: string | null; opened_at: number } | undefined;
   const thread = task?.thread ?? null;
   const giver = thread ? db.prepare(
     `SELECT source_agent_id AS id FROM messages WHERE agent_id = ? AND a2a_thread_id = ? AND a2a_intent = 'ASSIGN'

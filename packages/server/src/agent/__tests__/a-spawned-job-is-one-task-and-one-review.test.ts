@@ -42,7 +42,8 @@ beforeEach(() => {
   db().prepare("INSERT INTO providers (id, name, type, auth_type, is_validated) VALUES ('cloud', 'Cloud', 'anthropic', 'api_key', 1)").run();
   db().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled)
     VALUES ('m', 'cloud', 'M', 'm', '["chat","tools"]', 128000, 1)`).run();
-  db().prepare("INSERT INTO agents (id, name, model_id, status, config) VALUES ('main', 'Main', 'm', 'idle', '{}'), ('peer', 'Peer', 'm', 'idle', '{}')").run();
+  db().prepare(`INSERT INTO agents (id, name, model_id, status, config)
+    VALUES ('main', 'Main', 'm', 'idle', '{}'), ('peer', 'Peer', 'm', 'idle', '{}')`).run();
   seedTrackerTask(db(), { id: 'task-mine-0001', title: 'Write the report', agentId: 'main' });
 });
 
@@ -59,7 +60,9 @@ describe('a spawned job is one task and one review', () => {
     expect(tasksHeldBy(helper).map((t) => t.id)).toEqual(['task-mine-0001']);
     expect(db().prepare("SELECT COUNT(*) AS n FROM messages WHERE origin_intent = 'spawn_kickoff'").get()).toEqual({ n: 0 });
 
-    const reply = await call(helper, 'send_to_agent', { agent: 'main', intent: 'COMPLETE', thread_id: assign.thread, payload: 'The report is written.' });
+    const reply = await call(helper, 'send_to_agent', {
+      agent: 'main', intent: 'COMPLETE', thread_id: assign.thread, payload: 'The report is written.',
+    });
     expect(reply.isError, reply.content).toBeFalsy();
     expect(tasksHeldBy(helper)[0].state).toBe('handed_in');
     expect([...workersOf('task-mine-0001')], 'handing a task to a helper is not working it').toEqual([helper]);
@@ -92,10 +95,16 @@ describe('a spawned job is one task and one review', () => {
     const done = await call(helper, 'complete_task', { status: 'complete', summary: 'The report is written.' });
     expect(done.isError, done.content).toBeFalsy();
     expect((db().prepare('SELECT status FROM agents WHERE id = ?').get(helper) as { status: string }).status).toBe('terminated');
+    const words = db().prepare(
+      "SELECT a2a_thread_id AS thread FROM messages WHERE agent_id = 'main' AND source_agent_id = ? AND a2a_intent = 'COMPLETE'",
+    );
+    expect(words.all(helper), 'its reply was its answer; complete_task sends no second copy').toEqual([{ thread: own.thread }]);
   });
 
   it('an undeclared task_id on send_to_agent is never read', async () => {
-    const r = await call('main', 'send_to_agent', { agent: 'peer', intent: 'ASSIGN', payload: 'Pull the numbers.', task_id: 'task-mine-0001' });
+    const r = await call('main', 'send_to_agent', {
+      agent: 'peer', intent: 'ASSIGN', payload: 'Pull the numbers.', task_id: 'task-mine-0001',
+    });
     expect(r.isError, r.content).toBeFalsy();
     expect(threadOf('task-mine-0001')).toBeNull();
     expect(tasksHeldBy('peer')).toHaveLength(1);
