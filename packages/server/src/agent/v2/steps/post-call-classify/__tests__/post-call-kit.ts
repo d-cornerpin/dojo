@@ -24,13 +24,15 @@ export function modelSays(verdicts: Partial<Record<ReplyClaim, boolean>> | null)
 let n = 0;
 type ToolResult = AgentTurnState['toolResults'][number];
 
-/** One ending reply after the turn's earlier tool results (and steers already fired); returns the step's outcome. */
+/** One ending reply after the turn's earlier tool results (and steers already fired); `over` replaces context fields. */
 export function endTurn(
   reply: string, toolResults: Array<Partial<ToolResult>> = [], steerQueue?: AgentTurnState['steerQueue'], turnCtx: Record<string, unknown> = {},
+  over: Record<string, unknown> = {},
 ): Promise<PostCallClassifyOutcome> {
   const base = initState({
     agentId: FXID.n4, contextWindow: 128_000, isAutoRouted: false, configuredModelId: 'test-model', turnNumber: 7,
     triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: 'what is the answer?', lastUserMessageId: 'msg-user-1',
+    inboundChannel: over.inboundChannel,
   } as Parameters<typeof initState>[0]);
   const state = advance(base, {
     phase: POST_CALL_CLASSIFY_PHASE, loopCount: 2, modelId: 'test-model',
@@ -49,7 +51,7 @@ export function endTurn(
     turnStartedAt: new Date().toISOString(), messageId: `msg-${++n}`,
     result: { content: reply, toolCalls: [], inputTokens: 10, outputTokens: 5, stopReason: 'end_turn' },
     reArmIfStrandedNoAnswer: vi.fn(), noteTerminalAnswer: vi.fn(), deliverEngineUserAck: vi.fn(async () => undefined),
-    startAckRepliedNow: () => false,
+    startAckRepliedNow: () => false, ...over,
   } as unknown as PostCallClassifyContext;
   return runPostCallClassify(state, ctx);
 }

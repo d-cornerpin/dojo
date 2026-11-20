@@ -1,5 +1,5 @@
 // The `[no-reply]` sentinel: a trailing one is stripped, a bare one ends the turn silently with a closed
-// marker. A captured answer is promoted instead, and a live call gets a spoken ack.
+// marker. A captured answer is promoted instead.
 
 import { v4 as uuidv4 } from 'uuid';
 import { NO_REPLY_CLOSED_MARKER, NO_REPLY_TAIL_RE, isBareNoReplySentinel } from '@dojo/shared';
@@ -12,15 +12,14 @@ import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-/** The no-reply sentinel: stripped when trailing, promoted or spoken over when owed, else a silent end. */
+/** The no-reply sentinel: stripped when trailing, promoted when owed, else a silent end. */
 export async function runNoReply(
   state: AgentTurnState,
   ctx: PostCallClassifyContext,
   sc: PostCallScratch,
 ): Promise<StepOutcome> {
   const {
-    agentId, latestUserSource,
-    messageId, noteTerminalAnswer, result, triggerRow,
+    agentId, messageId, noteTerminalAnswer, result, triggerRow,
     turnCtx, turnNumber,
   } = ctx;
   let { persistedContent } = sc;
@@ -63,19 +62,7 @@ export async function runNoReply(
       agentId, turnNumber, preview: persistedContent.slice(0, 60),
     }, agentId);
   }
-  if (!noReplyOverridden && isBareNoReply && (latestUserSource === 'voice' || state.inboundChannel === 'phone')) {
-    // Voice and phone are live calls, where silence reads as a dropped call: swap the sentinel for a short
-    // spoken ack. Phone utterances carry no `source`, so phone is told apart by `inboundChannel`.
-    const voiceAcks = [
-      'Okay, just say the word.',
-      "Sounds good, I'm here when you need me.",
-      "Got it. Holler when you're ready.",
-    ];
-    persistedContent = voiceAcks[Math.floor(Math.random() * voiceAcks.length)];
-    logger.info('v2: [no-reply] on a voice turn, substituted a brief spoken acknowledgment to avoid dead air', {
-      agentId, loopCount: state.loopCount,
-    }, agentId);
-  } else if (!noReplyOverridden && isBareNoReply) {
+  if (!noReplyOverridden && isBareNoReply) {
     persistedContent = null;
     // Intentional silence: drop deferred narration so the finalize recovery cannot resurrect it.
     turnCtx.deferredUserReplyWithTools = null;
