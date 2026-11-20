@@ -14,6 +14,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 import { freshBoard, deliveredToOwner, call, stateOf, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 import { engineHandIn } from '../hand-in.js';
+import { latestHandIn } from '../record.js';
 
 const THREAD = 'thr-job-1';
 
@@ -65,6 +66,16 @@ describe("a helper's result reaches the agent that gave the job", () => {
     expect(words).toHaveLength(1);
     expect(words[0]).toMatchObject({ agent_id: MAIN, a2a_thread_id: THREAD, a2a_intent: 'FAIL' });
     expect(words[0].content).toContain('[Engine note: the helper ended and this task is not part of its work]');
+  });
+
+  it('an engine record with no proof says so; one the caller asked to be can\'t-be-done does not', () => {
+    const reasonOf = (): string => String(latestHandIn(TASK)?.items.find((i) => i.kind === 'remainder')?.facts.reason);
+    aHelperGivenAJob();
+    engineHandIn(TASK, 'the run ended before the report');
+    expect(reasonOf()).toBe("no proof on record, so it is handed in as can't be done: the run ended before the report");
+    aHelperGivenAJob();
+    engineHandIn(TASK, 'the run ended before the report', { outcome: 'cant_be_done' });
+    expect(reasonOf()).toBe('the run ended before the report');
   });
 
 });
