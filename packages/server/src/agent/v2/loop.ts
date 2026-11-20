@@ -213,7 +213,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         if (postExecution.directive === 'continue') continue;
 
       }
-      if (!(await forcedReplyDue(turnCtx, { agentId, turnNumber, latestUserSource }))) break;
+      if (!(await forcedReplyDue(turnCtx, { agentId, turnNumber, latestUserSource, counterpartyIsAgentSender }))) break;
     }
 
     turnCtx.state = advance(turnCtx.state!, { phase: 'finalize' });

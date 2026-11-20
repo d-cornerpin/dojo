@@ -122,7 +122,8 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       return continueLoop(state);
     }
     // A person still owed is answered by the required reply at the loop's exit, where one follows.
-    if (owesAPerson && replyCanBeRequired(ctx.latestUserSource, ctx.inboundChannel)) return requestExit(state, 'empty-response-owed');
+    const followed = replyCanBeRequired(ctx.latestUserSource, ctx.inboundChannel, ctx.counterpartyIsAgentSender);
+    if (owesAPerson && followed) return requestExit(state, 'empty-response-owed');
     // Then one explicit nudge, as a steer.
     if (!steerFired(state.steerQueue, 'empty-response')) {
       logger.warn('v2: model returned empty after silent retry, nudging', {

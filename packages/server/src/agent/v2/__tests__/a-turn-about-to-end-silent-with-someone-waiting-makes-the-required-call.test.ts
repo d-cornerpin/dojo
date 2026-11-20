@@ -25,7 +25,7 @@ function turnState(over: Partial<AgentTurnState> = {}): AgentTurnState {
   return advance(initState({ agentId: AGENT, turnNumber: TURN } as Parameters<typeof initState>[0]), { phase: 'postCallClassify', ...over });
 }
 const due = (latestUserSource: string | null = null): Promise<boolean> =>
-  forcedReplyDue(turnCtx, { agentId: AGENT, turnNumber: TURN, latestUserSource });
+  forcedReplyDue(turnCtx, { agentId: AGENT, turnNumber: TURN, latestUserSource, counterpartyIsAgentSender: false });
 
 beforeEach(() => {
   asksNothing.on = false;
