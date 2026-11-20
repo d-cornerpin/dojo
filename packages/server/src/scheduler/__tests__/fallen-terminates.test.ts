@@ -22,7 +22,6 @@ vi.mock('../../db/connection.js', () => ({
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }) }));
-vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => { /* no-op */ } }));
 // SWEEP CORE-2 item 3: the skipped-reminder heads-up rides this seam now, so the stub RECORDS
 // rather than swallows — the assertion below reads what the owner would actually be told.
 const notices: Array<{ toAgentId: string; brief: string; intent?: string; selfIntro?: boolean }> = [];

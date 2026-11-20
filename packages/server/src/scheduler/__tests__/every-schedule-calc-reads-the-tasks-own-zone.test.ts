@@ -50,10 +50,6 @@ vi.mock('../../agent/runtime.js', async (orig) => ({
   ...(await orig<typeof import('../../agent/runtime.js')>()),
   getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }),
 }));
-vi.mock('../../agent/agent-bus.js', async (orig) => ({
-  ...(await orig<typeof import('../../agent/agent-bus.js')>()),
-  sendAgentMessage: () => { /* no-op */ },
-}));
 vi.mock('../../agent/agent-notice.js', async (orig) => ({
   ...(await orig<typeof import('../../agent/agent-notice.js')>()),
   postAgentNotice: () => 'notice-id',

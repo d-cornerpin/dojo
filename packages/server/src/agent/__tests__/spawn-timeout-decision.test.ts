@@ -27,7 +27,6 @@ vi.mock('../../config/platform.js', () => ({
 }));
 vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn() }) }));
 vi.mock('../agent-notice.js', () => ({ postAgentNotice: vi.fn() }));
-vi.mock('../agent-bus.js', () => ({ sendAgentMessage: vi.fn() }));
 vi.mock('../permissions.js', () => ({ getAgentPermissions: vi.fn(), checkPermission: vi.fn(() => ({ allowed: true })) }));
 vi.mock('../../memory/retrieval.js', () => ({ memoryGrep: vi.fn(() => 'No results found') }));
 vi.mock('../../services/resource-monitor.js', () => ({ canSpawnAgent: () => ({ allowed: true }) }));

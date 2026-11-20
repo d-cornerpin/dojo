@@ -47,7 +47,6 @@ vi.mock('../../gateway/ws.js', () => ({
 vi.mock('../../agent/runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }),
 }));
-vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => { /* no-op */ } }));
 vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: () => { /* no-op */ } }));
 vi.mock('../../memory/message-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../memory/message-store.js')>()),

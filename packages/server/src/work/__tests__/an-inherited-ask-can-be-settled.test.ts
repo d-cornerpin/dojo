@@ -31,7 +31,6 @@ vi.mock('../../db/connection.js', async () => {
 });
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => undefined }) }));
-vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => undefined }));
 vi.mock('../../tracker/pm-agent.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   ensurePMAgentRunning: () => undefined,

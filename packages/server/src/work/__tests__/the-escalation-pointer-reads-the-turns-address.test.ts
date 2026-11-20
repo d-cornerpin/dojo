@@ -31,7 +31,6 @@ vi.mock('../../db/connection.js', () => ({
 }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }) }));
-vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => { /* no-op */ } }));
 vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: () => 'notice-id' }));
 vi.mock('../../config/platform.js', () => ({
   getPrimaryAgentId: () => 'primary',

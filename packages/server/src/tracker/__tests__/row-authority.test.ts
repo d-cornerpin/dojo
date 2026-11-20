@@ -25,7 +25,6 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => { /* no-op */ } }));
 vi.mock('../../agent/runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }),
 }));
-vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => { /* no-op */ } }));
 vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: () => { /* no-op */ } }));
 const relayed = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../../agent/a2a-notice.js', () => ({
