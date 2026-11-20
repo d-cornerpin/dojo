@@ -2233,9 +2233,9 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   }
 }
 
-// The `reply` call becomes the answer's text; any call beside it is dropped. An answer that ignored the choice
-// is kept whole. A refusal of the form (a bad request, never money or a too-long context) bills nothing and gets
-// one ordinary call, which on a transport that never sends the form is the same request again.
+// The `reply` call becomes the answer's text; a call beside it is dropped (the turn drops every call on a required
+// reply, call-llm/model-call.ts). An answer that ignored the choice is kept whole. A refusal of the form (a bad request,
+// never money or a too-long context) bills nothing and gets one ordinary call, the same request where it is unforced.
 async function dialRequiringReply(params: ModelCallParams): Promise<ModelCallResult> {
   let r: ModelCallResult;
   try {
