@@ -1,5 +1,5 @@
 // A re-drive writes its event and leaves the wake to the one clock: the re-drive starts no turn itself, and the
-// clock wakes the agent once for that event.
+// clock wakes the agent once for that event. A paused agent is woken for it when it is back at idle.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('./helpers/agent-requests.js')).connectionMock());
@@ -9,6 +9,7 @@ vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: wake 
 
 import { runMigrations } from '../../db/migrations.js';
 import { redriveWithoutReply } from '../agent-notice.js';
+import { writeAgentStatus } from '../agent-status.js';
 import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
 
 beforeEach(() => {
@@ -27,6 +28,16 @@ describe('a re-drive wakes through the one clock', () => {
   it('the re-drive starts no turn; the clock wakes the agent once', async () => {
     expect(await redriveWithoutReply({ toAgentId: HELPER, fromAgentId: null, content: '[Engine hint: still going?]', taskId: null })).toBe(true);
     expect(wake).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(wake.mock.calls).toEqual([[HELPER, '']]);
+  });
+
+  it('a re-drive to a paused agent waits, and is served once the agent is back at idle', async () => {
+    writeAgentStatus(HELPER, 'paused');
+    await redriveWithoutReply({ toAgentId: HELPER, fromAgentId: null, content: '[Engine hint: sent back: add the totals]', taskId: null });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(wake).not.toHaveBeenCalled();
+    writeAgentStatus(HELPER, 'idle');
     await vi.advanceTimersByTimeAsync(30_000);
     expect(wake.mock.calls).toEqual([[HELPER, '']]);
   });

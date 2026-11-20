@@ -37,6 +37,8 @@ export function writeAgentStatus(
     `).run(status, status, agentId);   // another pause over a park wins: the park's tag goes with it
   }
   agentStatusMoved(agentId, status); // an owner card whose status this left is over
+  // An agent back at idle may be owed what waited while it was paused or in error: the one clock looks.
+  if (status === 'idle') void import('./v2/owed.js').then((m) => m.armOwedClock());
 }
 
 // Diagnostic-only write; a caller holding both facts passes { lastError } to the status writers instead.
