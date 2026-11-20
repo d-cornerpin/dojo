@@ -1,7 +1,8 @@
 // A helper that ends with complete_task sends its whole summary and results, once, to the agent that gave it
 // the job (the sender of the job's ASSIGN, not the task's creator or the helper's parent), on the job's
 // thread, after its hand-in is applied. A refused hand-in sends nothing and the helper works on. A note the
-// engine filed goes labelled as the Dojo's.
+// engine filed goes labelled as the Dojo's, and a join piece whose helper handed in but was never heard lands
+// with the hand-in note on the reaper's next pass.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -13,8 +14,10 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { freshBoard, deliveredToOwner, call, stateOf, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
-import { engineHandIn } from '../hand-in.js';
+import { engineHandIn, handIn } from '../hand-in.js';
 import { latestHandIn } from '../record.js';
+import { openAsk, claimAsk, openDelegationJoin, joinPieces } from '../../store.js';
+import { sweepExpiredJoins } from '../../../agent/a2a-transport.js';
 
 const THREAD = 'thr-job-1';
 
@@ -78,4 +81,34 @@ describe("a helper's result reaches the agent that gave the job", () => {
     expect(reasonOf()).toBe('the run ended before the report');
   });
 
+  it("a join piece whose helper handed in and was never heard lands with the hand-in note on the reaper's pass", async () => {
+    aHelperGivenAJob();
+    doneDb().prepare("INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-1', ?, 'dashboard', 'owner')")
+      .run(MAIN);
+    doneDb().prepare(
+      `INSERT INTO messages (id, agent_id, role, content, lane, channel, conversation_id, created_at)
+       VALUES ('m-ask', ?, 'user', 'Get me the report', 'owner', 'dashboard', 'conv-1', ?)`,
+    ).run(MAIN, Date.now() - 60_000);
+    const ask = openAsk({
+      agentId: MAIN, messageId: 'm-ask', conversationId: 'conv-1', requesterId: 'owner', openedAt: Date.now() - 60_000, title: 'report',
+    });
+    claimAsk(ask, MAIN);
+    openDelegationJoin({
+      parentWorkId: ask, agentId: MAIN, replyConversationId: 'conv-1', ttlAt: Date.now() - 1_000,
+      threads: [{ threadId: THREAD, assigneeAgent: WORKER, intent: 'ASSIGN', hopCount: 0 }],
+    });
+    // The Dojo stopped between the hand-in and the words: the hand-in is applied, nothing was sent.
+    const proof = deliveredToOwner();
+    const r = handIn({
+      workId: TASK, by: { kind: 'worker', agentId: WORKER }, outcome: 'finished',
+      items: [{ kind: 'delivery', ref: proof }], note: 'The report is in the shared folder.', wordsFollow: true,
+    });
+    expect(r.kind).toBe('handed_in');
+    expect(wordsFromTheHelper()).toHaveLength(0);
+    await sweepExpiredJoins();
+    const words = wordsFromTheHelper();
+    expect(words).toMatchObject([{ agent_id: MAIN, a2a_thread_id: THREAD, a2a_intent: 'COMPLETE' }]);
+    expect(words[0].content).toContain('The report is in the shared folder.');
+    expect(joinPieces(ask)[0].state).toBe('done');
+  });
 });
