@@ -1,6 +1,7 @@
 // A helper that ends with complete_task sends its whole summary and results, once, to the agent that gave it
 // the job (the sender of the job's ASSIGN, not the task's creator or the helper's parent), on the job's
-// thread, after its hand-in is applied. A refused hand-in sends nothing and the helper works on.
+// thread, after its hand-in is applied. A refused hand-in sends nothing and the helper works on. A note the
+// engine filed goes labelled as the Dojo's.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -12,6 +13,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { freshBoard, deliveredToOwner, call, stateOf, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
+import { engineHandIn } from '../hand-in.js';
 
 const THREAD = 'thr-job-1';
 
@@ -54,4 +56,15 @@ describe("a helper's result reaches the agent that gave the job", () => {
     expect(wordsFromTheHelper()).toHaveLength(0);
     expect((doneDb().prepare('SELECT status FROM agents WHERE id = ?').get(WORKER) as { status: string }).status).not.toBe('terminated');
   });
+
+  it("an engine-filed hand-in reaches the giver labelled as the Dojo's note, never as the helper's words", async () => {
+    aHelperGivenAJob();
+    engineHandIn(TASK, 'the helper ended and this task is not part of its work');
+    await vi.dynamicImportSettled();
+    const words = wordsFromTheHelper();
+    expect(words).toHaveLength(1);
+    expect(words[0]).toMatchObject({ agent_id: MAIN, a2a_thread_id: THREAD, a2a_intent: 'FAIL' });
+    expect(words[0].content).toContain('[Engine note: the helper ended and this task is not part of its work]');
+  });
+
 });

@@ -12,7 +12,7 @@ import { setTrackerStatus } from '../tracker-store.js';
 import { getPMAgentId, getPrimaryAgentId, isDreamerAgent } from '../../config/platform.js';
 import { workerOfRecord, rehome } from '../row-authority.js';
 import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
-import { latestHandIn, workerOf, OWNER_ID } from './record.js';
+import { latestHandIn, workerOf, OWNER_ID, type HandInRecord } from './record.js';
 import { settleProject } from './project-state.js';
 
 const logger = createLogger('work-effects');
@@ -28,8 +28,7 @@ export function onHandedIn(workId: string, handInEventId: number, wordsFollow?: 
       .then(({ onTaskRunComplete }) => onTaskRunComplete(workId, h.outcome === 'finished' ? 'complete' : 'failed', h.note))
       .catch((err: unknown) => logger.warn('run hand-in: the schedule did not advance', { workId, error: String(err) }));
   }
-  const outcome = h.outcome === 'finished' ? 'COMPLETE' : 'FAIL';
-  if (!wordsFollow) void finalWordsBack({ workerId: workerOf(workId), taskId: workId, text: h.note, outcome, orNewThread: false });
+  if (!wordsFollow) void handInHeard(workId, h);
   retireQueuedPrompts(workerOf(workId), workId);
   void (pmAgent ??= import('../../tracker/pm-agent.js')).then(({ armDebouncedReview }) => armDebouncedReview(workId, 'hand-in'))
     .catch((err: unknown) => logger.warn('hand-in: the decider could not be woken', { workId, error: String(err) }));
@@ -72,6 +71,13 @@ function sendBackHint(workId: string, title: string | null, deciderId: string, r
     + 'Delivered work stays as it is; do only what the reason asks, then hand it in again with proof.]';
   void import('../../agent/agent-notice.js').then(({ redriveWithoutReply }) => redriveWithoutReply(
     { toAgentId: to, fromAgentId: deciderId === OWNER_ID ? null : deciderId, content: hint, taskId: workId }));
+}
+
+/** A hand-in's note goes back as the helper's last words; a note the engine filed is labelled as the Dojo's. */
+export function handInHeard(workId: string, h: HandInRecord): Promise<void> {
+  const text = h.filedBy === 'engine' ? `[Engine note: ${h.note}]` : h.note;
+  const outcome = h.outcome === 'finished' ? 'COMPLETE' : 'FAIL';
+  return finalWordsBack({ workerId: workerOf(workId), taskId: workId, text, outcome, orNewThread: false });
 }
 
 /** A helper's last words reach the agent that gave it the job, once and at once: on the job's thread when it has
