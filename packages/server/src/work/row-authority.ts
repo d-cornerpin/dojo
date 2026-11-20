@@ -157,7 +157,7 @@ export function standardEditRefusal(actorId: string, workId: string): string | n
   const f = rowFacts(workId);
   if (!f || !isOwn(f, actorId) || actorId === f.creator || isPrimaryAgent(actorId)) return null;
   return `Error: the goal and the measure of ${f.kind} "${f.title}" (${f.id.slice(0, 8)}) belong to whoever gave you the work, `
-    + 'so you cannot change them. If they are wrong, tell the agent that gave you the work with send_to_agent.';
+    + 'so you cannot change them. If they are wrong, tell whoever gave you the work: an agent with send_to_agent, the owner in your reply.';
 }
 
 
