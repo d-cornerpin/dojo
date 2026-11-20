@@ -7,7 +7,6 @@
 // header is nobody authenticated, and replies quote the agent).
 import { deriveOrigin, fenceRanges, legacyOriginInputs, stripInboundChannelMarker, type InboundMeta } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
-import { WORK_EVENT } from '../work/tracker-view.js';
 
 export function normalizeQuote(s: string): string {
   return s.toLowerCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
@@ -43,14 +42,14 @@ export function ownerWords(m: Row, askedAtMs: number): string | null {
 /** A question that asks the agent to act. */
 const ASKS_TO_ACT = /\b(?:can|could|would) you\b|\bplease\b/i;
 
-/** The whole message and each whole sentence, normalised. A statement always counts. A question counts only
- *  when `asks` is true and it asks the agent to act: the one rule is that a question that asks the agent to act
- *  counts as words for a control or a hold; an approval needs the whole message to approve. */
-const quotableUnits = (words: string, asks: boolean): string[] => {
-  const counts = (text: string, isQuestion: boolean): boolean => !isQuestion || (asks && ASKS_TO_ACT.test(text));
+/** The whole message and each whole sentence, normalised. A statement always counts; a question counts only when
+ *  it asks the agent to act (words for a control or a hold). With `whole` the one unit is the whole message, and
+ *  a question never counts: an approval needs the whole message to approve. */
+const quotableUnits = (words: string, whole: boolean): string[] => {
+  const counts = (text: string, isQuestion: boolean): boolean => !isQuestion || (!whole && ASKS_TO_ACT.test(text));
   const units: string[] = [];
   if (counts(words, /\?[.!?\s]*$/.test(words))) units.push(words);
-  const parts = words.split(/([.!?]+|\n+)/);
+  const parts = whole ? [] : words.split(/([.!?]+|\n+)/);
   for (let i = 0; i < parts.length; i += 2) {
     const end = parts[i + 1];
     if (parts[i].length > 0 && counts(parts[i], end !== undefined && end.includes('?'))) units.push(parts[i]);
@@ -66,39 +65,19 @@ const PERSON_INBOUND = "role = 'user' AND channel IS NOT NULL AND source_agent_i
 const fencedWords = (content: string): string | null =>
   fenceRanges(content).map((r) => content.slice(r.bodyStart, r.bodyEnd)).join('\n') || null;
 
-const saidIn = (rows: Row[], q: string, floorMs: number, asks: boolean, sender: string | null): boolean =>
+interface SaidOpts { whole?: boolean; sender?: string | null }
+const saidIn = (rows: Row[], q: string, floorMs: number, { whole = false, sender = null }: SaidOpts): boolean =>
   rows.some((m) => {
     const words = ownerWords(m, floorMs) ?? (sender !== null && m.sender_id === sender ? fencedWords(m.content) : null);
-    return words !== null && quotableUnits(words, asks).includes(q);
+    return words !== null && quotableUnits(words, whole).includes(q);
   });
 
-function askedAt(taskId: string, kind: string): number | null {
-  const r = getDb().prepare(
-    'SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ? AND kind = ?',
-  ).get(taskId, kind) as { at: number | null };
-  return r.at;
-}
-
 /** Did the owner write `q` (normalised) as a whole message or sentence to this agent at or after `atMs`?
- *  `asks` admits a question that asks the agent to act (words for a control or a hold, never an approval);
- *  `sender` also counts the words that contact wrote in its own rows. */
-export function ownerSaidSince(atMs: number, q: string, agentId: string, asks = false, sender: string | null = null): boolean {
+ *  `whole` asks for the whole message, never a question; `sender` also counts the words that contact wrote in its own rows. */
+export function ownerSaidSince(atMs: number, q: string, agentId: string, opts: SaidOpts = {}): boolean {
   const floor = Math.floor(atMs / 1000) * 1000;   // `sent_at`'s default is second-resolution
   const rows = getDb().prepare(
     `SELECT ${ROW_COLS} FROM messages WHERE ${PERSON_INBOUND} AND agent_id = ? AND sent_at >= ?`,
   ).all(agentId, floor) as Row[];
-  return saidIn(rows, q, floor, asks, sender);
-}
-
-// A relayed owner decision is verified here: agents must not close jobs themselves.
-export type OwnerQuoteProof = { ok: true } | { ok: false; why: string };
-
-export function ownerQuoteProof(taskId: string, quote: string, agentId: string): OwnerQuoteProof {
-  const q = normalizeQuote(quote);
-  if (!q) return { ok: false, why: 'no quote was given' };
-  const at = askedAt(taskId, WORK_EVENT.validationEscalated);
-  if (at === null) return { ok: false, why: 'the owner was never asked about this task' };
-  return ownerSaidSince(at, q, agentId)
-    ? { ok: true }
-    : { ok: false, why: 'the quote is not in any message the owner sent you after being asked about this task' };
+  return saidIn(rows, q, floor, opts);
 }

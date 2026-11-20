@@ -1,5 +1,5 @@
 // A project that ends with tasks not done files ONE dashboard card for the owner naming them; a fully done
-// project, a project the owner cancelled himself, and a project closed again file none.
+// project, a project the owner closed or cancelled himself, and a project closed again file none.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -52,25 +52,19 @@ describe('a project that ends with unfinished tasks', () => {
     expect(cards()).toEqual([]);
   });
 
-  it('the owner closing a project as done files one card naming the task that was left open', () => {
-    freshBoard();
-    underAProject();
-    expect(decide({ workId: PROJECT, deciderAgentId: null, verdict: 'owner_done', reason: 'The launch went ahead' }).kind).toBe('decided');
-    expect(cards()).toHaveLength(1);
-    expect(cards()[0]).toContain('"Write the report" (cancelled)');
-  });
+  for (const verdict of ['owner_done', 'cancel'] as const) {
+    it(`the owner closing the whole project himself (${verdict}) files none`, () => {
+      freshBoard();
+      underAProject();
+      expect(decide({ workId: PROJECT, deciderAgentId: null, verdict, reason: 'The launch is settled' }).kind).toBe('decided');
+      expect(cards()).toEqual([]);
+    });
+  }
 
-  it('the owner cancelling the whole project files none', () => {
+  it('closing it again files no second card', async () => {
     freshBoard();
-    underAProject();
-    expect(decide({ workId: PROJECT, deciderAgentId: null, verdict: 'cancel', reason: 'The launch is off' }).kind).toBe('decided');
-    expect(cards()).toEqual([]);
-  });
-
-  it('closing it again files no second card', () => {
-    freshBoard();
-    underAProject();
-    decide({ workId: PROJECT, deciderAgentId: null, verdict: 'owner_done', reason: 'The launch went ahead' });
+    underAProject(['abandoned']);
+    await approveLastTask();
     expect(decide({ workId: PROJECT, deciderAgentId: null, verdict: 'owner_done', reason: 'Again' }).kind).toBe('refused');
     expect(cards()).toHaveLength(1);
   });

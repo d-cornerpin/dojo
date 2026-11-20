@@ -107,9 +107,10 @@ const isEditor = (f: RowFacts, actorId: string): boolean =>
 
 // "The owner asked", for this turn: the turn serves an inbound message, and the cited `user_quote` is a whole
 // sentence the owner himself wrote in it or since (`tracker/owner-words.ts` decides whose words count).
+// `whole`: only his whole message counts, never a question; `after`: the message was written at or after then.
 export type OwnerAskProof = { ok: true } | { ok: false; why: string };
 
-export function ownerAskedInThisTurn(agentId: string, quote: unknown): OwnerAskProof {
+export function ownerAskedInThisTurn(agentId: string, quote: unknown, opts: { whole?: boolean; after?: number } = {}): OwnerAskProof {
   const q = typeof quote === 'string' ? normalizeQuote(quote) : '';
   if (!q) return { ok: false, why: 'no user_quote was given (the owner\'s exact words asking for this)' };
   const root = turnContext(agentId)?.root;
@@ -119,9 +120,12 @@ export function ownerAskedInThisTurn(agentId: string, quote: unknown): OwnerAskP
   const rootMsg = getDb().prepare('SELECT sent_at FROM messages WHERE id = ?').get(root.sourceMessageId) as
     { sent_at: number } | undefined;
   if (!rootMsg) return { ok: false, why: 'the message this turn is answering could not be found' };
-  return ownerSaidSince(rootMsg.sent_at, q, agentId, true)
+  if (opts.after !== undefined && rootMsg.sent_at < Math.floor(opts.after / 1000) * 1000) {
+    return { ok: false, why: 'the message this turn is answering was written before he was asked' };
+  }
+  return ownerSaidSince(rootMsg.sent_at, q, agentId, { whole: opts.whole })
     ? { ok: true }
-    : { ok: false, why: 'the quoted words are not a whole sentence the owner wrote in the message this turn is answering' };
+    : { ok: false, why: `the quoted words are not ${opts.whole ? 'the whole message, and not a question,' : 'a whole sentence'} the owner wrote in the message this turn is answering` };
 }
 
 const who = (id: string): string => `agent ${id}`;

@@ -6,7 +6,7 @@
 // the measure is read (it is I/O) before the synchronous close door judges it. The schema is the
 // real migration chain. Two seams only: the counter (`countMeasure`, so no mailbox is read) and
 // the agent's category grant (so the executor's own wall can be shown refusing).
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 const mockDb: { current: Database.Database | null } = { current: null };
@@ -40,6 +40,7 @@ import { trackerHandlers } from '../../agent/tools/cat/tracker.js';
 import { setTrackerStatus } from '../../work/tracker-store.js';
 import { decide } from '../../work/done/decide.js';
 import { appendWorkEvent } from '../../work/store.js';
+import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
 /** The owner was asked about this task (the ask his words must come after). */
 const requestUserVerdict = (id: string, _by: string, _detail: unknown): void => { appendWorkEvent(id, 'validation_escalated', 'scheduler', { thread_id: null }); };
@@ -200,7 +201,8 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   const awaiting = (id: string): boolean => (db().prepare(
     "SELECT (SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'user_verdict_requested') > COALESCE((SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'user_verdict_cleared'), -1) AS a",
   ).get(id, id) as { a: number }).a === 1;
-  /** The owner writes to the PM, the agent that relays his words here. */
+  afterEach(() => endTurnContext(PM));
+  /** The owner writes to the PM, the agent that relays his words here, in a turn answering that message. */
   const ownerSays = (content: string, over: Record<string, unknown> = {}): void => {
     seedPM();
     const row = {
@@ -211,6 +213,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     };
     const cols = Object.keys(row);
     db().prepare(`INSERT INTO messages (${cols.join(', ')}) VALUES (${cols.map((c) => '@' + c).join(', ')})`).run(row);
+    openTurnContext(PM).root = { kind: 'ask', id: row.id, sourceMessageId: row.id };
   };
   /** A measured task handed in with its remainder, and the owner asked about it. */
   async function stalemated(): Promise<string> {
@@ -222,11 +225,11 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     return id;
   }
 
-  it('a quote found verbatim in the owner\'s own message since the request closes the task, as the owner', async () => {
+  it('the owner\'s whole message since the request, quoted verbatim, closes the task, as the owner', async () => {
     const id = await stalemated();
     ownerSays('Yes, close it. The rest can wait until next week.');
 
-    const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'The rest can wait until next week.' });
+    const out = await trackerApplyUserVerdict(PM, { task_id: id, status: 'complete', user_quote: 'Yes, close it. The rest can wait until next week.' });
     expect(out).not.toMatch(/^Error|Refused/);
     expect(readWork(id).state).toBe('failed');
   });
@@ -246,7 +249,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     });
   }
 
-  // fix round 5 (re-review 4): a FRAGMENT never verifies; a real reply survives case, curly quotes and newlines.
+  // fix round 5 (re-review 4): a FRAGMENT, or one sentence of a longer message, never approves; a real reply survives case, curly quotes and newlines.
   const verdictOn = async (owner: string, quote: string, over: Record<string, unknown> = {}): Promise<{ out: string; state: string }> => {
     const id = await stalemated();
     ownerSays(owner, over);
@@ -257,6 +260,9 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     ['Do not close it.', 'close it'],
     ['No.', 'o'],
     ['No, don\'t mark it complete yet, there are 30 left.', 'mark it complete'],
+    ['Thanks for asking!\nclose it.', 'Close it'],
+    ['ok. Close it!', 'Close it'],
+    ['Close it.\nThe rest can wait', 'Close it'],
   ] as const) {
     it(`a fragment is refused: owner "${owner}", quoted "${quote}"`, async () => {
       const r = await verdictOn(owner, quote);
@@ -268,7 +274,6 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     ['Close it', 'close it'],
     ['It’s fine, close it', "It's fine, close it"],
     ['Close it.\nThe rest can wait', 'Close it. The rest can wait'],
-    ['Thanks for asking!\nclose it.', 'Close it'],
   ] as const) {
     it(`a real reply is accepted across case, curly quotes and newlines: ${JSON.stringify(owner)} / ${JSON.stringify(quote)}`, async () => {
       const r = await verdictOn(owner, quote);
@@ -313,7 +318,7 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
     inbound_meta: JSON.stringify({ channel: 'email', accountKind: 'agent', authorized: true, sender: 'owner@home.example', emailService: 'gmail', relation: 'owner', ownerWordsAt: Date.now() + 60_000, ...(words === undefined ? {} : { ownerWords: words }), ...over }),
   });
   it('P44: an email the provider confirmed as the owner\'s verifies his new words, like his text', async () => {
-    const r = await verdictOn(emailBody('Yes. Close it. (preview, quoted: Close it now)'), 'close it', verifiedEmailRow('Yes. Close it.'));
+    const r = await verdictOn(emailBody('Yes. Close it. (preview, quoted: Close it now)'), 'yes. close it', verifiedEmailRow('Yes. Close it.'));
     expect(r.out).not.toMatch(/^Error|Refused/);
     expect(r.state).toBe('failed');
   });
@@ -366,8 +371,6 @@ describe('fix round 4: a stalemate verdict is the owner\'s only when his own wor
   for (const [owner, quote] of [
     ['Close it.', 'Close it'],
     ['Close it', 'Close it'],
-    ['ok. Close it!', 'Close it'],
-    ['Close it.\nThe rest can wait', 'Close it'],
   ] as const) {
     it(`a statement still approves: ${JSON.stringify(owner)} / ${JSON.stringify(quote)}`, async () => {
       const r = await verdictOn(owner, quote);
