@@ -14,7 +14,9 @@ import { claimAsk, stampClaimingTurn, transition } from '../../work/store.js';
 import { newestPutBack, owedAtTurnEnd, recordPiecesShown, settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
 import { resolveJoinsAtBoot } from '../a2a-transport.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, relayRows, requestState, ASK, CONV } from './helpers/text-relay.js';
+import { agentStaysSilent, delegatedTextRequest, helperAnswers, relayed, relayRows, requestState, textsSent, ASK, CONV } from './helpers/text-relay.js';
+import { queueReply } from '../v2/deliveries.js';
+import { deliverDueReplies } from '../v2/channel-sender.js';
 import { turnReplies } from './helpers/turn-reply.js';
 
 const due = (): number | null => (testDb().prepare('SELECT next_attempt_at AS d FROM work WHERE id = ?').get(ASK) as { d: number | null }).d;
@@ -46,6 +48,19 @@ describe('a turn not shown the answer never closes the request', () => {
     turnReplies(3, 'm-ask');
     settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 3 });
     expect([requestState(), due() !== null]).toEqual(['open', true]);
+  });
+
+  it('the delegating turn\'s own reply still on its way when the answer lands: the answer goes back, and reaches the person once', async () => {
+    transition(ASK, { to: 'claimed', by: 'agent', reason: 'the delegating turn holds it', expectedState: 'blocked' });
+    stampClaimingTurn(ASK, 3);
+    await queueReply({ agentId: AGENT, turnNumber: 3, root: { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask', conversationId: CONV }, text: 'I\'ve asked the helper', address: { channel: 'imessage', to: PERSON } });
+    await helperAnswers('The venue is free on the 14th.');
+    await deliverDueReplies(Date.now());
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 3 });
+    expect([requestState(), due() !== null, putBacks()]).toEqual(['open', true, 1]);
+    await agentStaysSilent(4);
+    await deliverDueReplies(Date.now());
+    expect(textsSent()).toEqual(['I\'ve asked the helper', relayed('The venue is free on the 14th.')]);
   });
 
   it('a turn shown the pieces mid-turn answers once, and that answer closes the request', async () => {

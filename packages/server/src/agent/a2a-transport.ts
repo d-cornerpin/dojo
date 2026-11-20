@@ -39,7 +39,7 @@ import {
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, replyInFlight, handBackAsk, newestPutBack, type PutBackKind } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, type PutBackKind } from '../work/ask-settlement.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
 import { afterCommit, withUnit } from '../db/unit.js';
 import { serveLater } from './v2/serve-later.js';
@@ -1135,13 +1135,10 @@ function answerBackInView(join: JoinState, kind: PutBackKind, evidence: string |
   const relayInstead = withUnit((): boolean => {
     const instead = tooOldOrBigToPutBack(join, kind, evidence);
     if (kind === 'compile') {
-      // Only the pass that clears the flag goes on; a relay on its way, or one already sent, settles the request.
-      const relayed = replyInFlight(join.id) || priorEngineJoinRelay(join.id) !== null;
+      // Only the pass that clears the flag goes on; a Dojo relay on its way, or one already sent, settles the request.
+      const relayed = priorEngineJoinRelay(join.id) !== null;
       if (clearJoinCompilePending(join.id, 'its delegated work is back', instead || relayed ? undefined : { kind, evidence }) === 0) return false;
-      if (relayed) {
-        settledOnPriorRelay(join.id);
-        return false;
-      }
+      if (relayed && settledOnPriorRelay(join.id)) return false;
     } else if (!instead) appendWorkEvent(join.id, 'compile_resolved', 'engine', { reason: kind === 'late' ? 'its helper answered after all' : 'its helper corrected its work', kind, evidence });
     if (instead) return true;
     const state = joinState(join.id)?.parentState;
