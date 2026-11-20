@@ -314,9 +314,9 @@ function standDownReServe(
   ask: AskRow, ctx: Pick<SettlementContext, 'agentId' | 'turnNumber'>, actorId: string, spent: number,
   out: (v: AskSettlementVerdict, d: string, id?: string | null) => AskSettlementOutcome,
 ): AskSettlementOutcome {
-  const reason = `re-serve stood down after ${spent + 1} serves: turn ${ctx.turnNumber ?? '?'} finalized `
-    + 'without delivering an answer, as the ones before it did. The ask is NOT answered and is '
-    + 'NOT closed — it is held OWED and stays in front of the agent, but the drain will stop '
+  const reason = `re-serve stood down after ${spent + 1} ${spent === 0 ? 'serve' : 'serves'}: turn ${ctx.turnNumber ?? '?'} finalized `
+    + 'without delivering an answer. The ask is NOT answered and is '
+    + 'NOT closed: it is held OWED and stays in front of the agent, but the drain will stop '
     + 'serving the same question into the same silence';
   if (ask.state === 'blocked') return out('held', 'already held: the re-serve ladder is spent');
   const r = transition(ask.id, {
@@ -344,7 +344,7 @@ function tellOwnerStoodDown(ask: AskRow, turnNumber: number | null, tries: numbe
   const who = r?.who ?? 'the person';
   recordFloorGhost({
     agentId: ask.agent_id, turnNumber, floor: 'request-stood-down', workId: ask.id, attempts: tries,
-    ownerLine: `${r?.agent ?? ask.agent_id} could not answer ${who}'s message ("${(r?.content ?? '').slice(0, 80)}") after ${tries} tries, `
+    ownerLine: `${r?.agent ?? ask.agent_id} could not answer ${who}'s message ("${(r?.content ?? '').slice(0, 80)}") after ${tries} ${tries === 1 ? 'try' : 'tries'}, `
       + `so it has stopped trying. It answers when ${who} writes again.`,
   }, { broadcast });
 }

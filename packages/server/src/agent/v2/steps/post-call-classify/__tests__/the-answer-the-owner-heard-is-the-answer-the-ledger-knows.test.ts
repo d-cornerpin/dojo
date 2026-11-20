@@ -446,8 +446,8 @@ describe('(c) genuine silence: no promotion, and every byte of the old behaviour
     expect(askRow(workId).state).toBe('blocked');
     expect(transitionsFor(workId).at(-1)!.reason).toBe(
       `re-serve stood down after ${MAX_ASK_RE_SERVES + 1} serves: turn ${TURN + MAX_ASK_RE_SERVES} `
-      + 'finalized without delivering an answer, as the ones before it did. The ask is NOT '
-      + 'answered and is NOT closed — it is held OWED and stays in front of the agent, but the '
+      + 'finalized without delivering an answer. The ask is NOT '
+      + 'answered and is NOT closed: it is held OWED and stays in front of the agent, but the '
       + 'drain will stop serving the same question into the same silence',
     );
   });

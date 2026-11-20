@@ -37,7 +37,7 @@ describe('an empty required reply', () => {
     expect(state()).toBe('blocked');
     expect(cards()).toBe(1);
     const line = testDb().prepare("SELECT content FROM messages WHERE role = 'system' AND content LIKE '%stopped trying%'").get() as { content: string };
-    expect(line.content).toMatch(/Sam writes again/);
+    expect(line.content).toMatch(/after 1 try, so it has stopped trying\. It answers when Sam writes again\./);
   });
 
   it('a silent turn with no required reply is handed back, not held', () => {
