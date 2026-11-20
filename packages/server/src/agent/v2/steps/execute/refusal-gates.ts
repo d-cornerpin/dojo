@@ -57,8 +57,8 @@ function repeatSend(agentId: string, tc: ToolCall, turnCtx: TurnContext, refused
   const sig = `repeat|${identicalCallSignature(tc.name, tc.arguments)}`;
   if (!text || !recipient || refusedOnceSigs.has(sig)) return null;
   const prior = (getDb().prepare(
-    `SELECT turn_number AS n, recipient FROM tool_receipts WHERE agent_id = ? AND tool = ? AND sent_text = ?
-        AND root_kind = 'ask' AND root_id = ? AND turn_number < ? ORDER BY turn_number DESC`,
+    `SELECT turn_number AS n, recipient FROM tool_receipts WHERE agent_id = ? AND created_at >= datetime('now', '-1 day')
+        AND tool = ? AND sent_text = ? AND root_kind = 'ask' AND root_id = ? AND turn_number < ? ORDER BY turn_number DESC`,
   ).all(agentId, tool, text, root.id, turn) as Array<{ n: number; recipient: string | null }>)
     .find((r) => recipientIdsMatch(recipient, r.recipient));
   if (!prior) return null;

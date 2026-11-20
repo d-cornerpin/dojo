@@ -63,4 +63,10 @@ describe('a re-served request does not send the same message twice', () => {
     sentOnTurnOne({ ...ASK, id: randomUUID() });
     expect(sendOnTurnTwo(EMAIL, new Set())).toBeNull();
   });
+
+  it('the same email sent more than a day ago does not count', () => {
+    sentOnTurnOne(ASK);
+    mockDb.current!.prepare(`UPDATE tool_receipts SET created_at = datetime('now', '-25 hours')`).run();
+    expect(sendOnTurnTwo(EMAIL, new Set())).toBeNull();
+  });
 });
