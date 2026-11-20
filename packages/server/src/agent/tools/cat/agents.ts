@@ -444,7 +444,7 @@ export const agentsHandlers: ToolHandlerMap = {
     if (spawnClassification !== 'ronin') {
       const tm = args.timeout_minutes;
       if (typeof tm !== 'number' || !Number.isFinite(tm) || tm <= 0) {
-        content = `spawn_agent needs timeout_minutes for this sub-agent: how many minutes it may run before you (its creator) are asked to extend it or let it stop. There is no default. Size it to the task (a quick lookup ~5, a longer build ~30-60). If the work should run open-ended with no timeout, spawn it with classification="ronin" instead (ronin has no timeout and is ended only by the main agent or the owner).`;
+        content = `spawn_agent needs timeout_minutes for this sub-agent: how many minutes it may run before you (its creator) are asked to extend it or let it stop. There is no default. Size it to the task (a quick lookup ~5, a longer build ~30-60). If the work should run open-ended with no timeout, spawn it with classification="ronin" instead (ronin has no timeout and is ended only by the main agent, the owner, or itself with complete_task when its job is done).`;
         isError = true;
         auditLog(agentId, 'spawn_agent', args.name as string | null, 'denied', 'missing timeout_minutes');
         return { content, isError };
@@ -576,7 +576,7 @@ export const agentsHandlers: ToolHandlerMap = {
       return { content, isError };
     }
     if (guarded && targetAgent?.classification === 'ronin') {
-      content = 'Cannot terminate ronin agent. Only the main agent or the owner can end a ronin agent.';
+      content = 'Cannot terminate ronin agent. Only the main agent, the owner, or the ronin itself with complete_task when its job is done can end a ronin agent.';
       isError = true;
       return { content, isError };
     }
