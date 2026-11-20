@@ -8,7 +8,7 @@ import { describeNameFailure } from '../../../tools/name-help.js';
 import { getFilteredTools } from '../surface.js';
 import { getAllToolDefinitions } from '../definitions.js';
 import { LOAD_TOOL_DOCS_MAX_PER_CALL, loadToolDocsOverflowRefusal } from '../../../tools/tool-session-set.js';
-import { liftRepeatStops } from '../../v2/identical-call-brake.js';
+import { liftRepeatStops } from '../../v2/repeat-rule.js';
 
 export const metaHandlers: ToolHandlerMap = {
   async continue_repeating({ agentId, args }) {

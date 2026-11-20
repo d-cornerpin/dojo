@@ -3383,7 +3383,7 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
 // NOT break mid-iteration before the round's text is classified and persisted.
 //
 // The fix therefore reads the LATCH at the loop head. Nothing new was declared: the two
-// fields (`toolPhaseEndedBySpinBrake`, `spinBrakeGraceCalls`) already exist on the turn's
+// fields (`toolPhaseEndedByRepeats`, `repeatGraceCalls`) already exist on the turn's
 // bag and are already monotone — the brake only latches true, the grace only decrements.
 //
 // WHY THE FLAG IS SET FROM INSIDE A TOOL CALL HERE. Reaching the terminal rung honestly
@@ -3409,7 +3409,7 @@ describe('PHASE-6 T13: the spin-brake grace ends the turn instead of announcing 
     executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => {
       // Latch the terminal brake on the FIRST round, from inside the turn.
       const tc = turnContext('primary');
-      if (tc) tc.toolPhaseEndedBySpinBrake = true;
+      if (tc) tc.toolPhaseEndedByRepeats = true;
       return { toolCallId: toolCall.id, name: toolCall.name, content: 'file body', isError: false };
     });
 

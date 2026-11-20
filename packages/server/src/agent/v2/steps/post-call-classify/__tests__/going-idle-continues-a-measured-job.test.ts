@@ -39,7 +39,7 @@ import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runGoingIdle } from '../going-idle.js';
 import { taskMovedAtSql } from '../../../../../work/task-freshness.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
-import { noteRepeatResult } from '../../../identical-call-brake.js';
+import { noteRepeatResult } from '../../../repeat-rule.js';
 import { openTurnContext, turnContext } from '../../../../turn-context.js';
 /** The repeat rule counting this turn's calls: a successful result new to the window moves the job. */
 function chargeEffortCalls(calls: ToolCall[], turn: { succeeded: () => boolean }): void {

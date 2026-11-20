@@ -32,7 +32,7 @@ import { EMAIL_SEARCH_TOOL } from '../../tools/unified-read.js';
 import { getEffectiveAudioGenModel } from '../../services/audio-gen-model.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, formatVoiceCatalog } from '../../services/voice-catalog.js';
 import { RESULT_READ_TOOL } from '../../memory/tool-result-view.js';
-import { LIFT_TOOL } from '../v2/identical-call-brake.js';
+import { LIFT_TOOL } from '../v2/repeat-rule.js';
 
 
 /** Owner-facing controls; the strip is advice, so executeToolInner re-checks THIS SAME constant, and

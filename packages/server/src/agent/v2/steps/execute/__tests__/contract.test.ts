@@ -80,7 +80,7 @@ function turnCtxFor(over: Record<string, unknown> = {}): ExecuteContext['turnCtx
     convKey: 'ck-1',
     conversationId: 'conv-1',
     servedWork: undefined,
-    toolPhaseEndedBySpinBrake: false,
+    toolPhaseEndedByRepeats: false,
     anyToolStartedThisTurn: false,
     startAckSteerRequested: false,
     startAckSteerArmedThisTurn: false,
@@ -243,7 +243,7 @@ describe('PHASE-6 CUT 7: the `execute` step\'s contract', () => {
   it('THE BRAKE STAYS AT THE CHOKE POINT: once the tool phase ended, nothing executes and the text says so', async () => {
     const out = await runExecute(
       freshState(),
-      ctxFor({ turnCtx: turnCtxFor({ toolPhaseEndedBySpinBrake: true }), result: modelResult([call('file_read', { path: 'a.txt' })]) }),
+      ctxFor({ turnCtx: turnCtxFor({ toolPhaseEndedByRepeats: true }), result: modelResult([call('file_read', { path: 'a.txt' })]) }),
     );
 
     expect(executeToolSpy).not.toHaveBeenCalled();

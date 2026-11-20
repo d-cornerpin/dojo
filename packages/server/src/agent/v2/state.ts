@@ -171,7 +171,7 @@ export interface AgentTurnState {
 
   /** The repeat rule refused a call. Derived after the batch in steps/execute/index.ts
    *  because parallel runOne callbacks clobber each other's state writes. */
-  identicalCallRefusedThisTurn: boolean;
+  repeatRefusedThisTurn: boolean;
 
   currentMessageId: string | null;        // active message ID for chat:chunk events
 }
@@ -256,7 +256,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,
     engineCutExit: null,
-    identicalCallRefusedThisTurn: false,
+    repeatRefusedThisTurn: false,
 
     currentMessageId: null,
   };

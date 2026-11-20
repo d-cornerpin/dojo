@@ -19,7 +19,7 @@
 //
 //   The requirement is now carried by the TURN OUTCOME instead, and that is a
 //   better home: loop.ts:9148 computes
-//     `const outcome = toolPhaseEndedBySpinBrake ? 'brake' : answerRow ? 'answered' : …`
+//     `const outcome = toolPhaseEndedByRepeats ? 'brake' : answerRow ? 'answered' : …`
 //   so a spin-braked turn can never be labelled 'answered', and
 //   tracker/task-stamps.ts gates every answer/delivery stamp on
 //   `input.outcome === 'answered'`. That is the live law, so that is what this

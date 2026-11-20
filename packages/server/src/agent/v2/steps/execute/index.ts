@@ -1,5 +1,5 @@
 // The `execute` step: run each batch of the model's tool calls through `run-one.ts` (gates, once-guard,
-// identical-call brake, executor, recording), then the tracker floors and the turn-ending checks.
+// repeat rule, executor, recording), then the tracker floors and the turn-ending checks.
 // The driver advances into this phase itself, so `validate()` runs on the transition.
 
 import type { ToolCall } from '@dojo/shared';
@@ -11,7 +11,7 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { isStopFenced } from '../../../shared-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
-import { anyIdenticalCallRefused } from '../../identical-call-brake.js';
+import { anyRepeatRefused } from '../../repeat-rule.js';
 import { latchEngineCut } from '../../engine-exit.js';
 import { createLogger } from '../../../../logger.js';
 import { runOneToolCall } from './run-one.js';
@@ -172,8 +172,8 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     toolResults: state.toolResults.concat(turnToolResults.map((r) => ({
       ...r, arguments: result.toolCalls.find((tc) => tc.id === r.toolCallId)?.arguments,
     }))),
-    identicalCallRefusedThisTurn:
-      state.identicalCallRefusedThisTurn || anyIdenticalCallRefused(agentId, ctx.turnCtx),
+    repeatRefusedThisTurn:
+      state.repeatRefusedThisTurn || anyRepeatRefused(agentId, ctx.turnCtx),
   });
   if (stoppedMidBatch) state = latchEngineCut(state, 'stop');
 

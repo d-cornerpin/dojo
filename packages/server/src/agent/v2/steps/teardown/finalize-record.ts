@@ -28,7 +28,7 @@ export async function finalizeTurnRecord(
   const {
     agentId, turnCtx, turnNumber, chosenConvKey, chosenConversationId, lastAssembledAtIso,
     terminalAnswerRowId, triggerWorkId, claimedEngineEvent,
-    toolPhaseEndedBySpinBrake, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
+    toolPhaseEndedByRepeats, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     db,
   } = ctx;
 
@@ -51,12 +51,12 @@ export async function finalizeTurnRecord(
     // ORDER IS THE GUARD (coerced-reply-not-a-delivery.test.ts): `brake` and the engine's own cut come
     // before `answerRow` because they are why the turn ended (delivery is the separate `answered` column);
     // `identical_call` is last since it is not the ending event. Meanings: work/exit-attribution.ts.
-    const exitReason: TurnExitReason = toolPhaseEndedBySpinBrake ? 'brake'
+    const exitReason: TurnExitReason = toolPhaseEndedByRepeats ? 'brake'
       : state.engineCutExit ? state.engineCutExit
       : answerRow ? 'answered'
       : parkedRow ? 'park'
       : handoffRow ? 'handoff'
-      : state.identicalCallRefusedThisTurn ? 'identical_call'
+      : state.repeatRefusedThisTurn ? 'identical_call'
       : 'no_reply_intended';
     const outcome = exitReason;
     if (answerRow && !terminalDeliveryId) {

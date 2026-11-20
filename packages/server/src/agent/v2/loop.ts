@@ -106,11 +106,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // The passes run until the turn would end; a silent end with someone owed gets its required reply once.
     for (;;) {
       // Steps rewrite `phase` mid-body, so a mid-body 'done' never survives to this check; the monotone
-      // close-out latch and spin-brake grace are read here instead, ending the turn after the iteration ran.
+      // close-out latch and repeat-rule grace are read here instead, ending the turn after the iteration ran.
       while (
         turnCtx.state!.phase !== 'done' &&
         !turnCtx.state!.taskClosedWithTextThisTurn &&
-        !(turnCtx.toolPhaseEndedBySpinBrake && turnCtx.spinBrakeGraceCalls < 0)
+        !(turnCtx.toolPhaseEndedByRepeats && turnCtx.repeatGraceCalls < 0)
       ) {
         turnCtx.state = advance(turnCtx.state!, { loopCount: turnCtx.state!.loopCount + 1, phase: 'preCallGates' });
 
@@ -151,12 +151,12 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         if (callLLM.directive === 'continue') continue;
         const { messageId, result } = callLLM;
 
-        // After the terminal spin brake ends the tool phase, tool calls return a note unexecuted; a small grace of
+        // After the repeat rule ends the tool phase, tool calls return a note unexecuted; a small grace of
         // iterations lets the model converge to text before the turn concludes. Its text is never suppressed.
-        if (turnCtx.toolPhaseEndedBySpinBrake && result.toolCalls.length > 0) {
-          turnCtx.spinBrakeGraceCalls -= 1;
-          if (turnCtx.spinBrakeGraceCalls < 0) {
-            logger.warn('v2: spin brake grace exhausted, concluding the turn', { agentId, turnNumber }, agentId);
+        if (turnCtx.toolPhaseEndedByRepeats && result.toolCalls.length > 0) {
+          turnCtx.repeatGraceCalls -= 1;
+          if (turnCtx.repeatGraceCalls < 0) {
+            logger.warn('v2: repeat-rule grace exhausted, concluding the turn', { agentId, turnNumber }, agentId);
           }
         }
 

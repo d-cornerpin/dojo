@@ -5,7 +5,7 @@
 import { broadcast } from '../../../../gateway/ws.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
 import { wouldWreck } from '../../../destructive-gate.js';
-import { identicalCallSignature } from '../../identical-call-brake.js';
+import { identicalCallSignature } from '../../repeat-rule.js';
 import { isOwnerIMessageRecipient } from '../../../../services/safe-senders.js';
 import { toolOpKey } from '../../../../tools/work-verbs.js';
 import { LOADING_GATE_THRESHOLD, isStructuringTool } from '../../classifiers/hoarding.js';

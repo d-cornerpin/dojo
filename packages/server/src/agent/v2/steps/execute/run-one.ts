@@ -1,4 +1,4 @@
-// The executor choke point: one tool call, start to finish. The once-guard and the identical-call brake
+// The executor choke point: one tool call, start to finish. The once-guard and the repeat rule
 // sit here, on either side of the single `executeTool` call.
 
 import type { ToolCall } from '@dojo/shared';
@@ -7,7 +7,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
 import { classifyToolResult } from '../../../tool-outcome.js';
 import { executeTool, toolResultOf } from '../../../tools/index.js';
-import { LIFT_TOOL, fingerprint, identicalCallSignature, isSignatureTerminal, noteRepeatResult, repeatStopRefusal } from '../../identical-call-brake.js';
+import { LIFT_TOOL, fingerprint, identicalCallSignature, isSignatureTerminal, noteRepeatResult, repeatStopRefusal } from '../../repeat-rule.js';
 import { markToolsLoaded } from '../../../../tools/tool-session-set.js';
 import { isTrackerFamilyCall } from '../../../../tools/work-verbs.js';
 import { createLogger } from '../../../../logger.js';
@@ -47,17 +47,17 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
   // rule; the turn ends after an executed send (`index.ts`), so the exemption cannot loop.
   const isA2AReplyTool =
     counterparty.kind === 'agent' && (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group');
-  const brakeSig = identicalCallSignature(tc.name, tc.arguments);
+  const callSig = identicalCallSignature(tc.name, tc.arguments);
 
   // Once-per-response guard, pre-execution half.
   const isNonIdempotent = FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) || SEND_TO_PEOPLE_SET.has(tc.name);
-  if (isNonIdempotent && onceGuardExecuted.has(brakeSig)) {
+  if (isNonIdempotent && onceGuardExecuted.has(callSig)) {
     return done({
       toolCallId: tc.id,
       name: tc.name,
       content:
         `Already executed in this response: an identical ${tc.name} call ran moments ago and its side effect is real ` +
-        `(${onceGuardExecuted.get(brakeSig)}). It was NOT run again; re-running would duplicate the ` +
+        `(${onceGuardExecuted.get(callSig)}). It was NOT run again; re-running would duplicate the ` +
         `send/generation. Reference the first result. If you genuinely intend a second identical ${tc.name}, ` +
         `issue it in your NEXT response.`,
       isError: true,
@@ -87,29 +87,29 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
     }
   }
   let toolResult;
-  // Identical-call brake, pre-execution half: a stopped call is not run again until the agent lifts the stop.
+  // Repeat rule, pre-execution half: a stopped call is not run again until the agent lifts the stop.
   // The main agent can lift even a stop that ended the tool phase: its lift runs and the phase reopens.
-  if (turnCtx.toolPhaseEndedBySpinBrake && tc.name === LIFT_TOOL && isPrimaryAgent(agentId)) turnCtx.toolPhaseEndedBySpinBrake = false;
-  const refusal = turnCtx.toolPhaseEndedBySpinBrake
+  if (turnCtx.toolPhaseEndedByRepeats && tc.name === LIFT_TOOL && isPrimaryAgent(agentId)) turnCtx.toolPhaseEndedByRepeats = false;
+  const refusal = turnCtx.toolPhaseEndedByRepeats
     ? '[Engine: the tool phase for this turn ended after an identical call was refused repeatedly. No further tools will run this turn. Answer in text with what you have.]'
     : wordsStepRefusal(turnCtx, tc.name)
       ?? (isA2AReplyTool ? null : repeatStopRefusal(agentId, turnCtx, tc.name, tc.arguments));
   try {
     if (refusal) {
-      // Only the spin-brake terminal arm is marked TIMEOUT; the per-signature arm is unmarked on purpose.
+      // Only the repeat rule's terminal arm is marked TIMEOUT; the per-signature arm is unmarked on purpose.
       toolResult = toolResultOf(classifyToolResult({
         toolCallId: tc.id, name: tc.name, content: refusal, isError: true,
-        ...(turnCtx.toolPhaseEndedBySpinBrake ? { errorCode: 'TIMEOUT' as const } : {}),
+        ...(turnCtx.toolPhaseEndedByRepeats ? { errorCode: 'TIMEOUT' as const } : {}),
       }));
-      if (!turnCtx.toolPhaseEndedBySpinBrake) {
-        logger.warn('v2: identical-call brake refused re-execution', {
-          agentId, tool: tc.name, sig: brakeSig.slice(0, 120),
+      if (!turnCtx.toolPhaseEndedByRepeats) {
+        logger.warn('v2: repeat rule refused re-execution', {
+          agentId, tool: tc.name, sig: callSig.slice(0, 120),
         }, agentId);
         if (isSignatureTerminal(agentId, turnCtx, tc.name, tc.arguments)) {
           // Resubmitted unchanged past the terminal count: nothing real is blocked, stop paying for it.
-          turnCtx.toolPhaseEndedBySpinBrake = true;
-          logger.warn('v2: spin brake TERMINAL, tool phase ended for this turn (identical refused call resubmitted repeatedly)', {
-            agentId, tool: tc.name, sig: brakeSig.slice(0, 200),
+          turnCtx.toolPhaseEndedByRepeats = true;
+          logger.warn('v2: repeat rule ended the tool phase for this turn (identical refused call resubmitted repeatedly)', {
+            agentId, tool: tc.name, sig: callSig.slice(0, 200),
           }, agentId);
         }
       }
@@ -123,16 +123,16 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
     // Once-guard, post-result half: a successful non-idempotent call registers its signature.
     if ((FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) || SEND_TO_PEOPLE_SET.has(tc.name)) && toolResult.isError !== true) {
       const preview = typeof toolResult.content === 'string' ? toolResult.content.slice(0, 140) : 'executed';
-      onceGuardExecuted.set(brakeSig, preview);
+      onceGuardExecuted.set(callSig, preview);
     }
-    // Brake, post-result half: count an executed call's result, content blocks included; at a stop the notice
+    // Repeat rule, post-result half: count an executed call's result, content blocks included; at a stop the notice
     // offers the lift tool, which joins the session's tools then.
     if (!refusal && !isA2AReplyTool) {
       const blocks = (tc as unknown as Record<string, unknown>).__contentBlocks;
       const work = !toolResult.isError && tc.name !== LIFT_TOOL && !isTrackerFamilyCall(tc.name, tc.arguments);
-      const brakeNotice = noteRepeatResult(agentId, turnCtx, tc.name, tc.arguments, fingerprint(toolResult.content, blocks), work);
-      if (brakeNotice && typeof toolResult.content === 'string') {
-        toolResult = { ...toolResult, content: toolResult.content + brakeNotice };
+      const repeatNotice = noteRepeatResult(agentId, turnCtx, tc.name, tc.arguments, fingerprint(toolResult.content, blocks), work);
+      if (repeatNotice && typeof toolResult.content === 'string') {
+        toolResult = { ...toolResult, content: toolResult.content + repeatNotice };
         markToolsLoaded(agentId, [LIFT_TOOL]);
       }
     }

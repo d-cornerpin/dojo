@@ -20,7 +20,7 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { endTurnContext, openTurnContext, turnContext } from '../../../../turn-context.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPreCallGates, type PreCallGatesContext } from '../index.js';
-import { liftRepeatStops, noteRepeatResult } from '../../../../v2/identical-call-brake.js';
+import { liftRepeatStops, noteRepeatResult } from '../../../../v2/repeat-rule.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
 import { getWaitingHumanConversations } from '../../../counterparty.js';
 

@@ -273,7 +273,7 @@ describe('§3 first writer wins, and the throw is classified in a stated order',
 
   it('an ordinary turn latches nothing', () => {
     expect(state.engineCutExit).toBeNull();
-    expect(state.identicalCallRefusedThisTurn).toBe(false);
+    expect(state.repeatRefusedThisTurn).toBe(false);
   });
 
   it('PRECEDENCE: a stop during a stream idle is `stop`, not `stream_idle`', () => {

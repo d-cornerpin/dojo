@@ -35,7 +35,7 @@ import { recordTouched, recordMeasured } from '../../../../../work/ledger-store.
 import { recordContinued } from '../../../../../work/job-momentum.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPostCallClassify, type PostCallClassifyContext } from '../index.js';
-import { noteRepeatResult } from '../../../identical-call-brake.js';
+import { noteRepeatResult } from '../../../repeat-rule.js';
 import { openTurnContext, turnContext } from '../../../../turn-context.js';
 /** The repeat rule counting this turn's calls: a successful result new to the window moves the job. */
 function chargeEffortCalls(calls: ToolCall[], turn: { succeeded: () => boolean }): void {

@@ -59,8 +59,8 @@ export interface TurnContext {
   phoneStreamCallSid: string | null;
 
   // execute latches the flag, callLLM reads it and writes the grace: one mechanism across two spans.
-  toolPhaseEndedBySpinBrake: boolean;
-  spinBrakeGraceCalls: number;
+  toolPhaseEndedByRepeats: boolean;
+  repeatGraceCalls: number;
   mediaWordsStepOwed: boolean;
   // The task this turn parked its job on, and the task the turn was started from (a job item).
   jobParked: string | null;
@@ -137,11 +137,11 @@ export function openTurnContext(agentId: string): TurnContext {
     phoneStreamBuffer: new StreamingSpeechBuffer(),
     phoneStreamFlushedAny: false,
     phoneStreamCallSid: null,
-    toolPhaseEndedBySpinBrake: false,
+    toolPhaseEndedByRepeats: false,
     mediaWordsStepOwed: false,
     jobParked: null,
     servedJob: null,
-    spinBrakeGraceCalls: 2,
+    repeatGraceCalls: 2,
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,

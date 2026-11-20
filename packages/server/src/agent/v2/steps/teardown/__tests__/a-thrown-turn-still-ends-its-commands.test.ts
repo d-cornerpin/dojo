@@ -92,7 +92,7 @@ describe('t224: the thrown-turn recovery arm ends a command the turn left runnin
     const ctx: TeardownContext = {
       agentId: AGENT, turnCtx, turnNumber: 1, db: mockDb.current!,
       chosenConvKey: null, chosenConversationId: null, lastAssembledAtIso: null, terminalAnswerRowId: null,
-      triggerWorkId: null, toolPhaseEndedBySpinBrake: false,
+      triggerWorkId: null, toolPhaseEndedByRepeats: false,
       counterparty: { kind: 'user' } as TeardownContext['counterparty'],
       isA2ATurn: false, isEngineTurn: false, turnStartedAt: new Date().toISOString(),
       inboundChannel: 'dashboard', inboundContext: null,
