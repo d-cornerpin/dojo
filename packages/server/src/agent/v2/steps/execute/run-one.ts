@@ -7,7 +7,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
 import { classifyToolResult } from '../../../tool-outcome.js';
 import { executeTool, toolResultOf } from '../../../tools/index.js';
-import { LIFT_TOOL, fingerprint, identicalCallSignature, isSignatureTerminal, noteRepeatResult, repeatStopRefusal } from '../../identical-call-brake.js';
+import { LIFT_TOOL, fingerprint, identicalCallSignature, isSignatureTerminal, noteRepeatResult, repeatStopRefusal } from '../../repeat-rule.js';
 import { markToolsLoaded } from '../../../../tools/tool-session-set.js';
 import { isTrackerFamilyCall } from '../../../../tools/work-verbs.js';
 import { createLogger } from '../../../../logger.js';

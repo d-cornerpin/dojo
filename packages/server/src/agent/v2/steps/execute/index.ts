@@ -11,7 +11,7 @@ import { advance, type AgentTurnState } from '../../state.js';
 import { isStopFenced } from '../../../shared-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { TurnCounterparty } from '../../counterparty.js';
-import { anyIdenticalCallRefused } from '../../identical-call-brake.js';
+import { anyRepeatRefused } from '../../repeat-rule.js';
 import { latchEngineCut } from '../../engine-exit.js';
 import { createLogger } from '../../../../logger.js';
 import { runOneToolCall } from './run-one.js';
@@ -173,7 +173,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
       ...r, arguments: result.toolCalls.find((tc) => tc.id === r.toolCallId)?.arguments,
     }))),
     identicalCallRefusedThisTurn:
-      state.identicalCallRefusedThisTurn || anyIdenticalCallRefused(agentId, ctx.turnCtx),
+      state.identicalCallRefusedThisTurn || anyRepeatRefused(agentId, ctx.turnCtx),
   });
   if (stoppedMidBatch) state = latchEngineCut(state, 'stop');
 

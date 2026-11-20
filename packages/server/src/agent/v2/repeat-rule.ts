@@ -143,7 +143,7 @@ export function isSignatureTerminal(agentId: string, turn: TurnContext, tool: st
 
 /** True when the engine refused any repeated call this turn (an engine decision, for the turn record). Read from
  *  this map, not latched at the refusal site, because parallel runOne callbacks clobber each other's state. */
-export function anyIdenticalCallRefused(agentId: string, turn: TurnContext): boolean {
+export function anyRepeatRefused(agentId: string, turn: TurnContext): boolean {
   return windowAt(agentId, turn).refused.size > 0;
 }
 

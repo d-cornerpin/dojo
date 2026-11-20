@@ -6,7 +6,7 @@
 // ("tell the person ... the engine blocked it") or to end its turn.
 
 import { describe, it, expect } from 'vitest';
-import { noteRepeatResult, repeatStopRefusal } from '../identical-call-brake.js';
+import { noteRepeatResult, repeatStopRefusal } from '../repeat-rule.js';
 import type { TurnContext } from '../../turn-context.js';
 
 describe('no engine refusal hands the owner the problem', () => {
