@@ -112,12 +112,6 @@ const THE_DRIVER_CARRIES = [
   'deferredDeliveredByAck',
   // ANSWER-ANYWAY — the SEVENTH local of the same F10 mechanism, and it is classified here
   // rather than drifting in. The pair above records THAT the ack lane spoke; this records
-  // WHICH bubble carried the words, which is what the `[no-reply]` reply rule needs to name
-  // the turn's answer when the promotion delivered it. Written in `postCallClassify` and read
-  // by a LATER ITERATION of the same span (the promotion rides with a tool call; the sentinel
-  // arrives after the tools have run), so a step-local resets each round and the answer is
-  // nameless on every turn that promoted — which is the measured defect, not a hypothesis.
-  'startAckPromotedRowId',
   // The queued row of an answer delivered mid-turn: written by the start-ack closure, read by finalize,
   // so it crosses the whole span; finalize does not queue the same words again while it is set.
   'earlyAnswerRowId',

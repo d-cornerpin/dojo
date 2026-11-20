@@ -116,7 +116,7 @@ const turnCtxFor = (over: Record<string, unknown> = {}): Bag => ({
   root: { kind: 'ask', id: 'm-1', conversationId: CONV }, servedWork: undefined,
   turnNumber: TURN,
   deferredUserReplyWithTools: null, deferredDeliveredByAck: false,
-  engineStartAckDeliveredThisTurn: false, startAckPromotedRowId: null,
+  engineStartAckDeliveredThisTurn: false,
   startAckSteerArmedThisTurn: false, startAckSteerRequested: false,
   startAckSteersInjected: 0, startAckSteerInjectedAtLoop: null,
   inboundClassifiedAsWork: true,
@@ -217,8 +217,12 @@ const transitionsFor = (workId: string): Array<{ to: string; reason: string }> =
 let state: AgentTurnState;
 
 /** Model call #1 of turn 5649: the ack is owed and the model speaks WITH a tool call. */
-async function promote(text: string, turnCtx: Bag): Promise<void> {
+/** Returns the id of the start-line row the promotion wrote, read from the database. */
+async function promote(text: string, turnCtx: Bag): Promise<string | undefined> {
   await runTerminalText(state, ctxFor(turnCtx, { result: modelResult({ content: text }) }), scratchFor());
+  const row = mockDb.current!.prepare('SELECT id FROM messages WHERE origin_intent = ?')
+    .get(START_ACK_ORIGIN_INTENT) as { id: string } | undefined;
+  return row?.id;
 }
 
 /** Model call #2: the bare sentinel. Returns the step's own outcome, because "did this steer
@@ -269,7 +273,7 @@ describe('(a) the shape the ritual caught: the promotion carried the answer', ()
   it('the engine never adjudicates the promoted line: it is quoted, never named as the answer', async () => {
     const workId = claimedAsk();
     const turnCtx = turnCtxFor({ startAckSteerRequested: true });
-    await promote(THE_ANSWER, turnCtx);
+    const promotedId = await promote(THE_ANSWER, turnCtx);
     await sentinel(turnCtx);
     await ordinaryReply(THE_CONFIRMATION, turnCtx, 'msg-confirm');
     finalizeTurnRecord();
@@ -278,13 +282,13 @@ describe('(a) the shape the ritual caught: the promotion carried the answer', ()
     const key = mockDb.current!.prepare(
       'SELECT answer_message_id FROM turns WHERE agent_id = ? AND turn_number = ?',
     ).get(AGENT, TURN) as { answer_message_id: string };
-    expect(key.answer_message_id).not.toBe(turnCtx.startAckPromotedRowId);
-    expect(askRow(workId).result_delivery_id).not.toBe(`d-${turnCtx.startAckPromotedRowId as string}`);
+    expect(key.answer_message_id).not.toBe(promotedId);
+    expect(askRow(workId).result_delivery_id).not.toBe(`d-${promotedId as string}`);
     // The promoted bubble is still exactly what it always was: the model's own words, pushed
     // early, stamped so every reader knows which lane put them there.
     const bubble = mockDb.current!.prepare(
       'SELECT content, origin_intent, display_kind FROM messages WHERE id = ?',
-    ).get(turnCtx.startAckPromotedRowId) as { content: string; origin_intent: string; display_kind: string };
+    ).get(promotedId) as { content: string; origin_intent: string; display_kind: string };
     expect(bubble.content).toBe(THE_ANSWER);
     expect(bubble.origin_intent).toBe(START_ACK_ORIGIN_INTENT);
     expect(bubble.display_kind).toBe('agent-text');
@@ -300,8 +304,7 @@ describe('(b) the same door, a status-line-only promotion', () => {
   it('the status line ALONE never becomes the turn\'s answer — not the key, not the receipt', async () => {
     const workId = claimedAsk();
     const turnCtx = turnCtxFor({ startAckSteerRequested: true });
-    await promote(THE_STATUS_LINE, turnCtx);
-    const statusRowId = turnCtx.startAckPromotedRowId as string;
+    const statusRowId = await promote(THE_STATUS_LINE, turnCtx);
     await sentinel(turnCtx);
     // The model ghosts the steer: nothing more is said, so nothing is recorded as the answer.
     expect(noteTerminalAnswer).not.toHaveBeenCalled();
@@ -368,7 +371,6 @@ describe('(d) the normal path: an answer through the ordinary lane settles exact
     );
     expect(sc.persistedContent).toBe(THE_ANSWER);
     expect(deliverEngineUserAck).not.toHaveBeenCalled();
-    expect(turnCtx.startAckPromotedRowId).toBeNull();
 
     await ordinaryReply(THE_ANSWER, turnCtx, 'msg-reply');
     expect(noteTerminalAnswer).toHaveBeenCalledTimes(1);
@@ -380,8 +382,7 @@ describe('(d) the normal path: an answer through the ordinary lane settles exact
   it('CONTROL — acked FIRST and answered after, with no sentinel in between: settles on the ANSWER', async () => {
     const workId = claimedAsk();
     const turnCtx = turnCtxFor({ startAckSteerRequested: true });
-    await promote(THE_STATUS_LINE, turnCtx);
-    const ackRowId = turnCtx.startAckPromotedRowId as string;
+    const ackRowId = await promote(THE_STATUS_LINE, turnCtx);
     await ordinaryReply(THE_ANSWER, turnCtx, 'msg-reply');
     finalizeTurnRecord();
 

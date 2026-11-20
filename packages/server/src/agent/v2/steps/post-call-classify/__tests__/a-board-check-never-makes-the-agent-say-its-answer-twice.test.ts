@@ -86,7 +86,7 @@ const turnCtxFor = (): Bag => ({
   root: { kind: 'ask', id: 'm-ask', conversationId: CONV }, servedWork: undefined,
   turnNumber: TURN,
   deferredUserReplyWithTools: null, deferredDeliveredByAck: false,
-  engineStartAckDeliveredThisTurn: false, startAckPromotedRowId: null,
+  engineStartAckDeliveredThisTurn: false,
   startAckSteerArmedThisTurn: false, startAckSteerRequested: false,
   startAckSteersInjected: 0, startAckSteerInjectedAtLoop: null,
   inboundClassifiedAsWork: true,

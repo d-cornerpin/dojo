@@ -93,7 +93,6 @@ export interface TurnContext {
   engineStartAckDeliveredThisTurn: boolean;
   deferredDeliveredByAck: boolean;
 
-  startAckPromotedRowId: string | null;
   /** The queued row of an answer delivered mid-turn; while set, the turn's end does not queue the same words. */
   earlyAnswerRowId: string | null;
   /** Files shown with this turn's reply; finalize puts the real files (not chips) on the reply's row. */
@@ -158,7 +157,6 @@ export function openTurnContext(agentId: string): TurnContext {
     inboundClassifiedAsWork: false,
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
-    startAckPromotedRowId: null,
     earlyAnswerRowId: null,
     replyFiles: [],
     voiceFillerFired: false,

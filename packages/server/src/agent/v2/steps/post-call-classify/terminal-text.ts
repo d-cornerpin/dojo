@@ -120,12 +120,10 @@ export async function runTerminalText(
         turnCtx.deferredUserReplyWithTools = null;
         turnCtx.deferredDeliveredByAck = true;
         // Stamped as a start line so settlement refuses it as a receipt; 'agent-text' too, or origin_intent
-        // alone shows it as fallback. Row id minted here so no-reply.ts can name it; not demoted below.
-        const startAckRowId = uuidv4();
-        await deliverEngineUserAck(startLine, START_ACK_ORIGIN_INTENT, startAckRowId, 'agent-text');
-        turnCtx.startAckPromotedRowId = startAckRowId;
-        logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack (streamed bubble promoted in place)', {
-          agentId, turnNumber, preview: startLine.slice(0, 60), rowId: startAckRowId,
+        // alone shows it as fallback.
+        await deliverEngineUserAck(startLine, START_ACK_ORIGIN_INTENT, null, 'agent-text');
+        logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack', {
+          agentId, turnNumber, preview: startLine.slice(0, 60),
           owedVia: turnCtx.startAckSteerArmedThisTurn ? 'steer-armed' : 'threshold-owed',
         }, agentId);
       } else if (answersLiveAsk && turnCtx.deferredUserReplyWithTools) {
