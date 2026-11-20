@@ -43,7 +43,7 @@ import { recordAtDoor } from '../../v2/outbound.js';
 import { recordedId } from '../../v2/delivery-outcome.js';
 import { getAgentPermissions } from '../../permissions.js';
 import { validateManifest } from '../../scope.js';
-import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc } from '../../a2a-transport.js';
+import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc, type A2AIntent } from '../../a2a-transport.js';
 import { onAgentRecovered } from '../../../healer/injury-recovery.js';
 import { resolveTaskId, getTask, formatResolveError } from '../../../tracker/schema.js';
 import { moveAssignee, planSpawnTask, type SpawnTaskPlan } from '../../../work/row-authority.js';
@@ -240,6 +240,199 @@ const A2A_DROPS_THAT_ARE_POLICY: ReadonlySet<string> = new Set([
 /** The honest ledger word for a refused A2A send. Unrecognised and absent reasons are `failed`. */
 function a2aDropOutcome(reason: string | undefined): 'suppressed' | 'failed' {
   return reason !== undefined && A2A_DROPS_THAT_ARE_POLICY.has(reason) ? 'suppressed' : 'failed';
+}
+
+/** The one door out to another agent: target checks, delivery, the ledger rows and the result text. The
+ *  `send_to_agent` handler passes only its declared arguments. */
+export async function sendToAgent(agentId: string, input: {
+  agent: string; intent: A2AIntent; payload: string; threadId?: string; requiresResponse: boolean;
+  attachPaths?: string[]; handsOffThread?: string;
+}): Promise<{ content: string; isError: boolean }> {
+  const { agent: agentRef, intent, payload, threadId, requiresResponse, attachPaths, handsOffThread } = input;
+  let content = '';
+  let isError = false;
+  // An injured or paused target is refused, except to the main agent and the Healer.
+  const sendDb = getDb();
+  let targetCheck = sendDb.prepare('SELECT id, name, status, created_at FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string; created_at: string } | undefined;
+  let named: LiveAgentByName[] = [];   // names ignore case; the newest of several wins
+  if (!targetCheck) { named = liveAgentsNamed(agentRef); targetCheck = named[0]; }
+  if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')) {
+    // Spawn-race auto-recover: a fresh sub-agent's first turn can fail (model not
+    // ready, network blip) before the parent's first send lands, leaving it 'error'.
+    // Error + created under 60 seconds = the race: heal to idle and deliver. An agent
+    // that lived past 60s crashed after real work, so keep refusing and let parents heal.
+    if (targetCheck.status === 'error') {
+      const createdAtMs = new Date(
+        targetCheck.created_at + (targetCheck.created_at.includes('Z') ? '' : 'Z'),
+      ).getTime();
+      const ageMs = Date.now() - createdAtMs;
+      if (ageMs >= 0 && ageMs < 60_000) {
+        try {
+          writeAgentStatus(targetCheck.id, 'idle', { clearError: true });
+          broadcast({ type: 'agent:status', agentId: targetCheck.id, status: 'idle' });
+          onAgentRecovered(targetCheck.id);
+          logger.warn('send_to_agent auto-healed newly-spawned error-state target', {
+            callerAgentId: agentId, targetAgentId: targetCheck.id, name: targetCheck.name, ageMs,
+          }, agentId);
+          targetCheck = { ...targetCheck, status: 'idle' };
+        } catch (recErr) {
+          logger.warn('send_to_agent auto-heal failed', {
+            callerAgentId: agentId, targetAgentId: targetCheck.id,
+            error: recErr instanceof Error ? recErr.message : String(recErr),
+          }, agentId);
+        }
+      }
+    }
+  }
+  if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')
+    && !isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
+    const stateLabel = targetCheck.status === 'error' ? 'INJURED' : 'PAUSED';
+    content = `Agent "${targetCheck.name}" is ${stateLabel}. Message NOT delivered. Only the main agent or the Healer can reach it now: tell the main agent, which can heal it with reset_session(agent_id="${targetCheck.id}"), or do the work another way.`;
+    isError = true;
+    return { content, isError };
+  }
+
+  // send_to_agent reaches OTHER agents; naming yourself stores and wakes your own inbox.
+  if (targetCheck && targetCheck.id === agentId) {
+    content = `Message not sent: "${targetCheck.name}" is you. send_to_agent reaches OTHER agents. If you need to remember something or plan your next step, do it in your own turn or with your own tools; to reach someone else, call list_agents and pick them.`;
+    isError = true;
+    return { content, isError };
+  }
+
+  if (!isError) {
+    const result = await deliverA2AMessage({
+      intent,
+      threadId: threadId ?? '',  // empty = auto-generate in transport
+      requiresResponse,
+      payload,
+      toAgent: agentRef,
+      fromAgent: agentId,
+      attachPaths,
+      handsOffThread,
+    });
+
+    if (result.delivered) {
+      const effectiveIntent = result.autoPromotedFromFyi ? 'DELIVERABLE' : intent;
+      auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
+        `to:${agentRef} intent:${effectiveIntent}${result.autoPromotedFromFyi ? '(promoted from FYI)' : ''} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
+      );
+      // A delivered send is a real delivery: the receipt grounds "I told <agent>"
+      // across turns. skipAudit because the auditLog row above is the provenance row.
+      const taskId = isPMAgent(agentId) ? askedAbout(agentId, targetCheck?.id ?? agentRef, payload, result.threadId) : null;   // only the PM's questions hold a hand-in
+      const sendReceiptId = writeToolReceipt({
+        agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id',
+        providerId: result.threadId, threadId: result.threadId, recipient: agentRef, taskId,
+        sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true,
+      });
+      // This door wrote only the audit row and receipt, never a
+      // `deliveries` row. It is written THROUGH `recordAtDoor`, the one ledger
+      // writer, so inside an outbound scope it folds into that scope's single row
+      // instead of double-counting the piece delivery it supersedes. Channel `a2a`
+      // mints no `conversations` row by construction: peer coordination is not a
+      // human conversation; same shape as the other a2a producer, no new row class.
+      const replyDeliveryId = recordedId(recordAtDoor({
+        outcome: 'delivered', channel: 'a2a',
+        agentId, tool: 'send_to_agent',
+        recipientId: targetCheck?.id ?? agentRef,
+        recipientDisplay: targetCheck?.name ?? agentRef,
+        provider: result.threadId, threadRoot: result.threadId,
+        messageId: result.messageId ?? null,
+        receiptId: sendReceiptId,   // the receipt names the delivery, so the peer message is findable from the send
+        detail: `A2A ${effectiveIntent}`,
+      }), 'send_to_agent: hand-off to a peer', {
+        from: agentId, to: targetCheck?.id ?? agentRef, thread: result.threadId,
+      });
+      // A final reply on an assign thread hands the assigned task in, on this delivery (or FAIL).
+      if (!result.handOff?.applied) {
+        try { handInOnAssignReply(result.threadId, agentId, effectiveIntent, replyDeliveryId); }
+        catch (err) { logger.warn('assign-thread hand-in failed (non-fatal)', { thread: result.threadId.slice(0, 8), error: err instanceof Error ? err.message : String(err) }, agentId); }
+      }
+      content = `[A2A:${effectiveIntent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}${result.answeredRequestOnThread ? ' (you gave no thread_id, so it went on the request you were answering, your assignment)' : ''}.` +
+        (requiresResponse || result.autoPromotedFromFyi
+          ? ` Their reply is ASYNCHRONOUS, it arrives on a LATER turn, NOT now, and you do NOT have it yet. ` +
+            `If someone is waiting on that answer (e.g. the owner asked you to find it out), tell them you have ASKED ` +
+            `and will report back when "${agentRef}" replies, NEVER make up, guess, or relay a response you have not ` +
+            `actually received. Do not message "${agentRef}" again about this (re-sending does not speed it up). ` +
+            `End your turn now; you will be woken when they answer.`
+          : ' No response expected (read-only context).');
+      content += sameNameNote(agentRef, named);   // case-variant name collision note
+      // The busy signal is informational: telling the sender prevents the
+      // re-send/escalate reflex when a queued-behind-busy reply reads as ignored.
+      try {
+        if (targetCheck && activeRuns.has(targetCheck.id)) {
+          const humanBusy = turnContext(targetCheck.id)?.kind === 'user';
+          content += humanBusy
+            ? ` NOTE: "${agentRef}" is currently in a live conversation with their user, so your message is queued and will be served when they are free. Expect a slower reply; do not re-send and do not escalate.`
+            : ` NOTE: "${agentRef}" is currently mid-task, so your message is queued and will be served when they are free. Expect a slower reply; do not re-send.`;
+        }
+      } catch { /* best effort; the note is advisory */ }
+      if (result.autoPromotedFromFyi) {
+        content +=
+          `\nNote: the engine auto-promoted your FYI to DELIVERABLE because the payload looked deliverable-shaped (URL or completion+artefact reference). Your receiver was woken. Use intent="DELIVERABLE" explicitly next time so the routing is unambiguous.`;
+      }
+      // ASSIGN auto-creates a tracker task; surface the ID so the sender can track
+      // progress without calling work_open(kind="task") themselves.
+      if (result.autoCreatedTaskId) {
+        const taskShort = result.autoCreatedTaskId.slice(0, 8);
+        content += result.autoTaskIsNew
+          ? `\nTask ${taskShort} auto-created and assigned to "${agentRef}", track progress with work_update(action="get", task_id="${result.autoCreatedTaskId}"). You will be notified automatically when they mark it complete.`
+          : `\nContinuing on existing task ${taskShort} (created by an earlier ASSIGN on this thread).`;
+      }
+      // The hand-off outcome is composed by the transport; only relayed here.
+      if (result.handOff) content += `\n${result.handOff.message}`;
+    } else {
+      // A protocol drop is expected behavior: log the reason, do not error.
+      auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
+        `to:${agentRef} intent:${intent} reason:${result.reason}`,
+      );
+      // Refusals are recorded too: a ledger of only successes cannot answer "did
+      // this hand-off happen?". WHICH word is `a2aDropOutcome`'s to decide, not this
+      // call site's; readers of this table filter outcome='delivered' either way.
+      recordedId(recordAtDoor({
+        outcome: a2aDropOutcome(result.reason),
+        channel: 'a2a',
+        agentId, tool: 'send_to_agent',
+        recipientId: targetCheck?.id ?? agentRef,
+        recipientDisplay: targetCheck?.name ?? agentRef,
+        provider: result.threadId, threadRoot: result.threadId,
+        detail: `A2A ${intent} not delivered: ${result.reason ?? 'unknown'}`,
+      }), 'send_to_agent: hand-off refused by the protocol', {
+        from: agentId, to: agentRef, thread: result.threadId, reason: result.reason,
+      });
+      switch (result.reason) {
+        case 'HOP_LIMIT_EXCEEDED':
+          content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;
+          break;
+        case 'SEMANTIC_DUPLICATE':
+          // A duplicate-dropped ASSIGN means the work is ALREADY assigned; re-sending
+          // spawns nothing. Do NOT advise a fresh thread: that is the duplicate-task vector.
+          content = intent === 'ASSIGN'
+            ? `Assignment not re-sent: you already assigned essentially this same work to "${agentRef}" moments ago (thread ${result.threadId.slice(0, 8)}). The engine tracks it as a tracker task and you will be woken when they reply or complete it. Do not re-assign; end your turn and wait.`
+            : 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
+          break;
+        case 'AWAITING_REPLY':
+          // The receiver still owes a reply on this thread and the cooldown is active;
+          // re-sending is dropped deterministically. Do NOT advise a new thread here.
+          content = intent === 'ASSIGN'
+            ? `Assignment not re-sent: you already assigned this to "${agentRef}" on thread ${result.threadId.slice(0, 8)} and they have not replied yet. The engine tracks it as a tracker task and will wake you when they reply or complete it. Do not re-assign; end your turn and wait.`
+            : `Message not sent: you already have an open ${intent} awaiting a reply from "${agentRef}" on thread ${result.threadId.slice(0, 8)}, and they have not answered yet. Re-asking does not speed it up. End your turn; you will be woken when they reply. (If this is genuinely new, unrelated work, start a fresh thread by omitting thread_id.)`;
+          break;
+        case 'AGENT_NOT_FOUND':
+          content = `No agent found with ID or name "${agentRef}"; live agents: ${liveAgentNamesNear(String(agentRef)).join(', ') || '(none)'}.`;
+          isError = true;
+          break;
+        default:
+          content = `Message not delivered: ${result.reason}`;
+          break;
+      }
+    }
+  }
+
+  // Do NOT clear the pending iMessage-reply flag here: this delegates to ANOTHER
+  // AGENT, it is never a reply to the user, and clearing it mid-turn silently wipes
+  // the user's reply recipient. The only legitimate clear lives in imessage_send;
+  // stale flags are swept at end-of-turn by the cleanup in loop.ts.
+  return { content, isError };
 }
 
 export const agentsHandlers: ToolHandlerMap = {
@@ -486,188 +679,10 @@ export const agentsHandlers: ToolHandlerMap = {
               requiresResponse = false;
             }
 
-            // An injured or paused target is refused, except to the main agent and the Healer.
-            const sendDb = getDb();
-            let targetCheck = sendDb.prepare('SELECT id, name, status, created_at FROM agents WHERE id = ?').get(agentRef) as { id: string; name: string; status: string; created_at: string } | undefined;
-            let named: LiveAgentByName[] = [];   // names ignore case; the newest of several wins
-            if (!targetCheck) { named = liveAgentsNamed(agentRef); targetCheck = named[0]; }
-            if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')) {
-              // Spawn-race auto-recover: a fresh sub-agent's first turn can fail (model not
-              // ready, network blip) before the parent's first send lands, leaving it 'error'.
-              // Error + created under 60 seconds = the race: heal to idle and deliver. An agent
-              // that lived past 60s crashed after real work, so keep refusing and let parents heal.
-              if (targetCheck.status === 'error') {
-                const createdAtMs = new Date(
-                  targetCheck.created_at + (targetCheck.created_at.includes('Z') ? '' : 'Z'),
-                ).getTime();
-                const ageMs = Date.now() - createdAtMs;
-                if (ageMs >= 0 && ageMs < 60_000) {
-                  try {
-                    writeAgentStatus(targetCheck.id, 'idle', { clearError: true });
-                    broadcast({ type: 'agent:status', agentId: targetCheck.id, status: 'idle' });
-                    onAgentRecovered(targetCheck.id);
-                    logger.warn('send_to_agent auto-healed newly-spawned error-state target', {
-                      callerAgentId: agentId, targetAgentId: targetCheck.id, name: targetCheck.name, ageMs,
-                    }, agentId);
-                    targetCheck = { ...targetCheck, status: 'idle' };
-                  } catch (recErr) {
-                    logger.warn('send_to_agent auto-heal failed', {
-                      callerAgentId: agentId, targetAgentId: targetCheck.id,
-                      error: recErr instanceof Error ? recErr.message : String(recErr),
-                    }, agentId);
-                  }
-                }
-              }
-            }
-            if (targetCheck && (targetCheck.status === 'error' || targetCheck.status === 'paused')
-              && !isHealerAgent(agentId) && !isPrimaryAgent(agentId)) {
-              const stateLabel = targetCheck.status === 'error' ? 'INJURED' : 'PAUSED';
-              content = `Agent "${targetCheck.name}" is ${stateLabel}. Message NOT delivered. Only the main agent or the Healer can reach it now: tell the main agent, which can heal it with reset_session(agent_id="${targetCheck.id}"), or do the work another way.`;
-              isError = true;
-              return { content, isError };
-            }
-
-            // send_to_agent reaches OTHER agents; naming yourself stores and wakes your own inbox.
-            if (targetCheck && targetCheck.id === agentId) {
-              content = `Message not sent: "${targetCheck.name}" is you. send_to_agent reaches OTHER agents. If you need to remember something or plan your next step, do it in your own turn or with your own tools; to reach someone else, call list_agents and pick them.`;
-              isError = true;
-              return { content, isError };
-            }
-
-            if (!isError) {
-              const result = await deliverA2AMessage({
-                intent: intent as import('../../a2a-transport.js').A2AIntent,
-                threadId: threadId ?? '',  // empty = auto-generate in transport
-                requiresResponse,
-                payload,
-                toAgent: agentRef,
-                fromAgent: agentId,
-                attachPaths: attachPaths.length > 0 ? attachPaths : undefined,
-                handsOffThread,
-              });
-
-              if (result.delivered) {
-                const effectiveIntent = result.autoPromotedFromFyi ? 'DELIVERABLE' : intent;
-                auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
-                  `to:${agentRef} intent:${effectiveIntent}${result.autoPromotedFromFyi ? '(promoted from FYI)' : ''} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
-                );
-                // A delivered send is a real delivery: the receipt grounds "I told <agent>"
-                // across turns. skipAudit because the auditLog row above is the provenance row.
-                const taskId = isPMAgent(agentId) ? askedAbout(agentId, targetCheck?.id ?? agentRef, payload, result.threadId) : null;   // only the PM's questions hold a hand-in
-                const sendReceiptId = writeToolReceipt({
-                  agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id',
-                  providerId: result.threadId, threadId: result.threadId, recipient: agentRef, taskId,
-                  sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true,
-                });
-                // This door wrote only the audit row and receipt, never a
-                // `deliveries` row. It is written THROUGH `recordAtDoor`, the one ledger
-                // writer, so inside an outbound scope it folds into that scope's single row
-                // instead of double-counting the piece delivery it supersedes. Channel `a2a`
-                // mints no `conversations` row by construction: peer coordination is not a
-                // human conversation; same shape as the other a2a producer, no new row class.
-                const replyDeliveryId = recordedId(recordAtDoor({
-                  outcome: 'delivered', channel: 'a2a',
-                  agentId, tool: 'send_to_agent',
-                  recipientId: targetCheck?.id ?? agentRef,
-                  recipientDisplay: targetCheck?.name ?? agentRef,
-                  provider: result.threadId, threadRoot: result.threadId,
-                  messageId: result.messageId ?? null,
-                  receiptId: sendReceiptId,   // the receipt names the delivery, so the peer message is findable from the send
-                  detail: `A2A ${effectiveIntent}`,
-                }), 'send_to_agent: hand-off to a peer', {
-                  from: agentId, to: targetCheck?.id ?? agentRef, thread: result.threadId,
-                });
-                // A final reply on an assign thread hands the assigned task in, on this delivery (or FAIL).
-                if (!result.handOff?.applied) {
-                  try { handInOnAssignReply(result.threadId, agentId, effectiveIntent, replyDeliveryId); }
-                  catch (err) { logger.warn('assign-thread hand-in failed (non-fatal)', { thread: result.threadId.slice(0, 8), error: err instanceof Error ? err.message : String(err) }, agentId); }
-                }
-                content = `[A2A:${effectiveIntent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}${result.answeredRequestOnThread ? ' (you gave no thread_id, so it went on the request you were answering, your assignment)' : ''}.` +
-                  (requiresResponse || result.autoPromotedFromFyi
-                    ? ` Their reply is ASYNCHRONOUS, it arrives on a LATER turn, NOT now, and you do NOT have it yet. ` +
-                      `If someone is waiting on that answer (e.g. the owner asked you to find it out), tell them you have ASKED ` +
-                      `and will report back when "${agentRef}" replies, NEVER make up, guess, or relay a response you have not ` +
-                      `actually received. Do not message "${agentRef}" again about this (re-sending does not speed it up). ` +
-                      `End your turn now; you will be woken when they answer.`
-                    : ' No response expected (read-only context).');
-                content += sameNameNote(agentRef, named);   // case-variant name collision note
-                // The busy signal is informational: telling the sender prevents the
-                // re-send/escalate reflex when a queued-behind-busy reply reads as ignored.
-                try {
-                  if (targetCheck && activeRuns.has(targetCheck.id)) {
-                    const humanBusy = turnContext(targetCheck.id)?.kind === 'user';
-                    content += humanBusy
-                      ? ` NOTE: "${agentRef}" is currently in a live conversation with their user, so your message is queued and will be served when they are free. Expect a slower reply; do not re-send and do not escalate.`
-                      : ` NOTE: "${agentRef}" is currently mid-task, so your message is queued and will be served when they are free. Expect a slower reply; do not re-send.`;
-                  }
-                } catch { /* best effort; the note is advisory */ }
-                if (result.autoPromotedFromFyi) {
-                  content +=
-                    `\nNote: the engine auto-promoted your FYI to DELIVERABLE because the payload looked deliverable-shaped (URL or completion+artefact reference). Your receiver was woken. Use intent="DELIVERABLE" explicitly next time so the routing is unambiguous.`;
-                }
-                // ASSIGN auto-creates a tracker task; surface the ID so the sender can track
-                // progress without calling work_open(kind="task") themselves.
-                if (result.autoCreatedTaskId) {
-                  const taskShort = result.autoCreatedTaskId.slice(0, 8);
-                  content += result.autoTaskIsNew
-                    ? `\nTask ${taskShort} auto-created and assigned to "${agentRef}", track progress with work_update(action="get", task_id="${result.autoCreatedTaskId}"). You will be notified automatically when they mark it complete.`
-                    : `\nContinuing on existing task ${taskShort} (created by an earlier ASSIGN on this thread).`;
-                }
-                // The hand-off outcome is composed by the transport; only relayed here.
-                if (result.handOff) content += `\n${result.handOff.message}`;
-              } else {
-                // A protocol drop is expected behavior: log the reason, do not error.
-                auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
-                  `to:${agentRef} intent:${intent} reason:${result.reason}`,
-                );
-                // Refusals are recorded too: a ledger of only successes cannot answer "did
-                // this hand-off happen?". WHICH word is `a2aDropOutcome`'s to decide, not this
-                // call site's; readers of this table filter outcome='delivered' either way.
-                recordedId(recordAtDoor({
-                  outcome: a2aDropOutcome(result.reason),
-                  channel: 'a2a',
-                  agentId, tool: 'send_to_agent',
-                  recipientId: targetCheck?.id ?? agentRef,
-                  recipientDisplay: targetCheck?.name ?? agentRef,
-                  provider: result.threadId, threadRoot: result.threadId,
-                  detail: `A2A ${intent} not delivered: ${result.reason ?? 'unknown'}`,
-                }), 'send_to_agent: hand-off refused by the protocol', {
-                  from: agentId, to: agentRef, thread: result.threadId, reason: result.reason,
-                });
-                switch (result.reason) {
-                  case 'HOP_LIMIT_EXCEEDED':
-                    content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;
-                    break;
-                  case 'SEMANTIC_DUPLICATE':
-                    // A duplicate-dropped ASSIGN means the work is ALREADY assigned; re-sending
-                    // spawns nothing. Do NOT advise a fresh thread: that is the duplicate-task vector.
-                    content = intent === 'ASSIGN'
-                      ? `Assignment not re-sent: you already assigned essentially this same work to "${agentRef}" moments ago (thread ${result.threadId.slice(0, 8)}). The engine tracks it as a tracker task and you will be woken when they reply or complete it. Do not re-assign; end your turn and wait.`
-                      : 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
-                    break;
-                  case 'AWAITING_REPLY':
-                    // The receiver still owes a reply on this thread and the cooldown is active;
-                    // re-sending is dropped deterministically. Do NOT advise a new thread here.
-                    content = intent === 'ASSIGN'
-                      ? `Assignment not re-sent: you already assigned this to "${agentRef}" on thread ${result.threadId.slice(0, 8)} and they have not replied yet. The engine tracks it as a tracker task and will wake you when they reply or complete it. Do not re-assign; end your turn and wait.`
-                      : `Message not sent: you already have an open ${intent} awaiting a reply from "${agentRef}" on thread ${result.threadId.slice(0, 8)}, and they have not answered yet. Re-asking does not speed it up. End your turn; you will be woken when they reply. (If this is genuinely new, unrelated work, start a fresh thread by omitting thread_id.)`;
-                    break;
-                  case 'AGENT_NOT_FOUND':
-                    content = `No agent found with ID or name "${agentRef}"; live agents: ${liveAgentNamesNear(String(agentRef)).join(', ') || '(none)'}.`;
-                    isError = true;
-                    break;
-                  default:
-                    content = `Message not delivered: ${result.reason}`;
-                    break;
-                }
-              }
-            }
-
-            // Do NOT clear the pending iMessage-reply flag here: this delegates to ANOTHER
-            // AGENT, it is never a reply to the user, and clearing it mid-turn silently wipes
-            // the user's reply recipient. The only legitimate clear lives in imessage_send;
-            // stale flags are swept at end-of-turn by the cleanup in loop.ts.
-            return { content, isError };
+            return sendToAgent(agentId, {
+              agent: agentRef, intent: intent as A2AIntent, payload, threadId, requiresResponse,
+              attachPaths: attachPaths.length > 0 ? attachPaths : undefined, handsOffThread,
+            });
   },
 
   async "approve_destructive_action"({ agentId, args }) {
