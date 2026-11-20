@@ -1,7 +1,8 @@
 // A helper made for a job is given it the way any agent is: one ASSIGN on its own thread carrying the job's
 // rules, which is one task on the board, handed in by its reply. A transfer's task rides that ASSIGN; a task
 // that already has a thread is refused before any agent is made, with a way forward; a kept helper's work is
-// its own task and it can finish; and an undeclared task_id on send_to_agent is never read.
+// its own task and it can finish; a helper without send_to_agent is never told to use it; and an undeclared
+// task_id on send_to_agent is never read.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -117,6 +118,14 @@ describe('a spawned job is one task and one review', () => {
     expect(tasksHeldBy(helper)[0].state).toBe('handed_in');
     const words = db().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = 'main' AND source_agent_id = ? AND a2a_intent = 'COMPLETE'");
     expect(words.get(helper)).toEqual({ n: 1 });
+  });
+
+  it('a helper made without send_to_agent is never told to use it', async () => {
+    const r = await spawn({ tools: { allow: ['file_read', 'file_write', 'complete_task'], deny: [] } });
+    expect(r.isError, r.content).toBeFalsy();
+    const [assign] = assignsTo(helperId()!);
+    expect(assign.content).toContain('call the complete_task tool with status="complete"');
+    expect(assign.content.split('[Thread')[0]).not.toContain('send_to_agent');
   });
 
   it('an undeclared task_id on send_to_agent is never read', async () => {

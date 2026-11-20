@@ -23,6 +23,7 @@ import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
+import { getFilteredTools } from './tools/surface.js';
 import type { PermissionManifest, Agent } from '@dojo/shared';
 
 const logger = createLogger('spawner');
@@ -348,32 +349,34 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 }
 
 
-/** The working rules a new helper's job carries in its ASSIGN: the caller's own first message, else the default. */
-export function jobBrief({ systemPrompt, initialMessage }: { systemPrompt: string; initialMessage?: string }): string {
-  let taskMessage: string;
+const NO_REPLY_HAND_IN = 'When your work left a record (a file, a command or a receipt), that hands your task in and sends your results back.';
 
+/** The working rules a new helper's job carries in its ASSIGN: the caller's own first message, else the default.
+ *  A helper without send_to_agent is told to finish with complete_task alone. */
+export function jobBrief({ agentId, systemPrompt, initialMessage }: { agentId: string; systemPrompt: string; initialMessage?: string }): string {
+  const replies = getFilteredTools(agentId).some((t) => t.name === 'send_to_agent');
   if (initialMessage) {
-    // Custom initial message provided, use it, but always remind about complete_task
-    taskMessage = initialMessage;
-    if (!initialMessage.toLowerCase().includes('complete_task')) {
-      taskMessage += '\n\nIMPORTANT: When you are finished, reply on this thread with send_to_agent(intent="COMPLETE") carrying your full result (that hands your task in), then call complete_task with status="complete" and a summary. Do NOT just stop responding.';
-    }
-  } else if (systemPrompt.toLowerCase().includes('complete_task')) {
-    // System prompt already mentions complete_task, don't inject default instructions
-    taskMessage = `Your task: ${systemPrompt}\n\nBegin working immediately.`;
-  } else {
-    // Default: inject complete_task instructions
-    taskMessage = `Your task: ${systemPrompt}
-
-IMPORTANT INSTRUCTIONS:
-1. Begin working immediately.
-2. Use absolute file paths (e.g., /Users/<your-user>/Desktop/...), do NOT use ~ or relative paths, as they may resolve differently in your context.
-3. When the work is done, reply on this thread with send_to_agent(intent="COMPLETE", thread_id=<the thread_id named at the end of this message>, payload=<your full result>). That reply hands your task in. If it cannot be done, send intent="FAIL" with the reason instead.
-4. After that reply, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.
-5. If you get stuck or cannot complete the task, call complete_task with status="blocked" or status="fallen" and explain why.
-6. Do not wait for further instructions unless you need clarification, just do the work and report back via complete_task.`;
+    // A custom first message is used as written, with a reminder of how to finish when it names none.
+    if (initialMessage.toLowerCase().includes('complete_task')) return initialMessage;
+    return `${initialMessage}\n\nIMPORTANT: When you are finished, ${replies
+      ? 'reply on this thread with send_to_agent(intent="COMPLETE") carrying your full result (that hands your task in), then call complete_task with status="complete" and a summary.'
+      : `call complete_task with status="complete", a summary and your full results. ${NO_REPLY_HAND_IN}`} Do NOT just stop responding.`;
   }
-  return taskMessage;
+  // A system prompt that already says how to finish gets no default instructions.
+  if (systemPrompt.toLowerCase().includes('complete_task')) return `Your task: ${systemPrompt}\n\nBegin working immediately.`;
+  const steps = [
+    'Begin working immediately.',
+    'Use absolute file paths (e.g., /Users/<your-user>/Desktop/...), do NOT use ~ or relative paths, as they may resolve differently in your context.',
+    ...(replies ? [
+      'When the work is done, reply on this thread with send_to_agent(intent="COMPLETE", thread_id=<the thread_id named at the end of this message>, payload=<your full result>). That reply hands your task in. If it cannot be done, send intent="FAIL" with the reason instead.',
+      'After that reply, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.',
+    ] : [
+      `When the work is done, you MUST call the complete_task tool with status="complete", a summary of what you did, and your full results. ${NO_REPLY_HAND_IN} Do NOT just stop responding.`,
+    ]),
+    'If you get stuck or cannot complete the task, call complete_task with status="blocked" or status="fallen" and explain why.',
+    'Do not wait for further instructions unless you need clarification, just do the work and report back via complete_task.',
+  ];
+  return `Your task: ${systemPrompt}\n\nIMPORTANT INSTRUCTIONS:\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
 }
 
 export function terminateAgent(agentId: string, reason?: string): void {
