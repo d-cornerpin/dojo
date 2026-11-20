@@ -4,11 +4,9 @@
 import { type AgentTurnState } from '../../state.js';
 import { steerPriority, type SteerFloorId } from '../../steer-queue.js';
 import { requestExit, type StepOutcome } from '../step-outcome.js';
-import { runSilentCloseout } from './silent-closeout.js';
 import { runGoingIdle } from './going-idle.js';
 import { runOwedInterrupt } from './owed-interrupt.js';
 import { runPromiseFloor } from './promise-floor.js';
-import { runHandoffFloors } from './handoff-floors.js';
 import { runMissedReply } from './missed-reply.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -25,10 +23,8 @@ export interface TurnEndingFloor {
 /** Sorted by `steerPriority` (`steer-queue.ts`) at load, so the run order cannot drift from the declared
  *  table. `runGoingIdle` files two floors and is ranked by the higher; that file orders the pair itself. */
 export const TURN_ENDING_FAMILY: readonly TurnEndingFloor[] = Object.freeze(([
-  { floor: 'silent-closeout',        run: runSilentCloseout },
   { floor: 'owed-interrupt',         run: runOwedInterrupt },
   { floor: 'promise-floor',          run: runPromiseFloor },
-  { floor: 'a2a-handoff-floor',      run: runHandoffFloors },
   { floor: 'a2a-missed-reply',       run: runMissedReply },
   { floor: 'going-idle-in-progress', run: runGoingIdle },
 ] as TurnEndingFloor[]).sort((a, b) => steerPriority(a.floor) - steerPriority(b.floor)));

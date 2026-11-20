@@ -17,7 +17,7 @@ const logger = createLogger('task-stamps');
 /**
  * Delivery summaries that name a channel WITHOUT licensing a close: a dashboard or voice only delivery is named
  * so the stamp is true, but it is not a handover (an ack is not one). `isTangibleDeliverySummary` is the one
- * test, read by the ladder re-arm below and the close-out floor (`post-call-classify/silent-closeout.ts`).
+ * test, read by the ladder re-arm below.
  * A closed set of exact strings: never a prose test.
  */
 export const NON_TANGIBLE_DELIVERY_SUMMARIES: readonly string[] = ['via dashboard', 'via voice'];

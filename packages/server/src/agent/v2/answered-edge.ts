@@ -65,10 +65,6 @@ export function answerReceiptForAsk(messageId: string | null | undefined): Answe
   };
 }
 
-export function owesAnswer(messageId: string | null | undefined): boolean {
-  return !answerReceiptForAsk(messageId).answered;
-}
-
 /** PRE-SPINE FALLBACK with no birthing ask: a substantive MODEL-AUTHORED reply since this
  *  instant? Exclusions are recorded facts (a2a, `[{`, `origin_intent`, under 40 chars).
  *  The boundary is ms both sides: an INTEGER ms column vs a TEXT datetime matches nothing. */
@@ -219,29 +215,6 @@ export function terminalDeliveryForTurn(
   ).get(...(scoped ? [agentId, turnNumber, conversationId] : [agentId, turnNumber])) as
     { id: string } | undefined;
   return r?.id ?? null;
-}
-
-
-export interface ClosedWithoutDelivery {
-  workId: string;
-  kind: string;
-  title: string | null;
-  rootId: string;
-  state: string;
-  conversationId: string | null;
-}
-
-/** Nothing delivered for it: only `failed`/`abandoned` close silently (DDL CHECK). */
-export function closedWithoutDelivery(
-  agentId: string, sinceMs: number, limit = 5,
-): ClosedWithoutDelivery[] {
-  return getDb().prepare(
-    `SELECT id AS workId, kind, title, root_id AS rootId, state, conversation_id AS conversationId
-       FROM work
-      WHERE agent_id = ? AND state IN ('done','failed','abandoned')
-        AND closed_at >= ? AND result_delivery_id IS NULL
-      ORDER BY closed_at ASC LIMIT ?`,
-  ).all(agentId, sinceMs, limit) as ClosedWithoutDelivery[];
 }
 
 

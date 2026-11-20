@@ -7,14 +7,14 @@ export type OutboundRootKind =
   | 'waiting_human'
   | 'peer_turn'
   | 'engine_occurrence'
-  | 'steered_closeout';
+  | 'forced_reply';
 
 export interface OutboundRootInput {
   inboundChannel: string | null;
   settledContextWakeTurn: boolean;
   counterpartyKind: 'user' | 'agent' | string;
   isEngineTurn: boolean;
-  steeredForSilentCloseout: boolean;
+  forcedReply: boolean;
 }
 
 export interface OutboundRootDecision {
@@ -27,7 +27,7 @@ export interface OutboundRootDecision {
 /** Reporting order only (any one root permits the push): strongest evidence first. */
 const ORDER: readonly OutboundRootKind[] = [
   'inbound_channel', 'waiting_human', 'peer_turn',
-  'engine_occurrence', 'steered_closeout',
+  'engine_occurrence', 'forced_reply',
 ];
 
 export function outboundRoot(input: OutboundRootInput): OutboundRootDecision {
@@ -36,7 +36,7 @@ export function outboundRoot(input: OutboundRootInput): OutboundRootDecision {
     waiting_human: !input.settledContextWakeTurn,
     peer_turn: input.counterpartyKind === 'agent',
     engine_occurrence: input.isEngineTurn,
-    steered_closeout: input.steeredForSilentCloseout,
+    forced_reply: input.forcedReply,
   };
   const roots = ORDER.filter((k) => present[k]);
   return { root: roots[0] ?? null, roots, held: roots.length === 0 };

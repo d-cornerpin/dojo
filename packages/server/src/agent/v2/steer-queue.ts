@@ -6,10 +6,9 @@ import { withAuthorHead } from './steer-author-head.js';
 export type SteerFloorId =
   | 'ungrounded-claim' | 'delivery-denial' | 'failed-save-claim' | 'uncommitted-promise'
   | 'false-delivery-claim' | 'handed-back-ask'
-  | 'forced-reply' | 'silent-closeout' | 'delegation-exit'
-  | 'reminder-silence'
+  | 'forced-reply' | 'delegation-exit'
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
-  | 'a2a-handoff-floor' | 'a2a-missed-reply' | 'going-idle-in-progress'
+  | 'a2a-missed-reply' | 'going-idle-in-progress'
   | 'output-grind' | 'empty-response' | 'dead-end' | 'add-notes-stop'
   | 'tracker-stop-directive' | 'tracker-scaffold' | 'hoarding-advisory'
   | 'redundant-closeout' | 'near-duplicate-reply';
@@ -32,16 +31,13 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   { id: 'false-delivery-claim',  priority: 14, why: 'reply says the artifact was delivered and the only tool that could send it ERRORED this turn' },
 
   { id: 'forced-reply',          priority: 20, why: 'the turn is ending with nothing said to the person waiting; the reply is required' },
-  { id: 'silent-closeout',       priority: 22, why: 'task completed, the asker heard nothing' },
   { id: 'delegation-exit',       priority: 23, why: 'work handed off, the turn about to end silently' },
-  { id: 'reminder-silence',      priority: 24, why: 'a reminder is due and the turn is ending without it being said' },
 
   { id: 'start-ack',             priority: 25, why: 'the user has been waiting with no word this turn' },
   { id: 'start-ack-reminder',    priority: 26, why: 'the first start-ack steer was ignored' },
   { id: 'owed-interrupt',        priority: 27, why: 'a mid-turn human message may go unanswered' },
   { id: 'promise-floor',         priority: 28, why: 'the reply promised work the turn never did' },
 
-  { id: 'a2a-handoff-floor',     priority: 29, why: 'user-facing turn ending silently after a handoff' },
   { id: 'a2a-missed-reply',      priority: 30, why: 'a peer asked and got prose instead of a reply' },
   { id: 'going-idle-in-progress', priority: 31, why: 'silent stop with in_progress work dangling' },
   { id: 'handed-back-ask',       priority: 32, why: 'a person waits on a message a dead run handed back: what it already did and may have sent come before acting' },
@@ -109,11 +105,6 @@ export function steerFired(q: SteerQueue, floor: SteerFloorId, key = ''): boolea
 
 export function steerFiredAny(q: SteerQueue, floors: readonly SteerFloorId[]): boolean {
   return q.fired.some((e) => floors.includes(e.floor));
-}
-
-/** How many times this floor has steered this turn: the counter latch of a laddered floor. */
-export function steerFireCount(q: SteerQueue, floor: SteerFloorId): number {
-  return q.fired.reduce((n, e) => (e.floor === floor ? n + 1 : n), 0);
 }
 
 export function steerFiredAtLoop(q: SteerQueue, floor: SteerFloorId): number | null {
