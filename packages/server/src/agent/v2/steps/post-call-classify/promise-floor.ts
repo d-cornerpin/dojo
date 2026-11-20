@@ -63,7 +63,8 @@ export function runPromiseFloor(
     );
     // A promise to start is not pushed past the owner's hold on the task behind this request.
     const request = ctx.turnCtx.root?.kind === 'ask' ? ctx.turnCtx.root.sourceMessageId : null;
-    const ownerHoldsItsTask = forwardPromise && !!linkedTaskOf(agentId, request) && !linkedTaskOf(agentId, request, { ownerHeldEnds: true });
+    const ownerHoldsItsTask = forwardPromise && !!linkedTaskOf(agentId, request)
+      && !linkedTaskOf(agentId, request, { ownerHeldEnds: true });
     // A promise backed by a row this turn opened with a future fire is the scheduler's to keep;
     // `origin_turn` is stamped on every tracker open, and a failed open leaves no row.
     let openedFutureScheduledWorkThisTurn = false;
