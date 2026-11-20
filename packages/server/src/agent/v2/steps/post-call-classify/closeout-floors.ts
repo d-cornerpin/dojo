@@ -135,15 +135,15 @@ export function runCloseoutFloors(
     if (owed().length > 0) {
       // Solicited: neither demoted nor counted toward the streak of unprompted pings.
       if (streak >= PROACTIVE_SEND_DEMOTE_THRESHOLD) {
-        logger.info('v2 RC-5.3: budget reached, but this turn is working a task that owes its owner a delivery; the line goes out (C8)', {
+        logger.info('v2: budget reached, but this turn is working a task that owes its owner a delivery; the line goes out (C8)', {
           agentId, turnNumber, streak, tasks: owed(),
         }, agentId);
       }
     } else if (streak >= PROACTIVE_SEND_DEMOTE_THRESHOLD) {
-      logger.info('v2 RC-5.3: proactive-send limit reached; the reply stays in chat and its push is held', {
+      logger.info('v2: proactive-send limit reached; the reply stays in chat and its push is held', {
         agentId, turnNumber, streak, threshold: PROACTIVE_SEND_DEMOTE_THRESHOLD,
       }, agentId);
-      turnCtx.pushHeld = 'the owner has not answered your last messages sent on your own';
+      turnCtx.pushHeld = "the owner has not answered the agent's last unprompted messages";
     } else {
       // An allowed proactive delivery counts toward the streak and pings as normal.
       bumpProactiveSendStreak(agentId);

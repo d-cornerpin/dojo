@@ -47,7 +47,7 @@ const MAIN = 'main-agent';
 const PM = 'pm-agent';
 const TURN = 61;
 const LINE = 'No new Dojo reports today: all 20 open reports were already sent to you.';
-const PUSH_HELD = 'the owner has not answered your last messages sent on your own';
+const PUSH_HELD = "the owner has not answered the agent's last unprompted messages";
 const db = (): Database.Database => mockDb.current!;
 let turnStartMs = 0;
 

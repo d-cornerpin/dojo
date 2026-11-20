@@ -146,7 +146,7 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
       agentId, turnNumber, destination, presence: presenceNow,
       outboundRoot: routeRoot.root, pushHeld: turnCtx.pushHeld,
     }, agentId);
-    if (turnCtx.pushHeld) tellAgentReplyHeld(agentId, destination, turnCtx.pushHeld, '');
+    if (turnCtx.pushHeld) tellAgentReplyHeld(agentId, destination, 'the owner has not answered your last messages sent on your own', '');
   } else if (destination !== 'dashboard' && !engineMayRouteTo(agentId, destination)) {
     // One channel-grant door for every arm; the reply stays in the dashboard.
     recordedId(recordHeld({ agentId, tool: 'auto-route', channel: destination, conversationId }, engineRouteRefusalReason(destination)),
@@ -175,8 +175,10 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
   }
 }
 
+const REACH_THEM_ANOTHER_WAY = ' If they need to hear it, reach them another way in your own words.';
+
 /** The agent is told once that its reply stayed in the dashboard: nothing sends a held reply later. */
-function tellAgentReplyHeld(agentId: string, destination: ReplyDestination, why: string, after = ' If they need to hear it, reach them another way in your own words.'): void {
+function tellAgentReplyHeld(agentId: string, destination: ReplyDestination, why: string, after = REACH_THEM_ANOTHER_WAY): void {
   postAgentNotice({
     toAgentId: agentId, fromName: 'Reply delivery', selfIntro: false,
     brief: `Your reply did not go out on the ${destination} channel: ${why}, so it stayed in the dashboard chat and will not be sent later. Do not say it arrived.${after}`,

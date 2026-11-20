@@ -20,7 +20,7 @@ import { routeTerminalReply } from '../steps/finalize/route-reply.js';
 import { computeTurnAddress } from '../turn-address.js';
 import type { TurnCounterparty } from '../counterparty.js';
 
-const LIMIT = 'the owner has not answered your last messages sent on your own';
+const LIMIT = "the owner has not answered the agent's last unprompted messages";
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
 const address = computeTurnAddress({
   counterparty: owner, isEngineTurn: true, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
@@ -28,8 +28,15 @@ const address = computeTurnAddress({
 });
 
 async function reply(pushHeld: string | null): Promise<void> {
-  const state = { lastAssistantTextForIM: 'Your flight was cancelled.', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: null, inboundContext: null } as never;
-  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, ownerAffinityDestination: null, replyFiles: [], root: null, pushHeld }, counterparty: owner, chosenConvKey: 'c', settledContextWakeTurn: true, isEngineTurn: true, persistRoutingMarker: () => {} } as never;
+  const state = {
+    lastAssistantTextForIM: 'Your flight was cancelled.', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {},
+    steerQueue: { pending: [], fired: [] }, inboundChannel: null, inboundContext: null,
+  } as never;
+  const ctx = {
+    agentId: 'primary', turnNumber: 1, counterparty: owner, chosenConvKey: 'c',
+    turnCtx: { address, ownerAffinityDestination: null, replyFiles: [], root: null, pushHeld },
+    settledContextWakeTurn: true, isEngineTurn: true, persistRoutingMarker: () => {},
+  } as never;
   await routeTerminalReply(state, ctx);
 }
 
@@ -46,7 +53,8 @@ describe('a message past the proactive limit', () => {
   it('tells the agent once that it was not sent', async () => {
     await reply(LIMIT);
     expect(notices.map((n) => n.brief)).toEqual([
-      `Your reply did not go out on the imessage channel: ${LIMIT}, so it stayed in the dashboard chat and will not be sent later. Do not say it arrived.`,
+      'Your reply did not go out on the imessage channel: the owner has not answered your last messages sent on your own, so it stayed'
+      + ' in the dashboard chat and will not be sent later. Do not say it arrived.',
     ]);
   });
 

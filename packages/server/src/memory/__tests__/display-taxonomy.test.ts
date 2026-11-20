@@ -71,7 +71,7 @@ const WRITER_LITERALS: Case[] = [
   { site: 'loop.ts no-reply close', role: 'system', content: NO_REPLY_CLOSED_MARKER,
     kind: 'no-reply-marker', tier: 'never-shown' },
 
-  // Demoted mid-work narration (loop.ts demotion + the proactive-send demote).
+  // Demoted mid-work narration (loop.ts demotion).
   { site: 'loop.ts working-note demote', role: 'system',
     content: `${WORKING_NOTE_PREFIX}Let me check the calendar first.`,
     kind: 'working-note', tier: 'user-visible' },
