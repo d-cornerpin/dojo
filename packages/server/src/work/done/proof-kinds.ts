@@ -180,7 +180,7 @@ interface ReceiptRow {
   agent_id: string; tool: string; verified: number; basis: string; recipient: string | null; detail: string | null; created_at: string; tied: number;
 }
 const receiptRow = (ref: string, task: string): ReceiptRow | undefined => getDb().prepare(
-  `SELECT agent_id, tool, verified, basis, recipient, detail, created_at, ${ROOT_SERVES_TASK('r')} AS tied FROM tool_receipts r WHERE id = ?`,
+  `SELECT agent_id, tool, verified, basis, recipient, detail, created_at, (${ROOT_SERVES_TASK('r')} OR r.task_id = @task) AS tied FROM tool_receipts r WHERE id = ?`,
 ).get(ref, { task }) as ReceiptRow | undefined;
 
 /** The error a receipt's detail JSON carries, or ''. */
