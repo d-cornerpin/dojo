@@ -53,7 +53,7 @@ import { selfWakeStandDown } from '../work/work-reaper.js';
 import { recordFloorGhost } from './v2/floor-ghost.js';
 import { handInHeard } from '../work/done/effects.js';
 import { latestHandIn } from '../work/done/record.js';
-import { type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
+import { FINAL_REPLY_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
@@ -61,7 +61,6 @@ import type { ReplyDestination } from './v2/reply-destination.js';
 import { homeDir } from '../home.js';
 import { servedRequestThreadFrom } from './a2a-own-turn.js';
 
-const REPLY_INTENTS = new Set<A2AIntent>(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);   // the answer-class intents
 
 // Only FYI and STATUS are ambient no-wake. COMPLETE and FAIL must wake: the assigner has a next
 // step, and a silent one stalls multi-step work. requires_response=false overrides per call.
@@ -440,7 +439,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
       }, envelope.fromAgent);
     }
   }
-  const servedThreadId = !envelope.threadId && envelope.fromAgent !== 'system' && REPLY_INTENTS.has(effectiveIntent)
+  const servedThreadId = !envelope.threadId && envelope.fromAgent !== 'system' && FINAL_REPLY_INTENTS.has(effectiveIntent)
     ? servedRequestThreadFrom(envelope.fromAgent, target.id) : null;   // a threadless reply goes on the request it answers
   const threadId = envelope.threadId || reusedAssignThreadId || servedThreadId || uuidv4();
   // ⚠ READ BEFORE `ensureThread`, and the order is load-bearing: that insert stamps `datetime('now')`
@@ -461,7 +460,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // Completion intents skip dedup (checkpoints must land whatever the phrasing; dedup exists to
   // silence ack loops). System-origin skips too: every engine alert is a fresh condition.
   const senderIsSystem = envelope.fromAgent === 'system';
-  if (!REPLY_INTENTS.has(effectiveIntent) && !senderIsSystem) {
+  if (!FINAL_REPLY_INTENTS.has(effectiveIntent) && !senderIsSystem) {
     const isDuplicate = await checkSemanticDedup(envelope.payload, threadId, envelope.fromAgent);
     if (isDuplicate) {
       logDrop(envelope, 'SEMANTIC_DUPLICATE');
@@ -554,7 +553,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
 
   // Only an answer on a DELEGATED thread lands on its join, which relays it or steers a compile, so the hint
   // above is suppressed there; a question or a progress note reaches the agent as itself and the piece stays open.
-  const isReplyIntent = REPLY_INTENTS.has(effectiveIntent);
+  const isReplyIntent = FINAL_REPLY_INTENTS.has(effectiveIntent);
   // The sender's declared hand-off outcome, surfaced to their tool result; undefined unless passed.
   let handOffReport: { applied: boolean; message: string } | undefined;
   if (isReplyIntent) {
