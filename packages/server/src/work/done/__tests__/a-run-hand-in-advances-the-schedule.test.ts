@@ -56,7 +56,8 @@ describe('a run hand-in advances the schedule', () => {
     expect(r.isError).toBe(false);
     expect(stateOf()).toBe('open');
     const hint = (): string | undefined => (doneDb().prepare("SELECT content FROM messages WHERE agent_id = ? AND source_agent_id = ? AND lane = 'events' AND content LIKE '%sent back%'").get(WORKER, PM) as { content: string } | undefined)?.content;
-    await vi.waitFor(() => expect(hint()).toContain('The weather line was missing'));
+    await vi.dynamicImportSettled();
+    expect(hint()).toContain('The weather line was missing');
     expect(due(NEXT + 1_000)).toBe(true);
   });
 

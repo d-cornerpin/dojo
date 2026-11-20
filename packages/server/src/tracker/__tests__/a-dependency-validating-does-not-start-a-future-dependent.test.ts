@@ -106,7 +106,8 @@ describe('a dependency validating makes the dependent eligible; it starts at its
     dependent('d-future', Date.now() + 5 * HOUR);
     dependent('d-none', null);
     checkDependencies('dep-1');
-    await vi.waitFor(() => expect(woken('d-none')).toBe(1));
+    await vi.dynamicImportSettled();
+    expect(woken('d-none')).toBe(1);
     expect(woken('d-future')).toBe(0);
   });
 });
