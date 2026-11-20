@@ -1,5 +1,5 @@
 // A helper's result for a request the owner stopped is kept in the history and starts nothing; a result for a
-// later, live request on the same thread still drives its turn.
+// later, live request on the same thread still goes back to that request.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -15,6 +15,7 @@ import { findUnservedTerminalWake } from '../v2/counterparty.js';
 import { nextOwed } from '../v2/owed.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { claimAsk, openDelegationJoin } from '../../work/store.js';
+import { newestPutBack } from '../../work/ask-settlement.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
 import { delegatedTextRequest, requestState, HELPER, THREAD, CONV, ASK } from './helpers/text-relay.js';
 
@@ -49,7 +50,7 @@ describe("a helper's result for a stopped request starts no turn", () => {
     expect(nextOwed(AGENT).map((i) => i.kind)).not.toContain('agentRequest');
   });
 
-  it('a later request sent on the same thread is live: its result drives its turn', async () => {
+  it('a later request sent on the same thread is live: its result puts that request back in the queue', async () => {
     stopByOwner(AGENT);
     vi.setSystemTime(Date.now() + 60_000);
     insertMessage({ id: 'm-2', agentId: AGENT, role: 'user', content: 'Go ahead and ask after all', channel: 'imessage', senderId: PERSON, conversationId: CONV });
@@ -57,6 +58,7 @@ describe("a helper's result for a stopped request starts no turn", () => {
     openDelegationJoin({ parentWorkId: 'ask:m-2', agentId: AGENT, replyConversationId: CONV, ttlAt: Date.now() + 3_600_000,
       threads: [{ threadId: THREAD, assigneeAgent: HELPER, intent: 'QUESTION', hopCount: 0 }] });
     await helperDelivers();
-    expect(handleMessage.mock.calls.map((c: unknown[]) => c[0])).toEqual([AGENT]);
+    expect(newestPutBack('ask:m-2')?.kind).toBe('compile');
+    expect((testDb().prepare('SELECT state FROM work WHERE id = ?').get('ask:m-2') as { state: string }).state).toBe('claimed');
   });
 });

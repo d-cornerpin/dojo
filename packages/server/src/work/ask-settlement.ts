@@ -60,6 +60,30 @@ export function replyInFlight(askId: string): boolean {
   return getDb().prepare(`SELECT 1 FROM work w WHERE w.id = ? AND ${REPLY_IN_FLIGHT}`).get(askId) !== undefined;
 }
 
+/** The newest time this request's delegated answer went back to the agent (a `compile_resolved` event with a kind). */
+export function newestPutBack(askId: string): { id: number; kind: 'compile' | 'late'; evidence: string | null } | null {
+  return (getDb().prepare(
+    `SELECT id, json_extract(payload, '$.kind') AS kind, json_extract(payload, '$.evidence') AS evidence FROM work_events
+      WHERE work_id = ? AND kind = 'compile_resolved' AND json_extract(payload, '$.kind') IS NOT NULL ORDER BY id DESC LIMIT 1`,
+  ).get(askId) as { id: number; kind: 'compile' | 'late'; evidence: string | null } | undefined) ?? null;
+}
+
+/** The request has a put-back that turn `turn` was not shown (no `pieces_shown` of that turn after it). */
+function notShownNewestPutBack(askId: string, turn: number): boolean {
+  const putBack = newestPutBack(askId);
+  return putBack !== null && !getDb().prepare(`SELECT 1 FROM work_events WHERE work_id = ? AND kind = 'audit' AND id > ?
+      AND json_extract(payload, '$.marker') = 'pieces_shown' AND json_extract(payload, '$.turn') = ?`).get(askId, putBack.id, turn);
+}
+
+/** The steer carrying this request's pieces reached turn `turn`'s model call. */
+export function recordPiecesShown(askId: string, agentId: string, turn: number, putBackId: number): void {
+  appendWorkEvent(askId, 'audit', agentId, { marker: 'pieces_shown', turn, put_back_id: putBackId });
+}
+
+/** Some piece of this request came back with an answer. */
+const hasLandedPiece = (askId: string): boolean =>
+  getDb().prepare("SELECT 1 FROM work WHERE parent_id = ? AND kind = 'task' AND state = 'done'").get(askId) !== undefined;
+
 /** Where in the lifecycle the question is asked; it selects the no-evidence tie-break. `join` and `async`
  *  differ in evidence: the delivery must postdate `join_complete`, or be a background job's result. */
 export type SettlementMoment = 'delivery' | 'finalize' | 'boot' | 'join' | 'async';
@@ -283,7 +307,7 @@ const WAIT_FIRST_MS = 60_000;
 export type HandBackCause = 'silence' | 'cut' | 'crash' | 'wait' | 'free';
 type CountGroup = 'silence' | 'engine';
 
-/** The `audit` marker the counter counts (see `join-drive.ts`). */
+/** The `audit` marker the counter counts. */
 export const RE_SERVE_MARKER = 'ct0_ask_re_served';
 
 /** How many hand-backs of this group the row has already spent. A COUNT over the log. */
@@ -324,7 +348,12 @@ function standDownReServe(
     to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason,
   });
   if (r.kind !== 'applied') return out('unchanged', `stand-down refused: ${r.kind}`);
-  tellOwnerStoodDown(ask, ctx.turnNumber, spent + 1);
+  // A helper's answer is owed to this request: the Dojo sends the pieces itself, once, instead of the card.
+  if (hasLandedPiece(ask.id)) {
+    const putBack = newestPutBack(ask.id);
+    afterCommit(() => void import('../agent/a2a-transport.js').then((m) => m.relayPiecesWhole(ask.id, putBack?.kind ?? 'compile', putBack?.evidence ?? null))
+      .catch((err: unknown) => logger.warn('the stood-down request\'s pieces were not relayed', { workId: ask.id, error: String(err) })));
+  } else tellOwnerStoodDown(ask, ctx.turnNumber, spent + 1);
   // `warn`: the bound working, not a fault, but a person is unanswered; `reServesSpent`'s fault path must
   // never log quieter. Pinned by `work/__tests__/the-stand-down-is-the-bound-working-not-a-fault.test.ts`.
   logger.warn('ask re-serve bound reached: the agent did not answer within its serve budget, so the ask is now HELD owed and will stop being re-served', {
@@ -390,7 +419,7 @@ export function liftStandDowns(agentId: string, triggerWorkId: string, turnNumbe
     WHERE h.agent_id = ? AND h.kind = 'ask' AND h.state = 'blocked'`).all(triggerWorkId, agentId) as Array<{ id: string }>;
   for (const { id } of held) {
     const ask = readAsk(id);
-    if (!ask || joinOutstanding(ask) || mediaJobs(ask.root_id).out > 0 || stillOwed(ask, null) || inheritedParkedAt(id)) continue;
+    if (!ask || joinOutstanding(ask) || replyInFlight(id) || mediaJobs(ask.root_id).out > 0 || stillOwed(ask, null) || inheritedParkedAt(id)) continue;
     if (transition(id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'the person wrote again' }).kind !== 'applied') continue;
     if (claimAsk(id, agentId).kind === 'applied') stampClaimingTurn(id, turnNumber);
   }
@@ -557,6 +586,17 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   const onJob = jobHold(ask, ctx, actorId, out);
   if (onJob) return onJob;
 
+  // A turn that was not shown this request's newest put-back never answered it: its reply is not the answer.
+  if (ctx.turnNumber != null && notShownNewestPutBack(workId, ctx.turnNumber)) {
+    if (ctx.at !== 'finalize') return out('unchanged', 'this turn was not shown the delegated answer');
+    const r = handBackAsk(workId, {
+      agentId: ask.agent_id, turnNumber: ctx.turnNumber, cause: 'free', actorId,
+      reason: 'its delegated answer came back while another turn was running',
+    });
+    serveLater({ kind: 'ask', id: workId }, Date.now(), 'its delegated answer is back');
+    return r;
+  }
+
   const evidence = qualifyingDelivery(ask, ctx.turnNumber)
     ?? (ctx.at === 'finalize' ? delegatedRelayEvidence(ask, ctx.turnNumber, [...ENGINE_JOIN_RELAY_TOOLS]) : null);
   if (evidence) {
@@ -568,8 +608,7 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     if (ctx.rowid != null && ctx.turnNumber != null) {
       recordServingTurnByRowid({ agentId: ask.agent_id, rowid: ctx.rowid, servedByTurn: ctx.turnNumber });
     }
-    const opened = linkedTaskOf(ask.agent_id, ask.root_id, { parkOpened: true });   // the agent never heard of it
-    if (opened) handInOnDelivery(ask.agent_id, async () => [opened], 'the request this task was opened for was answered', evidence.id);
+    handInCardsOf(ask, evidence.id, false);
     return out('closed', `delivered via ${evidence.tool}`, evidence.id);
   }
 
@@ -602,6 +641,8 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   }
   if (ask.state === 'open') return out('unchanged', 'already open and waiting');
   if ((ctx.askedNothing === true || ctx.peerBox === true) && turnEndedInModelSilence(ask.agent_id, ctx.turnNumber)) {
+    // A helper's answer owed to a peer box's request is still sent (the answer only): it wins over the silence.
+    if (ctx.peerBox && hasLandedPiece(workId)) return standDownReServe(ask, ctx, actorId, reServesSpent(workId, 'silence'), out);
     const why = ctx.peerBox ? 'settled: the agent chose not to answer another Dojo box, and silence to a peer box is an allowed answer'
       : 'settled: the message asked for nothing (it only declined or acknowledged) and the agent stayed silent';
     const r = transition(workId, { to: 'abandoned', by: 'agent', actorId, expectedState: ask.state, reason: why });
@@ -671,29 +712,16 @@ function compiledDelivery(
     return o;
   };
   const excludedSql = excluded.map((_, i) => `@x${i}`).join(', ');
-  if (named) {
-    return (db.prepare(
-      `SELECT d.id AS id, d.tool AS tool FROM deliveries d
-        WHERE d.id = @named AND d.agent_id = @agentId AND d.outcome = 'delivered'
-          AND d.tool NOT IN (${excludedSql})
-          AND ${NOT_A_TOOL_CHIP}
-          AND ${NOT_A_SUPERSEDED_BUBBLE}
-          AND unixepoch(d.created_at) >= @floorSec
-          ${laterTurn}`,
-    ).get(bind({ named })) as { id: string; tool: string } | undefined) ?? null;
-  }
-  if (ask.conversation_id == null) return null;
+  if (!named) return null;
   return (db.prepare(
     `SELECT d.id AS id, d.tool AS tool FROM deliveries d
-      WHERE d.agent_id = @agentId AND d.conversation_id = @conv AND d.outcome = 'delivered'
+      WHERE d.id = @named AND d.agent_id = @agentId AND d.outcome = 'delivered'
         AND d.tool NOT IN (${excludedSql})
         AND ${NOT_A_TOOL_CHIP}
         AND ${NOT_A_SUPERSEDED_BUBBLE}
         AND unixepoch(d.created_at) >= @floorSec
-        ${laterTurn}
-      ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
-  ).get(bind({ conv: ask.conversation_id })) as
-    { id: string; tool: string } | undefined) ?? null;
+        ${laterTurn}`,
+  ).get(bind({ named })) as { id: string; tool: string } | undefined) ?? null;
 }
 
 /** Has the engine already relayed this join's answer, or queued the relay? A relay of this join after its
@@ -762,18 +790,7 @@ function settleOnJoin(
   appendWorkEvent(ask.id, 'compile_resolved', actorId, {
     reason, basis, delivery_id: evidence.id, tool: evidence.tool, boundary_at: boundaryMs,
   });
-  // Record on the delivery which ask it answered: a compiled answer on a bare wake carries no
-  // `root_kind`/`root_id`. Only ever fills a blank; an attributed delivery is never re-pointed.
-  try {
-    getDb().prepare(
-      `UPDATE deliveries SET root_kind = 'ask', root_id = ?
-        WHERE id = ? AND COALESCE(root_kind, '') = '' AND COALESCE(root_id, '') = ''`,
-    ).run(ask.id, evidence.id);
-  } catch (err) {
-    logger.warn('join settled: the compiled delivery could not be stamped with the ask it answered', {
-      workId: ask.id, deliveryId: evidence.id, error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  handInCardsOf(ask, evidence.id, ENGINE_SENT_TOOLS.has(evidence.tool));
   logger.info('join settled: the compiled answer reached the owner', {
     agentId: ask.agent_id, workId: ask.id, deliveryId: evidence.id, tool: evidence.tool,
   }, ask.agent_id);
@@ -823,17 +840,25 @@ function handInOnDelivery(agentId: string, tasks: () => Promise<string[]>, becau
   }).catch((err: unknown) => logger.warn('a delivered job\'s tasks were not handed in', { deliveryId, error: String(err) }, agentId)));
 }
 
+/** On any answer the card a park opened for the request is handed in; on the Dojo's relay of a delegated answer
+ *  the agent's own open cards for it too, since the agent will not finish them. */
+function handInCardsOf(ask: AskRow, deliveryId: string, agentsCards: boolean): void {
+  const ids = (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')}
+      AND ((t.origin_kind = 'model' AND ? = 1) OR (t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}' AND t.title = '${PARKED_JOB_TITLE}'))`)
+    .all(ask.agent_id, ask.root_id, agentsCards ? 1 : 0) as Array<{ id: string }>).map((r) => r.id);
+  if (ids.length > 0) handInOnDelivery(ask.agent_id, async () => ids, 'the request this task was opened for was answered', deliveryId);
+}
+
 /** A tracker task `t` linked to the request of ask `a` by its message, not ended and not handed in. */
 export const LINKED_OPEN_TASK = (a: string): string =>
   `t.kind = 'task' AND t.agent_id = ${a}.agent_id AND t.source_message_id = ${a}.root_id`
   + ` AND t.state NOT IN ('done', 'failed', 'abandoned') AND ${handedInExpr('t')} = 0`;
 
 /** The open task linked to `agentId`'s request `messageId`, or null; with `ownerHeldEnds` a task the owner holds
- *  counts as ended; with `parkOpened` only a task a park opened. */
-export function linkedTaskOf(agentId: string, messageId: string | null, opts: { ownerHeldEnds?: true; parkOpened?: true } = {}): string | null {
+ *  counts as ended. */
+export function linkedTaskOf(agentId: string, messageId: string | null, opts: { ownerHeldEnds?: true } = {}): string | null {
   if (!messageId) return null;
-  const notHeld = (opts.ownerHeldEnds ? ` AND NOT ${heldByOwnerSql('t')}` : '')
-    + (opts.parkOpened ? ` AND t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}' AND t.title = '${PARKED_JOB_TITLE}'` : '');
+  const notHeld = opts.ownerHeldEnds ? ` AND NOT ${heldByOwnerSql('t')}` : '';
   return (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')}${notHeld} LIMIT 1`)
     .get(agentId, messageId) as { id: string } | undefined)?.id ?? null;
 }
@@ -984,15 +1009,12 @@ export function settleAsksForDelivery(p: DeliveryCloseInput): number {
   return closed;
 }
 
-/** A relay went: its request settles on it, and the cards the agent opened for that job are handed in. */
+/** A relay went: its request settles on it. */
 function onRelayDelivered(joinId: string, p: DeliveryCloseInput): void {
-  const settled = settleAskOnJoin(joinId, {
+  settleAskOnJoin(joinId, {
     agentId: p.agentId, deliveryId: p.deliveryId, reason: 'the engine relayed the delegated answer',
     basis: p.tool === 'a2a-join-late' ? 'late-answer' : 'engine-relay',
   });
-  if (settled.verdict !== 'closed') return;
-  handInOnDelivery(p.agentId, async () => (await import('./join-drive.js')).scaffoldCardsOfRelay(joinId, p.agentId).map((c) => c.id),
-    `the engine relayed the compiled result of the job this card was opened for to the owner (delivery ${p.deliveryId.slice(0, 8)})`, p.deliveryId);
 }
 
 /** A relay that never went ends its request failed, with the row's reason; a failure notice ends nothing. */
@@ -1011,7 +1033,7 @@ export function owedAtTurnEnd(agentId: string, turnNumber: number): string[] {
         AND COALESCE(w.remaining_children, 0) = 0 AND w.compile_pending = 0 AND NOT ${REPLY_IN_FLIGHT}
         AND NOT EXISTS (SELECT 1 FROM work t WHERE ${LINKED_OPEN_TASK('w')})`,
   ).all(agentId, turnNumber) as Array<{ id: string; root_id: string }>;
-  return rows.filter((r) => mediaJobs(r.root_id).out === 0).map((r) => r.id);
+  return rows.filter((r) => mediaJobs(r.root_id).out === 0 && !notShownNewestPutBack(r.id, turnNumber)).map((r) => r.id);
 }
 
 /** The requests a turn's reply in a conversation answers: the asks that turn holds claimed there. */

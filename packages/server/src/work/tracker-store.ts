@@ -9,7 +9,6 @@ import { patchAssignments } from '../db/patch.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
-import { turnContext } from '../agent/turn-context.js';
 import { clearReferencesToWork } from './work-refs.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, type WorkPatchOutcome } from './outcome.js';
@@ -160,7 +159,7 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
 
 /** The source message of the ask the creating turn is serving, so the task links to its request.
  *  Only fills a gap: a caller-stated origin wins. */
-function askSourceMessageForCreatingTurn(agentId: string, creator: string, originTurn: number | null): string | null {
+function askSourceMessageForCreatingTurn(agentId: string): string | null {
   try {
     const turn = currentTurnNumber(agentId);
     if (!turn) return null;
@@ -169,8 +168,7 @@ function askSourceMessageForCreatingTurn(agentId: string, creator: string, origi
         WHERE kind = 'ask' AND agent_id = ? AND state = 'claimed' AND claimed_by_turn = ?
         ORDER BY opened_at DESC LIMIT 1`,
     ).get(agentId, turn) as { root_id: string } | undefined;
-    if (r?.root_id) return r.root_id;
-    return originTurn !== null ? askOfDelegateReplyWake(creator, originTurn) : null;
+    return r?.root_id ?? null;
   } catch (err) {
     // A missing link must not fail task creation.
     logger.warn('task create: could not resolve the creating turn\'s ask; the task is opened without the edge', {
@@ -178,40 +176,6 @@ function askSourceMessageForCreatingTurn(agentId: string, creator: string, origi
     });
     return null;
   }
-}
-
-/**
- * The ask a delegate-reply wake turn is finishing, when the turn serves no ask of its own: the turn's
- * subject is the reply's a2a thread (or none, with the newest inbound row being that reply), and that
- * thread is a piece (`root_kind = 'a2a_thread'`, `parent_id` = the ask) of one of the agent's asks.
- * The ask's state is deliberately not a condition: done or blocked compile-pending, the task continues it.
- */
-function askOfDelegateReplyWake(agentId: string, turn: number): string | null {
-  const db = getDb();
-  const t = db.prepare(
-    `SELECT subject_kind, subject_id, root_kind, (unixepoch(started_at) * 1000 + 999) AS started_ms
-       FROM turns WHERE agent_id = ? AND turn_number = ?`,
-  ).get(agentId, turn) as { subject_kind: string | null; subject_id: string | null; root_kind: string | null; started_ms: number | null } | undefined;
-  let thread = t?.subject_kind === 'a2a_thread' ? t.subject_id : null;
-  if (t && t.subject_kind === 'none' && t.root_kind === null && t.started_ms !== null) {
-    // The row the turn woke on: the newest inbound non-events row. Clocks here are whole-second, so when
-    // the turn's pickup is known the bound is the message sequence recorded at pickup instead.
-    const bag = turnContext(agentId);
-    const pickup = bag && bag.turnNumber === turn ? bag.pickupSeq : null;
-    thread = (db.prepare(
-      `SELECT a2a_thread_id FROM messages
-        WHERE agent_id = ? AND role = 'user' AND lane <> 'events' AND ${pickup === null ? 'created_at' : 'seq'} <= ?
-        ORDER BY created_at DESC, seq DESC LIMIT 1`,
-    ).get(agentId, pickup ?? t.started_ms) as { a2a_thread_id: string | null } | undefined)?.a2a_thread_id ?? null;
-  }
-  if (!thread) return null;
-  const ask = db.prepare(
-    `SELECT a.root_id AS root_id FROM work p JOIN work a ON a.id = p.parent_id
-      WHERE p.kind = 'task' AND p.root_kind = 'a2a_thread' AND p.root_id = ?
-        AND a.kind = 'ask' AND a.agent_id = ?
-      ORDER BY p.opened_at DESC LIMIT 1`,
-  ).get(thread, agentId) as { root_id: string } | undefined;
-  return ask?.root_id ?? null;
 }
 
 /** A service agent's task opened by itself or by the engine is its own housekeeping, not board work. */
@@ -223,7 +187,7 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
   const id = p.id ?? uuidv4();
   const at = now();
   const sourceMessageId = p.origin.sourceMessageId
-    ?? askSourceMessageForCreatingTurn(p.assignedTo ?? p.createdBy, p.createdBy, p.origin.turn);
+    ?? askSourceMessageForCreatingTurn(p.assignedTo ?? p.createdBy);
   // `agent_id` is NOT NULL, so an unassigned task belongs to its creator until someone claims it.
   const taskAgents: readonly (string | null | undefined)[] = [p.assignedTo, p.createdBy];
   withUnit(() => {

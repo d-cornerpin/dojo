@@ -151,13 +151,6 @@ export interface AgentTurnState {
   lastContextRatio: number;
   /** msg.relevant-memory reached the provider's array; a recorded marker fact, never a veto. */
   recallLaneReachedModelThisTurn: boolean;
-  /** Asks owed a compiled reply; while non-empty the dispatcher allows only COMPILE_OWED_ALLOWED_OPS.
-   *  Empty on a turn a human is waiting on (steps/preflight/compile-gate.ts). */
-  compileOwedAskIds: readonly string[];
-  /** A user-facing reply was persisted this turn, which discharges the owed compile until next turn. */
-  compileGateSatisfied: boolean;
-  /** The compile order reached the model whole this iteration, so the gate may refuse. Not latched. */
-  compileOrderReachedModel: boolean;
 
   /** Set at preflight after an unrecalled compaction; the dispatcher only clears it, injecting nothing. */
   awaitingPostCompactRecall: boolean;
@@ -248,9 +241,6 @@ export function initState(params: InitStateParams): AgentTurnState {
     structuringToolCalledThisTurn: false,
     lastContextRatio: 0,
     recallLaneReachedModelThisTurn: false,
-    compileOwedAskIds: [],
-    compileGateSatisfied: false,
-    compileOrderReachedModel: false,
 
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,

@@ -9,7 +9,7 @@ import { vi } from 'vitest';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { claimAsk, stampClaimingTurn, openDelegationJoin } from '../../../work/store.js';
-import { settleAsksAtTurnFinalize } from '../../../work/ask-settlement.js';
+import { newestPutBack, recordPiecesShown, settleAsksAtTurnFinalize } from '../../../work/ask-settlement.js';
 import { deliverA2AMessage } from '../../a2a-transport.js';
 import { freshReplyDb, imessage, testDb, AGENT, PERSON } from '../../v2/__tests__/helpers/reply-sender.js';
 
@@ -48,6 +48,21 @@ export async function helperAnswers(payload: string, thread = THREAD, attachment
   } as never);
   if (!r.delivered) throw new Error('the helper\'s answer was not delivered');
 }
+
+/** A turn serves the request once its answer is back, is shown the pieces, and says nothing, its required reply
+ *  empty too: A stands the request down and the Dojo relays the pieces (after commit, so this waits for it). */
+export async function agentStaysSilent(turn = 2): Promise<void> {
+  claimAsk(ASK, AGENT);
+  stampClaimingTurn(ASK, turn);
+  const putBack = newestPutBack(ASK);
+  if (putBack) recordPiecesShown(ASK, AGENT, turn, putBack.id);
+  settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: turn, forcedEmpty: true });
+  await vi.dynamicImportSettled();
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+}
+
+/** The relayed text a person receives for a one-piece answer. */
+export const relayed = (answer: string): string => `Dojo: The helper's answer, as it was delivered:\n\n${answer}`;
 
 export interface RelayRow { id: string; tool: string; outcome: string; root_kind: string | null; root_id: string | null; turn_number: number | null; payload_json: string }
 export const relayRows = (): RelayRow[] => testDb().prepare(

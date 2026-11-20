@@ -38,7 +38,8 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
   // still goes out, so multi-delegation is not blocked.
   if (sentRows.length > 0) {
     // The ask's work row is already claimed, which stops a re-trigger; the join is child rows with an
-    // atomic countdown, and the message row is untouched. On reply the engine relays, never re-asks.
+    // atomic countdown, and the message row is untouched. Its answer comes back through the request.
+    let livePieces = 0;
     if (triggerRow && triggerWorkId) {
       try {
         const seen = new Set<string>();
@@ -65,6 +66,7 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
             ttlAt: Date.now() + JOIN_TTL_MINUTES * 60_000,
             threads,
           });
+          livePieces = opened.length;
           logger.info('v2: delegated the owner question, join opened', {
             agentId, work: triggerWorkId, children: opened.length, ownerRowid: triggerRow.rowid,
           }, agentId);
@@ -75,8 +77,10 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
         }, agentId);
       }
     }
+    // Ends as delegated only when a live piece is out; a send swallowed by another request's piece delegated nothing.
+    if (triggerRow && livePieces === 0) return proceed(state);
     // A user-triggered turn may not go silent on a hand-off, and this exit bypasses every turn-ending floor:
-    // one steer for a status line. If ignored, exit anyway; the park relay still delivers the answer.
+    // one steer for a status line. If ignored, exit anyway; the answer still comes back through the request.
     if (
       triggerRow &&
       !state.surfacedReplyThisTurn && !deferredDeliveredByAck &&

@@ -54,10 +54,6 @@ import {
   settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize, settleAskOnJoin,
   priorEngineJoinRelay,
 } from '../ask-settlement.js';
-import {
-  JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND, JOIN_DRIVE_ENTRY,
-  joinDriveCount, recordJoinDrive, nextJoinDriveRung,
-} from '../join-drive.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -297,7 +293,7 @@ describe('(i-b) the OTHER ordering — the turn answered FIRST and delegated aft
 
     landAll(kids);
     seedDelivery('d-compiled', { turn: 9, displayKind: 'agent-text', offsetSeconds: 5, content: 'HARBOR-0 and HARBOR-1' });
-    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compile answered the owner' });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-compiled', reason: 'the compile answered the owner' });
 
     expect(r.verdict).toBe('closed');
     const row = workRow(askId);
@@ -399,7 +395,7 @@ describe('(ii) the join settles through the authority, on the COMPILED delivery'
 
     // The compiled answer lands on a LATER turn.
     seedDelivery('d-compiled', { turn: 9, displayKind: 'agent-text', offsetSeconds: 5, content: 'HARBOR-0 and HARBOR-1' });
-    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compile answered the owner' });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-compiled', reason: 'the compile answered the owner' });
 
     expect(r.verdict).toBe('closed');
     expect(r.deliveryId).toBe('d-compiled');
@@ -410,50 +406,12 @@ describe('(ii) the join settles through the authority, on the COMPILED delivery'
     expect(eventKinds(askId)).toContain('compile_resolved');
   });
 
-  // UX-REPAIR round 2 T11 — the compiled answer usually lands on a BARE WAKE (S4 turn 4555:
-  // `turns.kind` NULL, `subject_kind='none'`), so `deliveries.root_kind`/`root_id` are written
-  // empty and no reverse lookup can find it — while the delegating turn's ACK, which does
-  // carry `root_kind='ask'`, is the only row that answers "which delivery belongs to this
-  // ask". The authority that settles the join holds both ids at that instant; it records it.
-  it('the compiled delivery is STAMPED with the ask it answered, at `compile_resolved`', () => {
-    const askId = claimedAsk('m-1', 7);
-    const kids = openJoin(askId, 2);
-    landAll(kids);
-    seedDelivery('d-compiled', { turn: 9, displayKind: 'agent-text', offsetSeconds: 5, content: 'HARBOR-0 and HARBOR-1' });
-    const before = mockDb.current!.prepare('SELECT root_kind, root_id FROM deliveries WHERE id = ?')
-      .get('d-compiled') as { root_kind: string | null; root_id: string | null };
-    expect(before.root_kind ?? '').toBe('');
-
-    expect(settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compile answered the owner' }).verdict).toBe('closed');
-
-    const after = mockDb.current!.prepare('SELECT root_kind, root_id FROM deliveries WHERE id = ?')
-      .get('d-compiled') as { root_kind: string; root_id: string };
-    expect(after.root_kind).toBe('ask');
-    expect(after.root_id).toBe(askId);
-  });
-
-  it('CONTROL: a delivery that ALREADY names its origin is never re-pointed', () => {
-    const askId = claimedAsk('m-1', 7);
-    const kids = openJoin(askId, 2);
-    landAll(kids);
-    seedDelivery('d-compiled', { turn: 9, displayKind: 'agent-text', offsetSeconds: 5, content: 'HARBOR-0 and HARBOR-1' });
-    mockDb.current!.prepare(`UPDATE deliveries SET root_kind = 'tracker', root_id = 'someone-elses' WHERE id = ?`)
-      .run('d-compiled');
-
-    expect(settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compile answered the owner' }).verdict).toBe('closed');
-
-    const after = mockDb.current!.prepare('SELECT root_kind, root_id FROM deliveries WHERE id = ?')
-      .get('d-compiled') as { root_kind: string; root_id: string };
-    expect(after.root_kind).toBe('tracker');
-    expect(after.root_id).toBe('someone-elses');
-  });
-
   it('NEGATIVE: the EARLIER delivery of the delegating turn is not the compiled answer', () => {
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 2);
     seedDelivery('d-status', { turn: 7, displayKind: 'agent-text', offsetSeconds: -30 });
     landAll(kids);
-    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'x' });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-status', reason: 'x' });
     expect(r.verdict).toBe('unchanged');
     expect(workRow(askId).state).not.toBe('done');
   });
@@ -478,7 +436,7 @@ describe('(ii) the join settles through the authority, on the COMPILED delivery'
     const kids = openJoin(askId, 2);
     landAll(kids);
     seedDelivery('d-late-status', { turn: 7, displayKind: 'agent-text', offsetSeconds: 5 });
-    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'x' });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-late-status', reason: 'x' });
     expect(r.verdict).toBe('unchanged');
     expect(workRow(askId).state).not.toBe('done');
     expect(workRow(askId).compile_pending).toBe(1);
@@ -489,7 +447,7 @@ describe('(ii) the join settles through the authority, on the COMPILED delivery'
     const kids = openJoin(askId, 2);
     landAll(kids);
     seedDelivery('d-report', { turn: 8, displayKind: 'agent-text', offsetSeconds: 5 });
-    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'x' });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-report', reason: 'x' });
     expect(r.verdict).toBe('closed');
     expect(r.deliveryId).toBe('d-report');
   });
@@ -572,18 +530,6 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
     expect(eventKinds(askId)).toContain('compile_resolved');
   });
 
-  it('…and by the CONVERSATION-SCOPED read too — the compile drive names no delivery', () => {
-    const askId = claimedAsk('m-1', 7);
-    const kids = openJoin(askId, 1);
-    landAll(kids);
-    seedDelivery('d-relay-in-turn', {
-      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', relaysJoin: askId,
-    });
-    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compiled answer reached the owner' });
-    expect(r.verdict).toBe('closed');
-    expect(r.deliveryId).toBe('d-relay-in-turn');
-  });
-
   it('NEGATIVE CONTROL, HELD (the requirement 95d4b23 was built for): the delegating turn own '
     + 'late STATUS LINE is still refused — same turn, same second, different tool', () => {
     const askId = claimedAsk('m-1', 7);
@@ -624,10 +570,7 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
   });
 
   it('NEGATIVE: ANOTHER join relay in the same conversation is not this ask compiled answer', () => {
-    // The conversation-scoped read has no join identity of its own, so the exemption is keyed
-    // to THIS row's relay. Without that scoping one join's relay closed a different ask that
-    // merely shared the conversation — measured while building this fix, in
-    // `agent/__tests__/join-relay-exactly-once.test.ts`'s third preservation clause.
+    // The relay exemption is keyed to THIS row's relay, so another join's relay is no answer here.
     const askId = claimedAsk('m-1', 7);
     const other = claimedAsk('m-2', 7);
     const kids = openJoin(askId, 1);
@@ -635,7 +578,7 @@ describe('(ii-b) the engine own relay settles the join even when it is stamped w
     seedDelivery('d-relay-other', {
       turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', relaysJoin: other,
     });
-    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'x' });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-relay-other', reason: 'x' });
     expect(r.verdict).toBe('unchanged');
     expect(workRow(askId).state).not.toBe('done');
   });
@@ -746,90 +689,10 @@ describe('the prior-relay reader — what the engine has ALREADY said about this
 });
 
 // ════════════════════════════════════════════════════════════════════════
-// (iii)–(v) THE LADDER — OR2's shape: detect, steer, verify, bounded retry,
-//           and only then the platform's own surface.
+// The hold arm: the ask stays OWED while its delegated work is out.
 // ════════════════════════════════════════════════════════════════════════
 
-describe('(iii) the re-drive counter accrues on the row own events', () => {
-  it('starts at zero and counts one per recorded drive', () => {
-    const askId = claimedAsk('m-1', 7);
-    openJoin(askId, 2);
-    expect(joinDriveCount(askId, JOIN_DRIVE_ENTRY.redrive)).toBe(0);
-    recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, { attempt: 1, bound: JOIN_REDRIVE_BOUND });
-    recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, { attempt: 2, bound: JOIN_REDRIVE_BOUND });
-    expect(joinDriveCount(askId, JOIN_DRIVE_ENTRY.redrive)).toBe(2);
-    // …and it is on the ROW's durable event log, not in memory.
-    expect(eventKinds(askId)).toContain('audit');
-  });
-
-  it('the counter is scoped to its own marker and to its own row', () => {
-    const askId = claimedAsk('m-1', 7);
-    const other = claimedAsk('m-2', 8);
-    recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, { attempt: 1, bound: JOIN_REDRIVE_BOUND });
-    recordJoinDrive(askId, JOIN_DRIVE_ENTRY.stuckNotice, { attempt: 1, bound: STUCK_NOTICE_RETRY_BOUND });
-    expect(joinDriveCount(askId, JOIN_DRIVE_ENTRY.redrive)).toBe(1);
-    expect(joinDriveCount(askId, JOIN_DRIVE_ENTRY.stuckNotice)).toBe(1);
-    expect(joinDriveCount(other, JOIN_DRIVE_ENTRY.redrive)).toBe(0);
-  });
-});
-
-describe('(iv) after N=3 failed re-drives the ladder asks the AGENT to tell the owner', () => {
-  it('the first N rungs are REAL DRIVES back to the owed step', () => {
-    const askId = claimedAsk('m-1', 7);
-    expect(JOIN_REDRIVE_BOUND).toBe(3);
-    for (let i = 1; i <= JOIN_REDRIVE_BOUND; i++) {
-      const d = nextJoinDriveRung(askId);
-      expect(d.rung).toBe('redrive');
-      expect(d.attempt).toBe(i);
-      expect(d.bound).toBe(JOIN_REDRIVE_BOUND);
-      recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, { attempt: d.attempt, bound: d.bound });
-    }
-  });
-
-  it('the (N+1)th look is the STUCK NOTICE rung, and it is bounded too', () => {
-    const askId = claimedAsk('m-1', 7);
-    for (let i = 1; i <= JOIN_REDRIVE_BOUND; i++) {
-      recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, { attempt: i, bound: JOIN_REDRIVE_BOUND });
-    }
-    const d = nextJoinDriveRung(askId);
-    expect(d.rung).toBe('stuck-notice');
-    expect(d.attempt).toBe(1);
-    expect(d.bound).toBe(STUCK_NOTICE_RETRY_BOUND);
-    expect(d.redrives).toBe(JOIN_REDRIVE_BOUND);
-  });
-});
-
-describe('(v) the ghost arm — the platform surface only after the notice bound is spent', () => {
-  it('the notice retries to its bound, THEN hands the fault to the platform surface', () => {
-    const askId = claimedAsk('m-1', 7);
-    for (let i = 1; i <= JOIN_REDRIVE_BOUND; i++) {
-      recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, { attempt: i, bound: JOIN_REDRIVE_BOUND });
-    }
-    for (let i = 1; i <= STUCK_NOTICE_RETRY_BOUND; i++) {
-      expect(nextJoinDriveRung(askId).rung).toBe('stuck-notice');
-      recordJoinDrive(askId, JOIN_DRIVE_ENTRY.stuckNotice, { attempt: i, bound: STUCK_NOTICE_RETRY_BOUND });
-    }
-    expect(nextJoinDriveRung(askId).rung).toBe('platform-trouble');
-  });
-
-  it('the platform rung is reached ONLY at the end — never while a drive or a notice is left', () => {
-    const askId = claimedAsk('m-1', 7);
-    expect(nextJoinDriveRung(askId).rung).toBe('redrive');
-    recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, { attempt: 1, bound: JOIN_REDRIVE_BOUND });
-    recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, { attempt: 2, bound: JOIN_REDRIVE_BOUND });
-    expect(nextJoinDriveRung(askId).rung).toBe('redrive');
-    recordJoinDrive(askId, JOIN_DRIVE_ENTRY.redrive, { attempt: 3, bound: JOIN_REDRIVE_BOUND });
-    recordJoinDrive(askId, JOIN_DRIVE_ENTRY.stuckNotice, { attempt: 1, bound: STUCK_NOTICE_RETRY_BOUND });
-    expect(nextJoinDriveRung(askId).rung).toBe('stuck-notice');
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════
-// The hold arm keeps working through the ladder: the ask stays OWED, and it
-// is never quietly written off while the system still has drives left.
-// ════════════════════════════════════════════════════════════════════════
-
-describe('the held ask stays OWED for the whole ladder', () => {
+describe('the held ask stays OWED while its pieces are out', () => {
   it('a blocked ask is not closed by a finalize that delivered nothing', () => {
     const askId = claimedAsk('m-1', 7);
     openJoin(askId, 2);

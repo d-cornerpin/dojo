@@ -1,6 +1,6 @@
 // A request that ends ends its helpers' work with it: called off ("never mind" in the person's words, or Stop),
 // its pieces are abandoned, each helper is told once to stop, and a later answer relays nothing; failed for want
-// of an answer, its pieces fail, nobody is told, and a late answer still reaches the person.
+// of an answer, its pieces fail, nobody is told, and a late answer still goes back to the agent for the person.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -14,6 +14,7 @@ import { stopByOwner, getAgentRuntime } from '../runtime.js';
 import { sweepExpiredJoins } from '../a2a-transport.js';
 import { trackerHandlers } from '../tools/cat/tracker.js';
 import { insertMessage } from '../../memory/message-store.js';
+import { newestPutBack } from '../../work/ask-settlement.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
 import { delegatedTextRequest, helperAnswers, relayRows, requestState, HELPER, THREAD, CONV, ASK } from './helpers/text-relay.js';
 
@@ -55,13 +56,14 @@ describe("ending a request ends its helpers' work", () => {
     expect(toldToStop()[0]).toContain('was called off by the owner. Stop working on "Check the venue" [task-helper-1]');
   });
 
-  it('a request that runs out of time fails its piece, tells nobody, and a late answer still reaches the person', async () => {
+  it('a request that runs out of time fails its piece, tells nobody, and a late answer goes back to the agent', async () => {
     vi.setSystemTime(Date.now() + 3_700_000);
     await sweepExpiredJoins();
     expect([requestState(), pieceState()]).toEqual(['failed', 'failed']);
     await settled();
     expect(toldToStop()).toEqual([]);
     await helperAnswers('The venue is free on the 14th.');
-    expect(relayRows().map((d) => d.tool)).toContain('a2a-join-late');
+    expect([requestState(), pieceState()]).toEqual(['open', 'done']);
+    expect(newestPutBack(ASK)?.kind).toBe('late');
   });
 });

@@ -18,7 +18,6 @@ export const MAX_FLOOR_STEER_ATTEMPTS = 2;
 // Ghost subjects steered out of band (a sweep, not a turn): no enqueue site, so they cannot join
 // the steer-queue floor table, but the ghost subject must come from a closed set, not a free string.
 export const OUT_OF_BAND_GHOST_SUBJECTS = [
-  'delegated-job-stuck',
   'owner-verdict-unasked',
   // A scheduled run owed the owner a message and closed unheard; one alert per run.
   'run-undelivered',

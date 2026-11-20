@@ -1,5 +1,5 @@
 // The gates that can refuse a call before it runs: the reminder-delivery lane, the main agent's warn-once
-// hurdle, the repeat-send stop and the compile gate, plus the hoarding advisory, which refuses nothing.
+// hurdle and the repeat-send stop, plus the hoarding advisory, which refuses nothing.
 // A refusal comes back as `{ state, refusal }` and `run-one.ts` returns it as the call's result.
 
 import { broadcast } from '../../../../gateway/ws.js';
@@ -7,16 +7,13 @@ import { isPrimaryAgent } from '../../../../config/platform.js';
 import { wouldWreck } from '../../../destructive-gate.js';
 import { identicalCallSignature } from '../../repeat-rule.js';
 import { isOwnerIMessageRecipient } from '../../../../services/safe-senders.js';
-import { toolOpKey } from '../../../../tools/work-verbs.js';
 import { LOADING_GATE_THRESHOLD, isStructuringTool } from '../../classifiers/hoarding.js';
 import { persistEngineSteer } from '../../engine-steer.js';
-import { compileOwedGateDecision } from '../../compile-owed-gate.js';
-import { advance, type AgentTurnState } from '../../state.js';
+import type { AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
 import { replyChannelWords } from '../../turn-address.js';
 import { liveAddress } from '../../turn-address-live.js';
 import { createLogger } from '../../../../logger.js';
-import { redactDeclaredSecretArgs } from '../../../../credentials/secret-fields.js';
 import { getDb } from '../../../../db/connection.js';
 import { SENT_TEXT_MAX_CHARS } from '../../../../receipts/store.js';
 import { recipientIdsMatch } from '../../../recipient-identity.js';
@@ -133,51 +130,6 @@ export function runRefusalGates(
       agentId, tool: tc.name, heavyLoads: state.heavyLoadsThisTurn, ratio: state.lastContextRatio,
     }, agentId);
     // Fall through: the tool executes normally. No refusal.
-  }
-  // Compile gate: while the owner is owed a compiled reply and every piece is back, refuse calls outside
-  // a closed set. The decision re-reads `compile_pending`, so any way out of the duty takes the gate down.
-  const compileOwed = compileOwedGateDecision(
-    state.compileOwedAskIds, state.compileGateSatisfied, toolOpKey(tc.name, tc.arguments),
-    state.compileOrderReachedModel,
-  );
-  if (compileOwed.live.length !== state.compileOwedAskIds.length) {
-    state = advance(state, { compileOwedAskIds: compileOwed.live });
-    logger.info('v2: compile gate dropped asks whose compile is no longer owed', {
-      agentId, remaining: compileOwed.live.length,
-    }, agentId);
-  }
-  // Armed and owed, but the assembly could not confirm the pieces reached the model: the refusal would
-  // be false, so the call runs, logged at WARN as an engine defect.
-  if (compileOwed.standDownUnverified) {
-    logger.warn('v2: compile gate stood down — the compile order did not reach the model whole', {
-      agentId, tool: tc.name, owedCount: compileOwed.live.length,
-      sample: compileOwed.live.slice(0, 3).map((id) => id.slice(0, 8)),
-    }, agentId);
-  }
-  if (compileOwed.refuse) {
-    const askListShort = compileOwed.live.slice(0, 3).map((id) => id.slice(0, 8)).join(', ');
-    const refusalText = (
-      `Refused: engine compile gate. The person who asked is owed the compiled reply for the work you delegated ` +
-      `(ask ${askListShort}${compileOwed.live.length > 3 ? '...' : ''}) — every piece is back and the ` +
-      `platform has already brought you to it. Compose it — the pieces are in the steer, quoted verbatim. ` +
-      `Write the combined reply now, as this turn's message; do not look anything up first. ` +
-      `Only two calls run while this is owed: ONE send_to_agent (if a piece is a hand-off rather than a ` +
-      `deliverable, ask that agent for the result directly), and a tracker status call. ` +
-      `"${tc.name}" works normally again as soon as the reply lands.`
-    );
-    try {
-      broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: redactDeclaredSecretArgs(tc.name, tc.arguments) ?? {} });
-      broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusalText.slice(0, 500) });
-    } catch { /* best effort */ }
-    logger.info('v2: compile gate refused call', {
-      agentId, tool: tc.name, owedCount: compileOwed.live.length,
-    }, agentId);
-    return { state, refusal: {
-      toolCallId: tc.id,
-      name: tc.name,
-      content: refusalText,
-      isError: true,
-    } };
   }
   return { state, refusal: null };
 }

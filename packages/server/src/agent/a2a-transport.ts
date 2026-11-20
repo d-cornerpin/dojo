@@ -29,31 +29,25 @@ import { asTurn } from './turn-context.js';
 import {
   THREAD_HOP_CAP, isTerminal,
   findJoinChildByThread, findFailedJoinForThread, childrenForThread,
-  landPiece, settlePieceWithoutResult, repointJoinPieceToHandOff,
+  landPiece, settlePieceWithoutResult, repointJoinPieceToHandOff, transition, appendWorkEvent,
   joinState, joinPieces, dueJoins, openJoins,
   dueJoinsUnderClosedParent,
-  compilePendingJoins, failJoinClosed, clearJoinCompilePending,
+  failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
   extendJoinTtl, JOIN_LIVENESS_MAX_TOTAL_MS,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
-import { deferJoinRelay, takeDeferredJoinRelays } from './deferred-join-relay.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, replyInFlight } from '../work/ask-settlement.js';
-// …and the grind-vs-tell ladder: how often the system comes back, and what it does when spent.
-import {
-  JOIN_DRIVE_ENTRY, JOIN_REDRIVE_BOUND, nextJoinDriveRung, recordJoinDrive,
-  joinRedriveIsBlind, compileSteerText, everyPieceLandedWithContent, engineRelayPreface,
-  type JoinDriveDecision,
-} from '../work/join-drive.js';
-import { joinWakeFooter } from './a2a-join-footer.js';
-import { currentTurnNumber } from './v2/turn-record.js';
-import { selfWakeStandDown } from '../work/work-reaper.js';
-import { recordFloorGhost } from './v2/floor-ghost.js';
+import { settleAskOnJoin, priorEngineJoinRelay, replyInFlight, handBackAsk, newestPutBack } from '../work/ask-settlement.js';
+import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
+import { afterCommit, withUnit } from '../db/unit.js';
+import { serveLater } from './v2/serve-later.js';
+import { agentTurnWindow } from '../router/router-window.js';
+import { renderTokens } from '../memory/lanes.js';
 import { handInHeard } from '../work/done/effects.js';
 import { latestHandIn } from '../work/done/record.js';
-import { FINAL_REPLY_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
+import { FINAL_REPLY_INTENTS, FINAL_REPLY_SQL, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
@@ -533,9 +527,9 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   }
 
   // A deliverable to the primary gets an owner-surface hint; ops senders and join-owned threads
-  // are excluded: ops traffic is not user-facing, and the join already delivers "Heard back".
+  // are excluded: ops traffic is not user-facing, and the join puts its answer back itself.
   let primaryDeliverableHint = '';
-  // Read BEFORE the piece lands: landing settles the child, and this one lookup serves the hint and the join.
+  // Read BEFORE the piece lands below: landing settles the child.
   const joinChild = findJoinChildByThread(target.id, threadId);
   // A result for a request the owner stopped is stored and starts nothing: no hint, no wake.
   const forEndedRequest = resultForEndedRequest(target.id, threadId);
@@ -551,31 +545,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     }
   } catch { /* best effort */ }
 
-  // Only an answer on a DELEGATED thread lands on its join, which relays it or steers a compile, so the hint
-  // above is suppressed there; a question or a progress note reaches the agent as itself and the piece stays open.
-  const isReplyIntent = FINAL_REPLY_INTENTS.has(effectiveIntent);
-  // The sender's declared hand-off outcome, surfaced to their tool result; undefined unless passed.
-  let handOffReport: { applied: boolean; message: string } | undefined;
-  if (isReplyIntent) {
-    try {
-      const landed = await landReplyOnJoin({
-        agentId: target.id, threadId, threadShort, payload: envelope.payload ?? '',
-        fromAgent: envelope.fromAgent, intent: effectiveIntent, messageId: null, senderName,
-        handsOffThread: envelope.handsOffThread ?? null,
-      });
-      handOffReport = landed.handOff;
-    } catch (err) {
-      // The join owns this thread, so if landing fails here NOBODY tells the owner; hence the
-      // error tier. The row is named by `loudOnPieceAbort` in `work/store.ts`.
-      logger.error('A2A close-the-loop delivery failed — the reply came back and was not landed on its join; the owner will not be told', {
-        agentId: target.id, thread: threadShort, fromAgent: envelope.fromAgent,
-        intent: effectiveIntent, error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // Composed AFTER the join landed the piece; what it says of the owner's copy is that landing's fact.
-  threadInfo = (joinChild && joinWakeFooter({ agentId: target.id, parentId: joinChild.parentId, replyConversationId: joinChild.replyConversationId, intent: effectiveIntent, threadShort })) || threadInfo;
   const promotionTag = autoPromotedFromFyi
     ? ` (auto-promoted from FYI by the engine, payload looked deliverable-shaped)`
     : '';
@@ -720,6 +689,27 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     return { delivered: false, reason: 'PERSIST_SKIPPED', threadId };
   }
 
+  // Only an answer on a DELEGATED thread lands on its join, once its row and files are saved; a reply the join
+  // owns wakes nobody (its request is the wake). A question or a note reaches the agent as itself.
+  let handOffReport: { applied: boolean; message: string } | undefined;
+  if (FINAL_REPLY_INTENTS.has(effectiveIntent)) {
+    try {
+      const landed = await landReplyOnJoin({
+        agentId: target.id, threadId, threadShort, payload: envelope.payload ?? '',
+        fromAgent: envelope.fromAgent, intent: effectiveIntent, messageId: msgId, senderName,
+        handsOffThread: envelope.handsOffThread ?? null,
+      });
+      if (landed.handled) requiresResponse = false;
+      handOffReport = landed.handOff;
+    } catch (err) {
+      // The join owns this thread, so if landing fails here NOBODY tells the owner; hence the error tier.
+      logger.error('A2A close-the-loop delivery failed — the reply came back and was not landed on its join; the owner will not be told', {
+        agentId: target.id, thread: threadShort, fromAgent: envelope.fromAgent,
+        intent: effectiveIntent, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // ── 12. Broadcast to the dashboard's Inter-Agent lane (with attachments) ──
   // Inter-agent traffic leaves `chat:message` ENTIRELY: a peer (or engine-origin) A2A delivery
   // broadcasts on the dedicated `interagent:message` lane, never the human chat feed, so no
@@ -811,20 +801,23 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
 
 // The delegated JOIN: the owner's ask is the PARENT work row, each delegated thread a CHILD
 // keyed on the full thread id; `remaining_children` decrements inside the one writer,
-// `transition()`. This file is transport: it lands pieces, relays answers, fails stuck joins
-// closed. The engine guarantees: a lone piece is relayed, a fan-out compiles at zero, the
-// reaper sends one honest notice, a late answer still lands.
+// `transition()`. This file is transport: it lands pieces, puts the answer back in the person's
+// queue, relays it when the agent does not answer, fails stuck joins closed. A late answer still lands.
 
-/** Give the steered compile a real chance before the engine relays the pieces itself. */
-const COMPILE_GRACE_SECONDS = 60;
 const JOIN_BOOT_BATCH = 50;
 
-/** Short quote of the owner's ask for the fail-closed notice; leading markers stripped. */
+/** The person's request as they wrote it, its leading markers stripped. */
+const stripMarkers = (content: string): string => content.replace(/^\s*(?:\[[^\]]*\]\s*)+/, '').trim();
+
+/** Short quote of the owner's ask for the fail-closed notice. */
 function questionSnippet(content: string): string {
-  const stripped = content.replace(/^\s*(?:\[[^\]]*\]\s*)+/, '').replace(/\s+/g, ' ').trim();
-  if (!stripped) return '';
+  const stripped = stripMarkers(content).replace(/\s+/g, ' ');
   return stripped.length > 160 ? `${stripped.slice(0, 160).trimEnd()}...` : stripped;
 }
+
+/** The helper whose piece carries delivery `evidence`, else the first piece's. */
+const helperOf = (pieces: JoinPiece[], evidence: string | null): string =>
+  resolveAgentDisplayName((pieces.find((p) => p.resultDeliveryId === evidence) ?? pieces[0])?.assigneeAgent) ?? 'the helper';
 
 /** The owner's inbound row behind a join: the parent ask's `root_id` IS that message id. */
 function askRowForJoin(join: JoinState): { content: string; inbound_meta: string | null; created_at: number } | null {
@@ -943,22 +936,21 @@ function tellAgentTheJoinFailed(join: JoinState, what: string, outcome: string):
  *  rides the index, keyed on the FULL thread id. */
 export function findUnlandedInboundReply(
   agentId: string, threadId: string, sinceMs: number,
-): { payload: string; senderName: string; messageId: string; senderId: string | null } | null {
+): { payload: string; senderName: string; messageId: string; senderId: string | null; intent: A2AIntent } | null {
   const row = getDb().prepare(
-    `SELECT id, content, source_agent_id FROM messages
+    `SELECT id, content, source_agent_id, a2a_intent FROM messages
       WHERE agent_id = ? AND role = 'user' AND source_agent_id IS NOT NULL
         AND source_agent_id != ? AND created_at >= ?
-        AND a2a_thread_id IN (?, ?)
-      ORDER BY (a2a_intent IN ('ANSWER','DELIVERABLE','COMPLETE','FAIL')) DESC, rowid DESC
-      LIMIT 1`,
+        AND a2a_thread_id IN (?, ?) AND a2a_intent IN (${FINAL_REPLY_SQL})
+      ORDER BY rowid DESC LIMIT 1`,
   ).get(agentId, agentId, sinceMs - 15 * 60_000, threadId, a2aThreadShortLegacy(threadId)) as
-    | { id: string; content: string; source_agent_id: string | null } | undefined;
+    | { id: string; content: string; source_agent_id: string | null; a2a_intent: A2AIntent } | undefined;
   if (!row) return null;
   // The stored row is envelope + payload + footer; relay just the payload the sender wrote.
   const payload = extractPayloadFromA2AMessage(row.content) ?? '';
   const fromTag = row.content.match(/^\[A2A:[A-Z]+\s+thread:\S+\s+from:([^\]]+)\]/);
   const senderName = resolveAgentDisplayName(row.source_agent_id) ?? fromTag?.[1]?.trim() ?? 'the other agent';
-  return { payload, senderName, messageId: row.id, senderId: row.source_agent_id };
+  return { payload, senderName, messageId: row.id, senderId: row.source_agent_id, intent: row.a2a_intent };
 }
 
 /** Record the A2A hand-back as a delivery: `work.done` needs one to point at. Inside a
@@ -974,51 +966,45 @@ function recordPieceDelivery(p: {
   }), 'a2a: piece delivery', { from: p.fromAgent, to: p.toAgent });
 }
 
-/** The compile steer: pieces are back, so the model gets their content VERBATIM and writes
- *  ONE combined reply with no tools: deliverables live outside the chat store it could query. */
-function steerModelToCompile(join: JoinState, rung?: { attempt: number; bound: number }): void {
-  const PIECE_CAP = 1200;
-  const rendered = joinPieces(join.id).map((p, i) => {
-    const name = resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent';
-    const raw = (p.content ?? '').replace(/\s+/g, ' ').trim();
-    const body = raw.length > 0
-      ? (raw.length > PIECE_CAP ? `${raw.slice(0, PIECE_CAP)} [truncated]` : raw)
-      : `(no content came back — this piece ${p.state === 'abandoned' ? 'was abandoned' : 'failed'})`;
-    return `Piece ${i + 1} (from ${name}, thread ${p.threadId.slice(0, 8)}): "${body}"`;
-  });
-  // The wording lives in `work/join-drive.ts`; the fresh tail prints it whole to the model.
-  const steer = compileSteerText({
-    // The relay delivers to the ASK's own sender, so the order names that person.
-    asker: compileAskerFromMeta(
-      askRowForJoin(join)?.inbound_meta ?? null,
-      (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle),
-      (ch) => deliveryLabel(ch as ReplyDestination),
-    ),
-    total: join.total, pieces: rendered,
-    attempt: rung?.attempt ?? null, bound: rung?.bound ?? JOIN_REDRIVE_BOUND,
-  });
-  // Rides the IMPERATIVE engine-steer channel, not the ambient NOTICE: kept out of the
-  // pending-event pool so it never drives its OWN turn; the deliverable's wake carries it.
-  insertEngineEventIfAbsent({
-    work: null, id: uuidv4(), agentId: join.agentId, content: `${JOIN_STEER_LABEL} ${steer}`,
-    sourceAgentId: null, originIntent: 'fanout_join',
-  });
-  logger.info('join complete: steered the model to compile the combined reply', {
-    agentId: join.agentId, work: join.id, total: join.total,
-    attempt: rung?.attempt ?? null, bound: rung?.bound ?? null,
+type PutBackKind = 'compile' | 'late';
+
+/** The order handed to the turn serving the request: what it asked, the files, every piece quoted whole. */
+function orderText(join: JoinState, kind: PutBackKind, evidence: string | null): string {
+  const ask = askRowForJoin(join);
+  const asker = compileAskerFromMeta(ask?.inbound_meta ?? null, (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle), (ch) => deliveryLabel(ch as ReplyDestination));
+  const pieces = joinPieces(join.id);
+  return compileSteerText({
+    kind, asker, request: stripMarkers(ask?.content ?? ''), files: pieceFiles(join.id),
+    helper: helperOf(pieces, evidence),
+    pieces: pieces.map((p, i) => {
+      const body = (p.content ?? '').trim() || `(no content came back: this piece ${p.state === 'abandoned' ? 'was abandoned' : 'failed'})`;
+      return `Piece ${i + 1} (from ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}, thread ${p.threadId.slice(0, 8)}): "${body}"`;
+    }),
   });
 }
 
-/** A terminal A2A reply landed on a delegated thread: advance the join. When the join owned
- *  the reply the caller suppresses the ordinary deliverable hint. */
-async function landReplyOnJoin(p: {
+/** The order for the turn serving request `askId`, from its newest put-back; null when its answer is not back. */
+export function joinOrderFor(askId: string): { putBackId: number; text: string; firstLine: string } | null {
+  const putBack = newestPutBack(askId);
+  const join = putBack ? joinState(askId) : null;
+  if (!putBack || !join) return null;
+  const text = orderText(join, putBack.kind, putBack.evidence);
+  return { putBackId: putBack.id, text: `${JOIN_STEER_LABEL} ${text}`, firstLine: text.split('\n')[0] };
+}
+
+interface LandInput {
   agentId: string; threadId: string; threadShort: string; payload: string;
   fromAgent: string; intent: A2AIntent; messageId: string | null; senderName: string;
   handsOffThread?: string | null;
-}): Promise<{ handled: boolean; handOff?: { applied: boolean; message: string } }> {
+}
+
+/** A terminal A2A reply on a delegated thread: advance the join. A reply the join handles wakes nobody: its row's
+ *  wake is cleared before any await, and the caller suppresses the ordinary deliverable hint. */
+async function landReplyOnJoin(p: LandInput): Promise<{ handled: boolean; handOff?: { applied: boolean; message: string } }> {
   const child = findJoinChildByThread(p.agentId, p.threadId);
+  const handled = child !== null || deliverLateAnswerIfJoinFailedClosed(p);
+  if (handled && p.messageId) getDb().prepare('UPDATE messages SET a2a_requires_response = 0 WHERE id = ?').run(p.messageId);
   if (!child) {
-    const handled = await deliverLateAnswerIfJoinFailedClosed(p);
     return {
       handled,
       handOff: (p.handsOffThread ?? '').trim()
@@ -1132,8 +1118,7 @@ function applyDeclaredHandOff(
   };
 }
 
-/** The countdown reached zero. ONE piece: the ENGINE relays it; MORE: steer the model to
- *  COMPILE, relaying a partial as THE answer is the fan-out bug. None: the fail-closed notice. */
+/** The countdown reached zero: nothing came back, the fail-closed notice; else the answer goes back to the agent. */
 async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
     const failReason = joinFailureReason(joinPieces(join.id));
@@ -1142,287 +1127,98 @@ async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): P
     tellAgentTheJoinFailed(join, `${failReason}.`, await relayNotice(join, failClosedNotice(join, senderNameHint)));
     return;
   }
-  if (join.total === 1) {
-    // Never while the delegating agent is still speaking; `releaseDeferredJoinRelays` sends it at turn end.
-    if (activeRuns.has(join.agentId)) {
-      deferJoinRelay(join.agentId, join.id, senderNameHint);
-      logger.info('join relay: held until the delegating turn ends', { agentId: join.agentId, work: join.id });
-      return;
+  answerBackInView(join, 'compile', newestPieceDelivery(joinPieces(join.id)));
+}
+
+/** A helper's answer for a person's request goes back to the agent, once: the request back in their queue, due now,
+ *  and a put-back record the steer reads. A request answered or failed before is re-opened on the helper's own
+ *  delivery; one too old or too big to put back is relayed instead. */
+function answerBackInView(join: JoinState, kind: PutBackKind, evidence: string | null): void {
+  const relayInstead = withUnit((): boolean => {
+    const instead = tooOldOrBigToPutBack(join, kind, evidence);
+    if (kind === 'compile') {
+      // Only the pass that clears the flag goes on; a relay on its way, or one already sent, settles the request.
+      const relayed = replyInFlight(join.id) || priorEngineJoinRelay(join.id) !== null;
+      if (clearJoinCompilePending(join.id, 'its delegated work is back', instead || relayed ? undefined : { kind, evidence }) === 0) return false;
+      if (relayed) {
+        settledOnPriorRelay(join.id);
+        return false;
+      }
+    } else if (!instead) appendWorkEvent(join.id, 'compile_resolved', 'engine', { reason: 'its helper answered after all', kind, evidence });
+    if (instead) return true;
+    const state = joinState(join.id)?.parentState;
+    const reason = 'its delegated work is back';
+    if (state === 'blocked') handBackAsk(join.id, { agentId: join.agentId, turnNumber: null, cause: 'free', actorId: 'a2a-join', reason });
+    else if ((state === 'done' || state === 'failed') && evidence) {
+      transition(join.id, { to: 'open', by: 'engine', actorId: 'a2a-join', evidenceRef: evidence, clearResultDelivery: true, reason });
     }
-    await relayOnePieceJoin(join, senderNameHint);
-    return;
-  }
-  steerModelToCompile(join);
-}
-
-async function relayOnePieceJoin(join: JoinState, senderNameHint?: string): Promise<void> {
-  const piece = joinPieces(join.id)[0];
-  const name = resolveAgentDisplayName(piece?.assigneeAgent) ?? senderNameHint ?? 'the other agent';
-  const answer = (piece?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 1200);
-  // The labelled copy is in the agent's own conversation, so no second notice.
-  await relayToAsker(join, { tool: 'a2a-join-relay', frame: `Heard back from ${name}: `, answer, files: pieceFiles(join.id), reports: piece?.resultDeliveryId ?? null });
-}
-
-/** The delegating turn ended: tell the owner what came back while it ran, unless already relayed. */
-export async function releaseDeferredJoinRelays(agentId: string): Promise<void> {
-  for (const { joinId, senderNameHint } of takeDeferredJoinRelays(agentId)) {
-    try {
-      const join = joinState(joinId);
-      if (!join?.complete || join.total !== 1) continue;
-      const already = priorEngineJoinRelay(join.id);
-      if (already) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId, deliveryId: already.id, reason: 'the engine had already relayed the delegated answer' }), 'a2a: join settled on the relay already sent', join.id);
-      else await relayOnePieceJoin(join, senderNameHint);
-    } catch (err) {
-      logger.warn('deferred join relay failed; the join reaper and boot re-drain still find it', { agentId, joinId, error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-}
-
-/** An answer arriving AFTER its join failed closed still reaches the owner, ONCE, as an
- *  update. The exactly-once guard is the `failed -> open` transition: a second finds `done`. */
-async function deliverLateAnswerIfJoinFailedClosed(p: {
-  agentId: string; threadId: string; threadShort: string; payload: string;
-  fromAgent: string; intent: A2AIntent; messageId: string | null; senderName: string;
-}): Promise<boolean> {
-  const failed = findFailedJoinForThread(p.agentId, p.threadId);
-  if (!failed) return false;
-  const join = joinState(failed.parentId);
-  if (!join) return false;
-  const evidence = recordPieceDelivery({
-    fromAgent: p.fromAgent, toAgent: p.agentId, messageId: p.messageId, intent: p.intent,
+    serveLater({ kind: 'ask', id: join.id }, Date.now(), reason);
+    return false;
   });
-  if (!evidence) return false;
-  const claimed = claimFailedJoinForLateAnswer(join.id, evidence, `${p.senderName} answered after all`);
-  if (claimed.kind !== 'applied') return true;
-  const answer = String(p.payload).replace(/\s+/g, ' ').trim().slice(0, 1200);
-  tellAgentWhatTheRelaySent(join, await relayToAsker(join, {
-    tool: 'a2a-join-late', frame: `Update: ${p.senderName} answered after all. `, answer, files: pieceFiles(join.id), reports: evidence,
-  }));
-  return true;
+  if (relayInstead) afterCommit(() => void relayPiecesWhole(join.id, kind, evidence));
 }
 
-/** What the compile drive did for one agent, so its caller can WAKE the agent it just
- *  steered. A steer nobody is woken for is the "written, never seen" shape. */
-export interface CompileDriveResult {
-  /** Rungs SPENT this pass (re-drives + stuck notices). */
-  drives: number;
-  /** The agent needs a turn to see what was just written. */
-  wakeWanted: boolean;
+/** A first answer the Dojo already relayed: the request settles on that relay. */
+function settledOnPriorRelay(joinId: string): boolean {
+  const prior = priorEngineJoinRelay(joinId);
+  if (prior) settleAskOnJoin(joinId, { deliveryId: prior.id, basis: 'engine-relay', reason: 'the engine had already relayed the delegated answer' });
+  return prior !== null;
 }
 
-/** A settlement refusal is a VALUE, not a silence: the same discipline the transition
- *  boundary keeps, applied to the authority's own outcome type. */
-function noteSettlementRefusal(
-  o: { verdict: string; detail: string }, where: string, workId: string,
-): void {
-  if (o.verdict === 'closed') return;
-  logger.info(`join not settled: ${where}`, { work: workId, verdict: o.verdict, detail: o.detail });
+/** Too old to hand back (a day, or from before its agent's New Session), or its order over 40% of the agent's window. */
+function tooOldOrBigToPutBack(join: JoinState, kind: PutBackKind, evidence: string | null): boolean {
+  const r = getDb().prepare(
+    `SELECT w.opened_at AS opened, unixepoch(a.session_started_at) * 1000 AS session, a.model_id AS model
+       FROM work w JOIN agents a ON a.id = w.agent_id WHERE w.id = ?`,
+  ).get(join.id) as { opened: number; session: number | null; model: string | null } | undefined;
+  if (!r) return false;
+  if (Date.now() - r.opened > 24 * 3_600_000 || (r.session !== null && r.opened < r.session)) return true;
+  return r.model !== null
+    && renderTokens([{ role: 'user', content: orderText(join, kind, evidence) }]) > 0.4 * agentTurnWindow(join.agentId, r.model);
 }
 
-/** THE COMPILE DRIVE: every compile-pending join of one agent, driven by the
- *  `work/join-drive.ts` ladder: real drive, a steer, then the platform watchdog; "answered"
- *  is the authority's call on a delivery that postdates the join's own `join_complete`. */
-export async function resolveCompilePendingJoins(agentId: string): Promise<CompileDriveResult> {
-  const db = getDb();
-  const out: CompileDriveResult = { drives: 0, wakeWanted: false };
-  for (const join of compilePendingJoins(agentId)) {
-    try {
-      // A relay on its way is neither stuck nor owed: the request settles when it goes, or fails if it never does.
-      if (replyInFlight(join.id)) continue;
-      // ── 1. HAS THE COMPILED ANSWER LANDED? The authority decides, on the ledger. ──
-      const settled = settleAskOnJoin(join.id, {
-        agentId, reason: 'the compiled answer reached the owner',
-      });
-      if (settled.verdict === 'closed') {
-        logger.info('compile drive: the owner has their answer; the join is settled on it', {
-          agentId, work: join.id, deliveryId: settled.deliveryId,
-        });
-        continue;
-      }
-
-      // 2. IT HAS NOT. OWNER FIRST, ALWAYS, but the STEER still rides: the storm law is about
-      // WAKES, not content, so the drive is written either way and only the WAKE stands down.
-      const { standDown, humanAsksOpen } = selfWakeStandDown(agentId);
-
-      // The pieces are read ONCE per pass and handed to every rung that needs them. One read, one truth.
-      const piecesNow = joinPieces(join.id);
-      const rung = nextJoinDriveRung(join.id, {
-        // The one-piece world is `resolveCompletedJoin`'s; this rung is fenced off it.
-        everyPieceLanded: join.total > 1 && everyPieceLandedWithContent(piecesNow),
-      });
-      if (rung.rung === 'redrive') {
-        // A RUNG IS ONLY SPENT WHEN THE MODEL HAD A TURN TO SPEND IT ON: two drive passes can
-        // land between two turns, so the steer still rides and only the free SPEND stands down.
-        const turnKey = currentTurnNumber(agentId);
-        const blind = joinRedriveIsBlind(join.id, turnKey);
-        steerModelToCompile(join, rung);
-        recordJoinDrive(join.id, blind ? JOIN_DRIVE_ENTRY.redriveDeferred : JOIN_DRIVE_ENTRY.redrive, {
-          attempt: rung.attempt, bound: rung.bound, turnNumber: turnKey,
-          note: blind
-            ? 'the owed compile was put back in front of the agent, but a rung was already spent on this '
-              + 'turn — the model has not run since the last steer, so this pass is not a chance and does not count'
-            : 'the engine put the owed compile back in front of the agent with the pieces quoted',
-        });
-        out.drives++; out.wakeWanted ||= !standDown;
-        logger.info('compile drive: re-drove the agent to the owed compile', {
-          agentId, work: join.id, attempt: rung.attempt, bound: rung.bound,
-          turnNumber: turnKey, rungSpent: !blind,
-          wakeQueued: !standDown, humanAsksOpen,
-        });
-        continue;
-      }
-
-      if (rung.rung === 'engine-relay') {
-        // THE ENGINE SHIPS THE PIECES ITSELF: the drives are spent and every piece is back, so a
-        // "could not do it" stuck notice would be false. It composes one preface line plus the
-        // pieces VERBATIM; the "already told them?" read runs FIRST, no second telling.
-        const already = priorEngineJoinRelay(join.id);
-        if (already) {
-          noteSettlementRefusal(settleAskOnJoin(join.id, {
-            agentId, deliveryId: already.id, basis: 'engine-relay',
-            reason: 'the engine had already relayed the delegated answer to the owner',
-          }), 'a2a: the relay rung settled on the relay the owner already got', join.id);
-          recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.engineRelay, {
-            attempt: rung.attempt, bound: rung.bound,
-            note: 'the owner already held an engine relay of these pieces, so the rung settled on '
-              + 'that delivery rather than sending a second one',
-          });
-          out.drives++;
-          logger.info('compile drive: the owner already had these pieces; the relay rung settled on them', {
-            agentId, work: join.id, deliveryId: already.id, tool: already.tool,
-          });
-          continue;
-        }
-        const body = piecesNow
-          .map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}:\n${
-            (p.content ?? '').trim()}`)
-          .join('\n\n');
-        tellAgentWhatTheRelaySent(join, await relayToAsker(join, {
-          tool: 'a2a-join-relay', frame: `${engineRelayPreface(piecesNow.length)}\n\n`, answer: body,
-          files: pieceFiles(join.id), reports: newestPieceDelivery(piecesNow),
-        }));
-        recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.engineRelay, {
-          attempt: rung.attempt, bound: rung.bound,
-          note: 'the drives were spent with every piece back, so the engine relayed the pieces to the owner verbatim',
-        });
-        // NO WAKE: the owner has the content; a wake would re-open the answered compile.
-        out.drives++;
-        logger.info('compile drive: the drives were spent and every piece was back, so the engine shipped them', {
-          agentId, work: join.id, pieces: piecesNow.length,
-          redrives: rung.redrives, humanAsksOpen,
-        });
-        continue;
-      }
-
-      if (rung.rung === 'stuck-notice') {
-        // Drives spent: the asker is owed the truth, AND THE AGENT SAYS IT. The engine steers
-        // and verifies on the ledger: any real delivery to them closes this out.
-        steerAgentToTellOwnerStuck(join, rung);
-        recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.stuckNotice, {
-          attempt: rung.attempt, bound: rung.bound,
-          note: 'the engine asked the agent to tell the owner the job is stuck, in its own words',
-        });
-        out.drives++; out.wakeWanted ||= !standDown;
-        logger.warn('compile drive: drives spent; steered the agent to tell the owner it is stuck', {
-          agentId, work: join.id, attempt: rung.attempt, bound: rung.bound, redrives: rung.redrives,
-          wakeQueued: !standDown, humanAsksOpen,
-        });
-        continue;
-      }
-
-      // 3. THE AGENT IS NOT SPEAKING AT ALL: a PLATFORM fault, said on the platform's own
-      //    health surface. One row, one note, one frame; not a new voice.
-      if (joinDriveCountOnce(join.id)) {
-        recordFloorGhost({
-          agentId, turnNumber: null, floor: 'delegated-job-stuck', workId: join.id,
-          attempts: rung.redrives + rung.stuckNotices,
-          ownerLine:
-            'your agent delegated part of a request, the pieces came back, and it has not been able to '
-            + 'finish or report on it — the platform steered it several times and got no reply.',
-          detail: { redrives: rung.redrives, stuck_notices: rung.stuckNotices },
-        }, { broadcast });
-        recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.ghosted, {
-          attempt: 1, bound: 1,
-          note: 'the agent did not speak after every drive and every notice; the platform surface was told',
-        });
-      }
-
-      // 3b. THE ENGINE DOES NOT SAY THE SAME THING TWICE: a refused settlement leaves the row
-      //    `compile_pending`, so the ledger knows. An existing relay settles; the guard removes
-      //    a SECOND telling, never the first.
-      const alreadyRelayed = priorEngineJoinRelay(join.id);
-      if (alreadyRelayed) {
-        logger.info('compile drive: the engine had ALREADY relayed this join to the owner; not relaying twice', {
-          agentId, work: join.id, deliveryId: alreadyRelayed.id, tool: alreadyRelayed.tool,
-        });
-        noteSettlementRefusal(settleAskOnJoin(join.id, {
-          agentId, deliveryId: alreadyRelayed.id,
-          reason: 'the engine had already relayed the delegated answer to the owner',
-        }), 'a2a: join settled on the relay the owner already got', join.id);
-        continue;
-      }
-
-      // 4. THE OWNER STILL GETS WHAT CAME BACK: last in the ladder, and only past the grace floor.
-      const ans = db.prepare('SELECT created_at FROM messages WHERE id = ?')
-        .get(join.rootId) as { created_at: number } | undefined;
-      const ageSec = ans ? (Date.now() - ans.created_at) / 1000 : COMPILE_GRACE_SECONDS + 1;
-      if (ageSec < COMPILE_GRACE_SECONDS) continue;
-      const pieces = joinPieces(join.id).filter((x) => (x.content ?? '').trim().length > 0);
-      const text = pieces.length > 0
-        ? `All the delegated pieces are back; here they are directly:\n${
-          pieces.map((x) => `From ${resolveAgentDisplayName(x.assigneeAgent) ?? 'a delegated agent'}: ${
-            (x.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)}`).join('\n')}`
-        : 'the delegated pieces came back, but no combined reply was put together in time.';
-      if (pieces.length === 0) {
-        const claimed = failJoinClosed(join.id, {
-          reason: 'the compile never answered and no piece carried content',
-          expectedState: join.parentState,
-        });
-        if (claimed.kind !== 'applied') continue;
-        tellAgentWhatTheRelaySent(join, await relayNotice(join, text));
-      } else {
-        await relayToAsker(join, { tool: 'a2a-join-relay', frame: '', answer: text, files: pieceFiles(join.id), reports: newestPieceDelivery(joinPieces(join.id)) });
-      }
-      logger.info('compile-pending join resolved: the engine relayed the recorded pieces (the steered compile never answered the owner)', {
-        agentId, work: join.id, pieces: pieces.length,
-      });
-    } catch (err) {
-      logger.warn('compile-pending join resolution failed (left for the reaper)', {
-        agentId, error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-  return out;
-}
-
-/** The ghost surface fires ONCE per row: `recordFloorGhost` writes an owner-visible note, and
- *  a sweep that repeated it every ten minutes would be the noise the ladder exists to bound. */
-function joinDriveCountOnce(workId: string): boolean {
-  return (getDb().prepare(
-    `SELECT COUNT(*) AS n FROM work_events
-      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = ?`,
-  ).get(workId, JOIN_DRIVE_ENTRY.ghosted) as { n: number }).n === 0;
-}
-
-/** RUNG N+1: THE AGENT TELLS THE OWNER. The engine steers and verifies; the words are the
- *  agent's. It rides the engine-steer channel as a declared rider, never its own turn. */
-function steerAgentToTellOwnerStuck(join: JoinState, rung: JoinDriveDecision): void {
-  const askerWords = askerOf(join);
+/** THE ONE RELAY of a delegated answer: the Dojo sends every piece whole, labelled as its own, and tells the agent.
+ *  Its delivery settles the request; a first answer the Dojo already relayed settles on that relay instead. */
+export async function relayPiecesWhole(joinId: string, kind: PutBackKind, evidence: string | null): Promise<void> {
+  const join = joinState(joinId);
+  if (!join || (kind === 'compile' && settledOnPriorRelay(join.id))) return;
   const pieces = joinPieces(join.id);
-  const back = pieces.filter((p) => (p.content ?? '').trim().length > 0).length;
-  const steer =
-    `${JOIN_STEER_LABEL} `
-    + `${askerWords === 'the owner' ? 'The owner' : askerWords} is still waiting on the request you delegated, and the platform has brought you back to it `
-    + `${rung.redrives} time(s) without a reply reaching them. ${back} of ${join.total} delegated piece(s) `
-    + `came back. TELL ${askerWords.toUpperCase()} NOW, in your own words, as your written reply if this turn is talking to them, otherwise in an explicit send that names them: what you asked for, `
-    + `what came back, and — plainly — that you have not finished it. If you can give them the combined `
-    + `answer, give it. If you cannot, say so honestly rather than saying nothing. Do NOT call a send `
-    + `tool when this turn is talking to them; the engine routes your written reply.`;
-  insertEngineEventIfAbsent({
-    work: { taskId: join.id, runId: null, rootKind: 'ask', rootId: join.rootId },
-    id: uuidv4(), agentId: join.agentId, content: steer,
-    sourceAgentId: null, originIntent: 'fanout_join',
-  });
+  // One piece goes as delivered (to another Dojo's agent that is the whole message); several are each named.
+  const answer = pieces.length === 1 ? (pieces[0].content ?? '').trim() : pieces.map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}${
+    p.state === 'done' ? '' : p.state === 'failed' ? ' (it reported a failure)' : ' (it never answered)'}:\n${(p.content ?? '').trim()}`)
+    .join('\n\n');
+  const frame = kind === 'late' ? `Update: ${helperOf(pieces, evidence)} answered after all. ` : `${engineRelayPreface(pieces.length)}\n\n`;
+  tellAgentWhatTheRelaySent(join, await relayToAsker(join, {
+    tool: kind === 'late' ? 'a2a-join-late' : 'a2a-join-relay', frame, answer,
+    files: pieceFiles(join.id), reports: kind === 'compile' ? newestPieceDelivery(pieces) : evidence,
+  }));
+}
+
+/** An answer after its request failed for want of one takes the one late road, in one unit that rolls back when the
+ *  landing is refused: the request and its piece re-open on that answer, the piece lands, the answer goes back.
+ *  True when the reply belonged to such a request, landed or not. */
+function deliverLateAnswerIfJoinFailedClosed(p: LandInput): boolean {
+  const failed = findFailedJoinForThread(p.agentId, p.threadId);
+  const join = failed ? joinState(failed.parentId) : null;
+  const evidence = failed && join
+    ? recordPieceDelivery({ fromAgent: p.fromAgent, toAgent: p.agentId, messageId: p.messageId, intent: p.intent }) : null;
+  if (!failed || !join || !evidence) return false;
+  try {
+    withUnit(() => {
+      if (claimFailedJoinForLateAnswer(join.id, evidence, `${p.senderName} answered after all`).kind !== 'applied') return;
+      transition(failed.childId, {
+        to: 'open', by: 'engine', actorId: 'a2a-join', evidenceRef: evidence, reason: `late answer: ${p.senderName} answered after all`,
+      });
+      const landed = landPiece(failed.childId, { deliveryId: evidence, content: p.payload, messageId: p.messageId, actorId: p.fromAgent });
+      if (landed.result.kind !== 'applied') throw new Error(`the late answer did not land (${landed.result.kind})`);
+      answerBackInView(join, 'late', evidence);
+    });
+  } catch (err) {
+    logger.info('a late answer was not landed; nothing changed', {
+      agentId: p.agentId, thread: p.threadShort, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return true;
 }
 
 /** IS ANY AGENT THIS JOIN IS WAITING ON PROVABLY STILL WORKING? `activeRuns` is in-process
@@ -1448,26 +1244,20 @@ function liveAssigneeForJoin(join: JoinState): { agentId: string; grantMs: numbe
   return null;
 }
 
-/** LAND a stranded reply before judging the join: the owner must not hear "no answer" while
- *  it sits unlanded on the child. Returns the join after the landing (null if gone). */
-function landStrandedReplies(join: JoinState): JoinState | null {
+/** LAND a stranded reply before judging the join, through the one landing: the owner must not hear "no answer"
+ *  while it sits unlanded on the child. Returns the join after the landing (null if gone). */
+async function landStrandedReplies(join: JoinState): Promise<JoinState | null> {
   const ask = askRowForJoin(join);
-  let state: JoinState | null = join;
   for (const piece of joinPieces(join.id)) {
     if (isTerminal(piece.state)) continue;
-    const stranded = findUnlandedInboundReply(join.agentId, piece.threadId, ask?.created_at ?? Date.now());
-    if (!stranded) continue;
-    const deliveryId = recordPieceDelivery({
-      fromAgent: stranded.senderId ?? 'unknown', toAgent: join.agentId,
-      messageId: stranded.messageId, intent: 'DELIVERABLE',
+    const s = findUnlandedInboundReply(join.agentId, piece.threadId, ask?.created_at ?? Date.now());
+    if (!s) continue;
+    await landReplyOnJoin({
+      agentId: join.agentId, threadId: piece.threadId, threadShort: a2aThreadShort(piece.threadId), payload: s.payload,
+      fromAgent: s.senderId ?? 'unknown', intent: s.intent, messageId: s.messageId, senderName: s.senderName,
     });
-    if (!deliveryId) continue;
-    const settled = landPiece(piece.childId, {
-      deliveryId, content: stranded.payload, messageId: stranded.messageId, actorId: stranded.senderId,
-    });
-    state = settled.result.kind === 'applied' ? settled.join : joinState(join.id);
   }
-  return state ?? joinState(join.id);
+  return joinState(join.id);
 }
 
 /** A helper that handed its piece's job in and never replied on the piece's thread is heard now, from its hand-in note. */
@@ -1486,7 +1276,7 @@ async function resolveOpenJoin(
   join: JoinState, opts: { failIfUnanswered: boolean; askedNameHint?: string | null },
 ): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled' | 'extended'> {
   await handInsNeverHeard(join);
-  const state = landStrandedReplies(joinState(join.id) ?? join);
+  const state = await landStrandedReplies(joinState(join.id) ?? join);
   if (!state) return 'already-settled';
   if (state.complete) {
     await resolveCompletedJoin(state, opts.askedNameHint ?? undefined);
@@ -1530,7 +1320,7 @@ async function resolveOpenJoin(
  *  `failClosedNotice`, so one composer owns "I could not get an answer". */
 function arrivedLine(p: JoinPiece): string {
   return `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}${p.state === 'failed' ? ' (it reported a failure)' : ''}: ${
-    (p.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)}`;
+    (p.content ?? '').trim()}`;
 }
 
 function landedContentNotice(
@@ -1552,24 +1342,13 @@ function landedContentNotice(
 async function resolveJoinUnderClosedParent(
   join: JoinState, opts: { askedNameHint?: string | null } = {},
 ): Promise<'relayed' | 'noticed' | 'already-settled'> {
-  const state = landStrandedReplies(join);
+  const state = await landStrandedReplies(join);
   if (!state) return 'already-settled';
 
   const snapshot = joinPieces(state.id);
   const outstanding = snapshot.filter((p) => !isTerminal(p.state));
-
-  if (outstanding.length === 0) {
-    // Everything is back after all: relay it. The parent is terminal, so there is no state
-    // move to make; `compile_pending` is cleared so the ordinary drain cannot relay twice.
-    const withContent = snapshot.filter((p) => (p.content ?? '').trim().length > 0);
-    if (withContent.length === 0) return 'already-settled';
-    const text = `All the delegated pieces are back; here they are directly:\n${withContent.map(arrivedLine).join('\n')}`;
-    await relayToAsker(state, { tool: 'a2a-join-relay', frame: '', answer: text, files: pieceFiles(state.id), reports: newestPieceDelivery(snapshot) });
-    if (state.compilePending) {
-      clearJoinCompilePending(state.id, 'relayed the recorded pieces under a closed parent');
-    }
-    return 'relayed';
-  }
+  // Everything is back after all: the landing that completed the join already put the answer back.
+  if (outstanding.length === 0) return 'relayed';
 
   // Settle FIRST, deliver second: the guard has to be won before the send, exactly as the
   // first arm wins `failJoinClosed` before it delivers.
@@ -1592,36 +1371,10 @@ async function resolveJoinUnderClosedParent(
  *  the guard). `dueJoins` and `dueJoinsUnderClosedParent` are complementary arms on `state`. */
 export async function sweepExpiredJoins(): Promise<{
   failedClosed: number; relayedReplies: number; noticedUnderClosedParent: number;
-  compileDrives: number;
   /** Joins the reaper REFUSED to fail because their assignee was provably working. */
   extendedForLiveAssignee: number;
 }> {
-  const out = {
-    failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0, compileDrives: 0,
-    extendedForLiveAssignee: 0,
-  };
-
-  // THE COMPILE DRIVE, ON THE REAPER'S OWN CADENCE: population is `openJoins()` filtered to
-  // compile-pending rows, no new finder and no new clock; each drive consults the storm law.
-  try {
-    const agents = new Set(openJoins().filter((j) => j.compilePending).map((j) => j.agentId));
-    for (const agentId of agents) {
-      const drive = await resolveCompilePendingJoins(agentId);
-      out.compileDrives += drive.drives;
-      if (drive.wakeWanted) {
-        const { getAgentRuntime } = await import('./runtime.js');
-        getAgentRuntime().handleMessage(agentId, '').catch((err) => {
-          logger.warn('compile drive: the wake for a re-driven join failed', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          });
-        });
-      }
-    }
-  } catch (err) {
-    logger.warn('join reaper: the compile drive pass failed (the TTL arms still run)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  const out = { failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0, extendedForLiveAssignee: 0 };
 
   let joins: JoinState[] = [];
   try {
@@ -1632,10 +1385,6 @@ export async function sweepExpiredJoins(): Promise<{
   }
   for (const join of joins) {
     try {
-      if (join.compilePending) {
-        await resolveCompilePendingJoins(join.agentId);
-        continue;
-      }
       const outcome = await resolveOpenJoin(join, { failIfUnanswered: true });
       if (outcome === 'relayed') out.relayedReplies++;
       else if (outcome === 'failed-closed') out.failedClosed++;

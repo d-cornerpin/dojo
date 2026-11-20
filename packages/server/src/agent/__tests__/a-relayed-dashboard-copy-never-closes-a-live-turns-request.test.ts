@@ -13,7 +13,8 @@ import { insertMessage } from '../../memory/message-store.js';
 import { claimAsk, stampClaimingTurn } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, requestState, CONV } from './helpers/text-relay.js';
+import { delegatedTextRequest, helperAnswers, requestState, ASK, CONV } from './helpers/text-relay.js';
+import { relayPiecesWhole } from '../a2a-transport.js';
 
 const LIVE = 'ask:m-live';
 const state = (id: string) => (testDb().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
@@ -33,6 +34,7 @@ describe('a relayed dashboard copy never closes a live turn\'s request', () => {
     ctx.root = { kind: 'ask', id: 'm-live', sourceMessageId: 'm-live', conversationId: CONV };
     try {
       await helperAnswers('The venue is free on the 14th.');
+      await relayPiecesWhole(ASK, 'compile', null);
     } finally {
       endTurnContext(AGENT);
     }

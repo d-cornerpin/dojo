@@ -15,16 +15,6 @@ import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
 
-/**
- * Reply text discharges the owed compile, so the gate comes down for the rest of the turn. Erring
- * toward disarm is deliberate: the gate re-arms next turn from the spine if the compile is pending.
- */
-function compileDutyDischarged(s: AgentTurnState): Partial<AgentTurnState> {
-  return s.compileOwedAskIds.length > 0 && !s.compileGateSatisfied
-    ? { compileGateSatisfied: true }
-    : {};
-}
-
 /** Persist the assistant's own row and everything that rides with it. No way out. */
 export async function runPersistAssistant(
   state: AgentTurnState,
@@ -184,10 +174,7 @@ export async function runPersistAssistant(
     // Text riding with tool calls is still deliverable: keep the latest so the end-of-turn channel
     // router has it even when the turn ends in [no-reply].
     if (persistedContent && persistedContent.trim().length > 0) {
-      state = advance(state, {
-        lastAssistantTextForIM: stripMoodMarker(persistedContent),
-        ...compileDutyDischarged(state),
-      });
+      state = advance(state, { lastAssistantTextForIM: stripMoodMarker(persistedContent) });
       // New words replace an early answer as the turn's reply, so the turn's end sends them.
       turnCtx.earlyAnswerRowId = null;
     }
@@ -216,10 +203,7 @@ export async function runPersistAssistant(
       });
     }
     if (persistedContent.trim().length > 0) {
-      state = advance(state, {
-        lastAssistantTextForIM: stripMoodMarker(persistedContent),
-        ...compileDutyDischarged(state),
-      });
+      state = advance(state, { lastAssistantTextForIM: stripMoodMarker(persistedContent) });
       turnCtx.earlyAnswerRowId = null;
       noteTerminalAnswer(messageId, 'a genuine terminal reply');
     }

@@ -666,6 +666,7 @@ export function findJoinChildByThread(agentId: string, threadId: string): JoinCh
       FROM work
      WHERE agent_id = ? AND kind = 'task' AND root_kind = 'a2a_thread' AND root_id = ?
        AND parent_id IS NOT NULL AND state IN ${CHILD_OPEN_STATES}
+       AND NOT EXISTS (SELECT 1 FROM work p WHERE p.id = work.parent_id AND p.state = 'failed')
      ORDER BY opened_at DESC LIMIT 1
   `).get(agentId, threadId) as
     | { id: string; parent_id: string; agent_id: string; root_id: string; state: WorkState;
@@ -972,15 +973,6 @@ export function dueJoinsUnderClosedParent(nowMs: number, limit = 25): JoinState[
   return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
 }
 
-export function compilePendingJoins(agentId: string, limit = 5): JoinState[] {
-  const rows = getDb().prepare(`
-    SELECT id FROM work
-     WHERE agent_id = ? AND compile_pending = 1 AND state NOT IN ('done','failed','abandoned')
-     ORDER BY opened_at ASC LIMIT ?
-  `).all(agentId, limit) as Array<{ id: string }>;
-  return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
-}
-
 /** Fail a join CLOSED. `expectedState` is the exactly-once guard: of several reapers, a re-drain and a
  *  live relay, one gets `applied`, the rest a `state-conflict` refusal, and only the winner notifies the
  *  owner. The actor is the scheduler because an engine actor would need evidence (G6). */
@@ -1067,14 +1059,16 @@ export function findFailedJoinForThread(
   return r ? { childId: r.child_id, parentId: r.parent_id } : null;
 }
 
-/** The compile answered the owner through a path that records no delivery (dashboard replies): the join
- *  stops waiting to be compiled but does not become `done`, which needs a real delivery to point at. */
-export function clearJoinCompilePending(parentWorkId: string, reason: string): number {
+/** The join stops waiting to be compiled; with `putBack` the event is the record that its answer went back to the
+ *  agent (`kind` and `evidence`, read by `newestPutBack`). Returns 1 only for the pass that cleared the flag. */
+export function clearJoinCompilePending(
+  parentWorkId: string, reason: string, putBack?: { kind: string; evidence: string | null },
+): number {
   return withUnit((): number => {
     const changed = getDb().prepare(
       'UPDATE work SET compile_pending = 0, updated_at = ? WHERE id = ? AND compile_pending = 1',
     ).run(now(), parentWorkId).changes;
-    if (changed === 1) appendEvent(parentWorkId, 'compile_resolved', 'engine', { reason });
+    if (changed === 1) appendEvent(parentWorkId, 'compile_resolved', 'engine', { reason, ...putBack });
     return changed;
   });
 }

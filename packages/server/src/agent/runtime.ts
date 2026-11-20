@@ -610,28 +610,9 @@ class AgentRuntime {
       // Safety net: any throwing or early-return path still stops the heartbeat; the stop is idempotent.
       stopStatusHeartbeat(agentId);
 
-      // A delegated answer that arrived mid-turn goes out now: this finally is where every exit lands.
-      try { await (await import('./a2a-transport.js')).releaseDeferredJoinRelays(agentId); } catch (err) {
-        logger.warn('deferred join relay not released; the join reaper and boot re-drain still find it', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-      }
-
       // Clear a stale preempt flag: a mid-stream abort can skip the loop's own check, and a left-over
       // flag would end the next queued run on entry and stall its message.
       preemptedAgents.delete(agentId);
-
-      // Compile-pending joins: close the loop whatever the model did with the compile steer.
-      try {
-        const { resolveCompilePendingJoins } = await import('./a2a-transport.js');
-        const drive = await resolveCompilePendingJoins(agentId);
-        // The compile order is only a rider, never a turn's own reason, so without a wakeup it is never seen:
-        // queue one (the storm law and a ladder of three bound it).
-        if (drive.wakeWanted) {
-          queueSelfWake(agentId, 'compile-drive');
-          logger.info('compile drive: queued a wakeup so the re-driven agent actually sees the owed step', {
-            agentId, drives: drive.drives,
-          }, agentId);
-        }
-      } catch { /* best effort; the TTL sweep backstops */ }
 
       if (pendingWakeups.has(agentId)) {
         pendingWakeups.delete(agentId);

@@ -9,27 +9,26 @@ vi.mock('../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engi
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
 
-import { resolveCompilePendingJoins } from '../a2a-transport.js';
+import { liftStandDowns } from '../../work/ask-settlement.js';
+import { sweepExpiredJoins } from '../a2a-transport.js';
+import { insertMessage } from '../../memory/message-store.js';
 import { openObligations } from '../../work/store.js';
-import { stillCompileOwed } from '../v2/compile-owed-gate.js';
-import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, relayRows, requestState, ASK } from './helpers/text-relay.js';
+import { AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
+import { agentStaysSilent, delegatedTextRequest, helperAnswers, relayRows, requestState, ASK, CONV } from './helpers/text-relay.js';
 
 beforeEach(() => delegatedTextRequest());
 
-const ladder = () => testDb().prepare(
-  "SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND json_extract(payload, '$.entry_kind') IS NOT NULL",
-).get(ASK) as { n: number };
-
 describe('a relay waiting to go is not called stuck or owed', () => {
-  it('the drive leaves it alone and the agent owes nothing, however long it waits', async () => {
+  it('nothing serves it again or lifts it, however long it waits, and no second relay is written', async () => {
     await helperAnswers('The venue is free on the 14th.');
+    await agentStaysSilent();
     expect(relayRows().map((r) => r.outcome)).toEqual(['pending']);
-    for (let i = 0; i < 8; i++) expect(await resolveCompilePendingJoins(AGENT)).toEqual({ drives: 0, wakeWanted: false });
-    expect(ladder().n).toBe(0);
+    for (let i = 0; i < 3; i++) await sweepExpiredJoins();
+    insertMessage({ id: 'm-next', agentId: AGENT, role: 'user', content: 'any news?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
+    liftStandDowns(AGENT, 'ask:m-next', 3);
     expect(requestState()).toBe('blocked');
+    expect(relayRows()).toHaveLength(1);
     expect(openObligations(AGENT).map((o) => o.id)).not.toContain(ASK);
-    expect(stillCompileOwed([ASK])).toEqual([]);
   });
 
   it('CONTROL: with no relay on its way, the request is owed', async () => {

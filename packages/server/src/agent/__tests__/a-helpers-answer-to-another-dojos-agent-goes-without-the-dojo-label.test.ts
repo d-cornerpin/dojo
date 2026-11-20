@@ -11,18 +11,19 @@ vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => ne
 
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, requestState, textsSent } from './helpers/text-relay.js';
+import { agentStaysSilent, delegatedTextRequest, helperAnswers, relayed, requestState, textsSent } from './helpers/text-relay.js';
 
 describe('a helper\'s answer to another Dojo\'s agent goes without the Dojo label', () => {
   beforeEach(() => delegatedTextRequest({ senderIsAgent: true }));
 
   it('the answer alone goes, and the request settles on it', async () => {
     await helperAnswers('The venue is free on the 14th.');
+    await agentStaysSilent();
     await deliverDueReplies(Date.now());
     expect(textsSent()).toEqual(['The venue is free on the 14th.']);
     expect(requestState()).toBe('done');
     const copy = testDb().prepare("SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant'").all(AGENT);
-    expect(copy).toEqual([{ content: 'Dojo: Heard back from Helper: The venue is free on the 14th.' }]);
+    expect(copy).toEqual([{ content: relayed('The venue is free on the 14th.') }]);
   });
 });
 
@@ -31,7 +32,8 @@ describe('CONTROL: a person', () => {
 
   it('gets the labelled line', async () => {
     await helperAnswers('The venue is free on the 14th.');
+    await agentStaysSilent();
     await deliverDueReplies(Date.now());
-    expect(textsSent()).toEqual(['Dojo: Heard back from Helper: The venue is free on the 14th.']);
+    expect(textsSent()).toEqual([relayed('The venue is free on the 14th.')]);
   });
 });

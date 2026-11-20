@@ -12,13 +12,14 @@ vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => ne
 import { stopByOwner } from '../runtime.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { imessage, testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, relayRows, requestState, ASK } from './helpers/text-relay.js';
+import { agentStaysSilent, delegatedTextRequest, helperAnswers, relayRows, requestState, ASK } from './helpers/text-relay.js';
 
 beforeEach(() => delegatedTextRequest());
 
 describe('a stopped relay ends its request as called off by the owner', () => {
   it('the queued relay is dropped, the request is abandoned by the owner, and nothing goes', async () => {
     await helperAnswers('The venue is free on the 14th.');
+    await agentStaysSilent();
     expect(stopByOwner(AGENT)).toEqual({ ended: 1, repliesNotSent: 1 });
     expect(relayRows().map((r) => r.outcome)).toEqual(['suppressed']);
     expect(requestState()).toBe('abandoned');

@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Message, WsEvent } from '@dojo/shared';
 import { insertMessageIfAbsent, type NewMessage, type Persisted } from '../../memory/message-store.js';
 import { advance, type AgentTurnState } from './state.js';
-import { enqueueSteer, type SteerFloorId } from './steer-queue.js';
+import { enqueueSteer, type SteerFloorId, type SteerShown } from './steer-queue.js';
 
 export interface EngineSteerDeps {
   broadcast: (event: WsEvent) => void;
@@ -23,6 +23,10 @@ export interface EngineSteerParams {
   atLoop: number;
   /** Latch key for a KEYED floor (the A2A enforcer latches per assign id). Absent = one-shot. */
   key?: string;
+  /** The stored row's text when it differs from the delivered steer (a long order is stored as its first line). */
+  rowContent?: string;
+  /** The request whose put-back this steer carries; recorded as shown when the steer reaches a model call. */
+  shown?: SteerShown;
 }
 
 // Row and broadcast are best-effort; the queue entry is the always-enqueued delivery; the latch dedups.
@@ -32,14 +36,15 @@ export function persistEngineSteer(
   deps: EngineSteerDeps,
 ): AgentTurnState {
   const { agentId, content, turnNumber } = params;
+  const rowContent = params.rowContent ?? content;
   const id = uuidv4();
   try {
-    (deps.insertRow ?? insertMessageIfAbsent)({ id, agentId, role: 'system', content, turnNumber });
+    (deps.insertRow ?? insertMessageIfAbsent)({ id, agentId, role: 'system', content: rowContent, turnNumber });
     const message: Message = {
       id,
       agentId,
       role: 'system',
-      content,
+      content: rowContent,
       tokenCount: null,
       modelId: null,
       cost: null,
@@ -52,7 +57,7 @@ export function persistEngineSteer(
   }
   return advance(state, {
     steerQueue: enqueueSteer(state.steerQueue, {
-      floor: params.floor, content, key: params.key, atLoop: params.atLoop,
+      floor: params.floor, content, key: params.key, atLoop: params.atLoop, shown: params.shown,
     }),
   });
 }

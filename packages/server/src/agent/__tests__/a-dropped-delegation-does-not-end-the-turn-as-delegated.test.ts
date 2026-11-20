@@ -54,7 +54,7 @@ describe('a turn ends as delegated only on a delegating send that went out', () 
     expect(step(ask, 'spawn_agent').directive).toBe('exit');
     expect(pieces(ask)).toEqual([`piece:${ask}:thread-job`]);
   });
-  it('a follow-up on a thread whose piece belongs to an earlier request opens no second piece', async () => {
+  it('a follow-up on a thread whose piece belongs to an earlier request opens no second piece and does not end the turn', async () => {
     const first = ownerAsk();
     await assignSent('thread-job');
     step(first, 'send_to_agent');
@@ -62,7 +62,7 @@ describe('a turn ends as delegated only on a delegating send that went out', () 
     testDb().prepare("UPDATE a2a_threads SET updated_at = datetime('now', '-20 minutes') WHERE thread_id = 'thread-job'").run();
     const second = ownerAsk();
     await assignSent('thread-job', TURN + 1, 'also include the prices');
-    expect(step(second, 'send_to_agent', TURN + 1).directive).toBe('exit');
+    expect(step(second, 'send_to_agent', TURN + 1).directive).toBe('proceed');   // nothing of the second request is out
     expect(pieces(second)).toEqual([]);
   });
   it('a delegating turn with no text is steered once for a status line, and its next tool step ends it', async () => {
