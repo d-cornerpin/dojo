@@ -112,6 +112,8 @@ export interface TurnContext {
   // The required reply (v2/forced-reply.ts): armed at most once a turn, and pending until its call returns.
   forcedReplySpent: boolean;
   forceReplyPending: boolean;
+  // Why the reply's push to the person's channel is held (it still shows in chat); null when it is not.
+  pushHeld: string | null;
 
   // Timer closures read it at fire time, so it lives on the bag; no driver let beside it.
   state: AgentTurnState | null;
@@ -166,6 +168,7 @@ export function openTurnContext(agentId: string): TurnContext {
     servedRequest: null,
     forcedReplySpent: false,
     forceReplyPending: false,
+    pushHeld: null,
     state: null,
   };
   openContexts.set(agentId, ctx);

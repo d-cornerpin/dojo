@@ -140,6 +140,8 @@ const THE_DRIVER_CARRIES = [
   // The required reply: armed in the loop's exit, read by the gates, the model call, the empty ladder and finalize.
   'forcedReplySpent',
   'forceReplyPending',
+  // Why this turn's push is held: written by the closeout floors, read by finalize's router.
+  'pushHeld',
   // PHASE-6 T2 (CUT 9) — the LAST tranche's one written crossing, and the crossing the
   // ruling was written about. T2 handed this span back rather than guess: seven closures
   // declared in `preflight` read live crossing mutable state. Eight cuts drained six of
