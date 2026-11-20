@@ -234,16 +234,15 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     // A request that ends ends its open pieces with it: called off, they are abandoned and their helpers told;
     // failed, they fail, nobody is told, and a late answer takes the late road.
     const ends = row.kind === 'ask' && (input.to === 'abandoned' || input.to === 'failed') && !isTerminal(from);
-    const pieces = ends ? db.prepare("SELECT id FROM work WHERE parent_id = ? AND kind = 'task' AND state IN ('open','claimed','blocked')").all(workId) as Array<{ id: string }> : [];
-    for (const p of pieces) {
-      transition(p.id, {
-        to: input.to, by: input.by, actorId, evidenceRef: input.evidenceRef,
-        reason: input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',
-      });
-    }
-    if (pieces.length > 0 && input.to === 'abandoned') {
+    const pieces = ends ? db.prepare(`SELECT id, assignee_agent AS helper, root_id AS thread FROM work
+      WHERE parent_id = ? AND kind = 'task' AND state IN ${CHILD_OPEN_STATES}`).all(workId) as Array<{ id: string; helper: string | null; thread: string }> : [];
+    const ended = pieces.filter((p) => transition(p.id, {
+      to: input.to, by: input.by, actorId, evidenceRef: input.evidenceRef,
+      reason: input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',
+    }).kind === 'applied');
+    if (ended.length > 0 && input.to === 'abandoned') {
       afterCommit(() => void import('../agent/a2a-transport.js')
-        .then((m) => m.tellHelpersTheRequestEnded(pieces.map((p) => p.id), input.by === 'owner'))
+        .then((m) => m.tellHelpersTheRequestEnded(ended, input.by === 'owner'))
         .catch((err: unknown) => logger.warn('the helpers of an ended request were not told', { workId, error: String(err) })));
     }
 

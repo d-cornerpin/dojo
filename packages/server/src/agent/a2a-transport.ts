@@ -1462,11 +1462,9 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
 }
 
 /** A request was called off: the helper on each of its pieces is told once to stop that work. */
-export async function tellHelpersTheRequestEnded(pieceIds: string[], byOwner: boolean): Promise<void> {
-  for (const id of pieceIds) {
-    const piece = getDb().prepare('SELECT assignee_agent AS helper, root_id AS thread FROM work WHERE id = ?')
-      .get(id) as { helper: string | null; thread: string } | undefined;
-    if (!piece?.helper) continue;
+export async function tellHelpersTheRequestEnded(pieces: Array<{ helper: string | null; thread: string }>, byOwner: boolean): Promise<void> {
+  for (const piece of pieces) {
+    if (!piece.helper) continue;
     const task = getDb().prepare(
       "SELECT id, title FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
     ).get(piece.helper, piece.thread) as { id: string; title: string | null } | undefined;
