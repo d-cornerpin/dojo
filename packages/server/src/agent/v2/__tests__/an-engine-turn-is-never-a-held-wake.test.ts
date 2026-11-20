@@ -1,6 +1,6 @@
 // Owner law #28: the channel the agent is told its reply goes to equals the channel it is delivered on.
-// An engine turn (reminder, tracker event) with nobody waiting is NEVER a held wake: its text reaches an
-// away owner's phone (outbound-root.ts `engine_occurrence`), so the address must say so. A held wake stays
+// An engine turn (reminder, tracker event) with nobody waiting is NEVER a held wake: with his iMessage affinity its
+// text reaches an away owner's phone (outbound-root.ts `engine_occurrence`), so the address must say so. A held wake stays
 // a person-turn idea. Behavioural: drives routeTerminalReply and compares with the told (live) address.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -26,14 +26,14 @@ const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation:
 function address(p: 'in_dojo' | 'away', settled: boolean, isEngineTurn: boolean) {
   return computeTurnAddress({
     counterparty: owner, isEngineTurn, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
-    presence: p, imessageBridgeConfigured: true, ownerAffinityChannel: null, autoRoutes: true, settledContextWakeTurn: settled,
+    presence: p, imessageBridgeConfigured: true, ownerAffinityChannel: 'imessage', autoRoutes: true, settledContextWakeTurn: settled,
   });
 }
 /** The channel the reply was queued on; a held or dashboard reply leaves the text in the dashboard. */
 async function delivered(addr: ReturnType<typeof address>, settled: boolean, isEngineTurn: boolean) {
   queueSpy.mockClear();
   const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: null, inboundContext: null } as never;
-  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address: addr, ownerAffinityDestination: null, replyFiles: [] }, counterparty: owner, chosenConvKey: 'c', settledContextWakeTurn: settled, isEngineTurn, persistRoutingMarker: () => {} } as never;
+  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address: addr, ownerAffinityDestination: 'imessage', replyFiles: [] }, counterparty: owner, chosenConvKey: 'c', settledContextWakeTurn: settled, isEngineTurn, persistRoutingMarker: () => {} } as never;
   await routeTerminalReply(state, ctx);
   const queued = queueSpy.mock.calls[0] as unknown as [{ address: { channel: string } }] | undefined;
   return queued ? queued[0].address.channel : 'dashboard';

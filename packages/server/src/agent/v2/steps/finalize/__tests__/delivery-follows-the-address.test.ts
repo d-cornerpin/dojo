@@ -23,14 +23,14 @@ import type { TurnCounterparty } from '../../../counterparty.js';
 const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
 
-function addressFor(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard' | null, now: 'in_dojo' | 'away', primary = true) {
-  return computeTurnAddress({ autoRoutes: primary, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: now, imessageBridgeConfigured: true, ownerAffinityChannel: null });
+function addressFor(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard' | null, now: 'in_dojo' | 'away', primary = true, affinity: 'imessage' | null = null) {
+  return computeTurnAddress({ autoRoutes: primary, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: now, imessageBridgeConfigured: true, ownerAffinityChannel: affinity });
 }
 /** The channel the reply was queued on, or `dashboard` when nothing left the dashboard. */
 async function destinationOf(cp: TurnCounterparty, address: ReturnType<typeof addressFor>, stateInbound: 'imessage' | 'dashboard' | null): Promise<string> {
   queueSpy.mockClear();
   const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: stateInbound, inboundContext: null } as never;
-  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, ownerAffinityDestination: null, replyFiles: [] }, counterparty: cp, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false } as never;
+  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, ownerAffinityDestination: address.ownerAffinity, replyFiles: [] }, counterparty: cp, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false } as never;
   await routeTerminalReply(state, ctx);
   expect(queueSpy.mock.calls.length).toBeLessThanOrEqual(1);
   const queued = queueSpy.mock.calls[0] as unknown as [{ address: { channel: string } }] | undefined;
@@ -65,9 +65,9 @@ describe('delivery follows the turn address', () => {
 describe('what the agent is told equals what is used, including after a presence flip', () => {
   // Owner ruling 2026-11-04 (field fix 3 test-2 round): a person's DASHBOARD ask is answered on the
   // dashboard whatever the presence, so the presence-flip requirement this clause holds is shown on
-  // an owner turn that no dashboard message started (a proactive turn), which away still forwards.
-  it('owner turn with no inbound: told dashboard at preflight, the owner goes away mid-turn: the live address and delivery both say iMessage', async () => {
-    const address = addressFor(owner, null, 'in_dojo');
+  // an owner turn that no dashboard message started (a proactive turn), which his affinity moves while he is away.
+  it('owner turn with no inbound and iMessage affinity: told dashboard at preflight, the owner goes away mid-turn: the live address and delivery both say iMessage', async () => {
+    const address = addressFor(owner, null, 'in_dojo', true, 'imessage');
     expect(address.deliveryChannel).toBe('dashboard');
     expect(liveAddress(address)?.deliveryChannel).toBe('dashboard');
     presence.current = 'away';

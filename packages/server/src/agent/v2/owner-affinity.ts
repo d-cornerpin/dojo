@@ -93,7 +93,7 @@ export function affinityPromotionAllowed(
 }
 
 // Affinity is convenience, not consent: refuse an iMessage promotion resting on affinity alone (no inbound this
-// turn, owner not away). An iMessage counterparty and the away promotion live in resolveReplyDestination.
+// turn, owner not away). An iMessage counterparty lives in resolveReplyDestination.
 export function affinityPromotionRefusedNoBasis(params: {
   ownerAffinityChannel: 'imessage' | null;
   inboundChannel: string | null;

@@ -70,7 +70,6 @@ export function resolveDeliveryChannel(
   });
   return resolveReplyDestination({
     state: { inboundChannel: addr.boundChannel },
-    presence: live.presence,
     imessageBridgeConfigured: live.imessageBridgeConfigured,
     counterpartyIsOwner: addr.isOwner,
     ownerAffinityChannel: affinityRefused ? null : live.ownerAffinityChannel,

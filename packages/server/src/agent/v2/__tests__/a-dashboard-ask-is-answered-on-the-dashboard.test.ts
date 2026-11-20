@@ -11,8 +11,8 @@
 //
 // OWNER RULING (2026-11-04), verbatim: "obviously if a user types a message on the dashboard, they
 // get a response on the dashboard." So a person's dashboard ask is answered on the dashboard
-// whatever the presence state. "Away" keeps forwarding everything else to the phone: engine and
-// proactive turns. Typing on the dashboard while away also flips presence back to in-dojo
+// whatever the presence state. "Away" alone forwards nothing to the phone: an engine or proactive turn
+// goes where it was asked. Typing on the dashboard while away also flips presence back to in-dojo
 // (`gateway/__tests__/a-dashboard-message-means-the-owner-is-here.test.ts`).
 
 import { describe, it, expect } from 'vitest';
@@ -60,8 +60,8 @@ describe('the owner ruling: a dashboard ask while marked away', () => {
     expect(addr({ counterparty: ownerOnDashboard, inboundChannel: 'dashboard', presence: 'away', ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('dashboard');
   });
 
-  it('CONTROL: away still forwards an ENGINE turn that defaults to the dashboard', () => {
-    expect(addr({ counterparty: ownerOnDashboard, isEngineTurn: true, inboundChannel: 'dashboard', presence: 'away' }).deliveryChannel).toBe('imessage');
+  it('away no longer forwards an ENGINE turn that defaults to the dashboard', () => {
+    expect(addr({ counterparty: ownerOnDashboard, isEngineTurn: true, inboundChannel: 'dashboard', presence: 'away' }).deliveryChannel).toBe('dashboard');
   });
 });
 
@@ -83,7 +83,7 @@ describe('controls: every other case is unchanged', () => {
     expect(addr({ counterparty: ownerOnDashboard, inboundChannel: null, ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('dashboard');
   });
 
-  it('a proactive turn (no inbound) on an away box still reaches the phone', () => {
-    expect(addr({ counterparty: ownerOnDashboard, inboundChannel: null, presence: 'away' }).deliveryChannel).toBe('imessage');
+  it('a proactive turn (no inbound) on an away box stays on the dashboard', () => {
+    expect(addr({ counterparty: ownerOnDashboard, inboundChannel: null, presence: 'away' }).deliveryChannel).toBe('dashboard');
   });
 });

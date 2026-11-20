@@ -110,12 +110,17 @@ describe('the reminder lane reads the turn address for where the reminder lands'
       { address: FIRST, name: 'First' }, { address: SECOND, name: 'Keeper', is_primary: true },
     ]));
   });
-  it('an away owner: the written reply reaches them by iMessage', () => {
+  it('a reminder he asked for by text: the written reply reaches him by iMessage', () => {
     const t = refusalWith({ kind: 'engine', isOwner: true, boundChannel: 'imessage', autoRoutes: true, ownerAffinity: null, heldWake: false, deliveryChannel: 'imessage' });
     expect(t).toContain('delivers it to the owner by iMessage');
     expect(t).not.toContain('watching the dashboard');
   });
   it('an owner at the dashboard: by the dashboard chat', () => {
     expect(refusalWith({ kind: 'engine', isOwner: true, boundChannel: 'dashboard', autoRoutes: true, ownerAffinity: null, heldWake: false, deliveryChannel: 'dashboard' })).toContain('delivers it to the owner by the dashboard chat');
+  });
+  it('a reminder a contact asked for goes to that contact; a send to anyone else is refused once, naming them', () => {
+    const contact = { kind: 'engine', isOwner: false, name: 'Pat Example', senderId: FIRST, boundChannel: 'imessage', autoRoutes: true, ownerAffinity: null, heldWake: false, deliveryChannel: 'imessage' };
+    expect(refusalWith(contact)).toBe('');
+    expect(refusalWith({ ...contact, name: 'Lee Example', senderId: '+15550177' })).toContain('"' + FIRST + '" is not Lee Example');
   });
 });

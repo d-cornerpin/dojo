@@ -55,10 +55,10 @@ describe('one block: who sent this, and who the written reply goes to', () => {
 
   // Owner ruling 2026-11-04 (field fix 3 test-2 round): a person's dashboard ask is answered on the
   // dashboard whatever the presence; away forwards the owner turns no dashboard message started.
-  it('A4: an away owner on a turn no dashboard message started is told iMessage (the delivery the engine will make)', () => {
+  it('A4: an away owner on a turn no dashboard message started is not told iMessage: "away" alone moves nothing', () => {
     const t = block(owner, { inbound: null, presence: 'away' });
-    expect(t).toContain('by iMessage');
-    expect(t).toContain('Reply destination: iMessage to Owner Example');
+    expect(t).not.toContain('by iMessage');
+    expect(t).not.toContain('Reply destination: iMessage');
   });
 
   it('A4b (owner ruling): an away owner who ASKED on the dashboard is told the dashboard', () => {

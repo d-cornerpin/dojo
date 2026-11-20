@@ -77,15 +77,18 @@ export function runRefusalGates(
   const repeated = repeatSend(agentId, tc, turnCtx, refusedOnceSigs);
   if (repeated) return { state, refusal: repeated };
 
-  // Reminder lane: a turn serving a kind='reminder' task delivers to the owner, so a send naming anyone
-  // else is refused once (an identical re-send goes through). The owner test is `isOwnerIMessageRecipient`.
+  // Reminder lane: a turn serving a kind='reminder' task delivers to whoever asked for it (the owner when no one
+  // else did), so a send naming anyone else is refused once (an identical re-send goes through).
   // A send to the owner is never refused: the channel choice is the agent's.
   if ((tc.name === 'imessage_send' || tc.name === 'sms_send')) {
     const served = turnCtx.servedWork;
     const a = (tc.arguments ?? {}) as Record<string, unknown>;
     const recip = String(a.recipient ?? a.to ?? '').trim();
-    const recipIsOwner = recip ? isOwnerIMessageRecipient(recip) : false;
-    if (served?.taskKind === 'reminder' && recip && !recipIsOwner) {
+    const addr = liveAddress(turnCtx.address);
+    const asker = addr && !addr.isOwner && addr.senderId ? addr : null;
+    const who = asker?.name ?? 'the owner';
+    const recipIsAsked = recip ? isOwnerIMessageRecipient(recip) || (asker !== null && recipientIdsMatch(recip, asker.senderId)) : false;
+    if (served?.taskKind === 'reminder' && recip && !recipIsAsked) {
       const laneSig = `${tc.name}|${recip}`;
       if (!refusedOnceSigs.has(laneSig)) {
         refusedOnceSigs.add(laneSig);
@@ -93,9 +96,9 @@ export function runRefusalGates(
           toolCallId: tc.id,
           name: tc.name,
           content:
-            `Refused once: this turn is delivering the owner's reminder, and "${recip}" is not the owner. ` +
-            `Reminders are delivered to the owner: write it as your reply (the engine delivers it to the owner by ${replyChannelWords(liveAddress(turnCtx.address))}), ` +
-            `or send to the owner's own address. If the owner explicitly asked for this reminder to be delivered to "${recip}", ` +
+            `Refused once: this turn is delivering a reminder for ${who}, and "${recip}" is not ${who}. ` +
+            `Reminders are delivered to whoever asked: write it as your reply (the engine delivers it to ${who} by ${replyChannelWords(addr)}), ` +
+            `or send to ${who}'s own address. If ${who} explicitly asked for this reminder to be delivered to "${recip}", ` +
             `repeat the exact same send and it will go through.`,
           isError: true,
         } };

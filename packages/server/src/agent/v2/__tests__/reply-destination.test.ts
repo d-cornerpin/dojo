@@ -1,189 +1,39 @@
 import { describe, expect, it } from 'vitest';
 import { resolveReplyDestination } from '../reply-destination.js';
 
+const dest = (inboundChannel: Parameters<typeof resolveReplyDestination>[0]['state']['inboundChannel'], more: Partial<Parameters<typeof resolveReplyDestination>[0]> = {}) =>
+  resolveReplyDestination({ state: { inboundChannel }, imessageBridgeConfigured: true, ...more });
+
 describe('resolveReplyDestination', () => {
-  it('routes iMessage inbound back to iMessage regardless of presence', () => {
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: 'imessage' },
-        presence: 'in_dojo',
-        imessageBridgeConfigured: true,
-      }),
-    ).toBe('imessage');
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: 'imessage' },
-        presence: 'away',
-        imessageBridgeConfigured: true,
-      }),
-    ).toBe('imessage');
+  it('a routed inbound is answered on its own channel', () => {
+    expect(dest('imessage')).toBe('imessage');
+    expect(dest('teams')).toBe('teams');
+    expect(dest('email', { imessageBridgeConfigured: false })).toBe('email');
   });
 
-  it('routes Teams inbound back to Teams (away override does not apply)', () => {
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: 'teams' },
-        presence: 'away',
-        imessageBridgeConfigured: true,
-      }),
-    ).toBe('teams');
+  // OWNER RULING (2026-11-04): "obviously if a user types a message on the dashboard, they get a response on the dashboard."
+  it('a person\'s dashboard ask stays on the dashboard, even with affinity', () => {
+    expect(dest('dashboard', { personAskedHere: true, counterpartyIsOwner: true, ownerAffinityChannel: 'imessage' })).toBe('dashboard');
   });
 
-  it('routes email inbound back to email regardless of presence', () => {
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: 'email' },
-        presence: 'in_dojo',
-        imessageBridgeConfigured: false,
-      }),
-    ).toBe('email');
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: 'email' },
-        presence: 'away',
-        imessageBridgeConfigured: true,
-      }),
-    ).toBe('email');
+  it('a reply no person asked for stays on the dashboard: "away" alone moves nothing', () => {
+    expect(dest('dashboard')).toBe('dashboard');
+    expect(dest(null)).toBe('dashboard');
   });
 
-  it('dashboard inbound while in_dojo stays on dashboard', () => {
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: 'dashboard' },
-        presence: 'in_dojo',
-        imessageBridgeConfigured: true,
-      }),
-    ).toBe('dashboard');
-  });
-
-  // OWNER RULING (2026-11-04, field fix 3 test-2 round), verbatim: "obviously if a user types a
-  // message on the dashboard, they get a response on the dashboard." This clause (7420e75b, v2.7.23)
-  // pinned the OPPOSITE for a person's dashboard ask; it now pins the ruling, and the away override
-  // keeps every reply that is NOT a person's dashboard ask (an engine or notification turn whose
-  // reply merely defaults to the dashboard).
-  it('a PERSON\'s dashboard ask while away stays on the dashboard (owner ruling)', () => {
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: 'dashboard' },
-        presence: 'away',
-        imessageBridgeConfigured: true,
-        personAskedHere: true,
-      }),
-    ).toBe('dashboard');
-  });
-
-  it('a dashboard-DEFAULT reply that no person asked for (engine turn) while away still routes to iMessage', () => {
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: 'dashboard' },
-        presence: 'away',
-        imessageBridgeConfigured: true,
-      }),
-    ).toBe('imessage');
-  });
-
-  it('dashboard inbound while away + bridge NOT configured falls back to dashboard', () => {
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: 'dashboard' },
-        presence: 'away',
-        imessageBridgeConfigured: false,
-      }),
-    ).toBe('dashboard');
-  });
-
-  it('proactive turn (no inbound) while in_dojo → dashboard', () => {
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: null },
-        presence: 'in_dojo',
-        imessageBridgeConfigured: true,
-      }),
-    ).toBe('dashboard');
-  });
-
-  it('proactive turn (no inbound) while away → iMessage', () => {
-    expect(
-      resolveReplyDestination({
-        state: { inboundChannel: null },
-        presence: 'away',
-        imessageBridgeConfigured: true,
-      }),
-    ).toBe('imessage');
-  });
-
-  // ── RC-10: owner-channel affinity ──
   describe('RC-10 owner-channel affinity', () => {
-    it('owner dashboard-default turn (in_dojo) with iMessage affinity → iMessage', () => {
-      expect(
-        resolveReplyDestination({
-          state: { inboundChannel: 'dashboard' },
-          presence: 'in_dojo',
-          imessageBridgeConfigured: true,
-          counterpartyIsOwner: true,
-          ownerAffinityChannel: 'imessage',
-        }),
-      ).toBe('imessage');
+    it('owner dashboard-default turn with iMessage affinity → iMessage', () => {
+      expect(dest('dashboard', { counterpartyIsOwner: true, ownerAffinityChannel: 'imessage' })).toBe('imessage');
     });
 
-    it('NON-owner counterparty never gets affinity promotion (stays dashboard)', () => {
-      expect(
-        resolveReplyDestination({
-          state: { inboundChannel: 'dashboard' },
-          presence: 'in_dojo',
-          imessageBridgeConfigured: true,
-          counterpartyIsOwner: false,
-          ownerAffinityChannel: 'imessage',
-        }),
-      ).toBe('dashboard');
-    });
-
-    it('owner with NO affinity (rate-limited / no recent iMessage) stays dashboard', () => {
-      expect(
-        resolveReplyDestination({
-          state: { inboundChannel: 'dashboard' },
-          presence: 'in_dojo',
-          imessageBridgeConfigured: true,
-          counterpartyIsOwner: true,
-          ownerAffinityChannel: null,
-        }),
-      ).toBe('dashboard');
-    });
-
-    it('affinity requires the bridge configured', () => {
-      expect(
-        resolveReplyDestination({
-          state: { inboundChannel: 'dashboard' },
-          presence: 'in_dojo',
-          imessageBridgeConfigured: false,
-          counterpartyIsOwner: true,
-          ownerAffinityChannel: 'imessage',
-        }),
-      ).toBe('dashboard');
+    it('a non-owner, no affinity, or no bridge stays on the dashboard', () => {
+      expect(dest('dashboard', { counterpartyIsOwner: false, ownerAffinityChannel: 'imessage' })).toBe('dashboard');
+      expect(dest('dashboard', { counterpartyIsOwner: true, ownerAffinityChannel: null })).toBe('dashboard');
+      expect(dest('dashboard', { counterpartyIsOwner: true, ownerAffinityChannel: 'imessage', imessageBridgeConfigured: false })).toBe('dashboard');
     });
 
     it('a bound routed channel (email) is unaffected by owner affinity', () => {
-      expect(
-        resolveReplyDestination({
-          state: { inboundChannel: 'email' },
-          presence: 'in_dojo',
-          imessageBridgeConfigured: true,
-          counterpartyIsOwner: true,
-          ownerAffinityChannel: 'imessage',
-        }),
-      ).toBe('email');
-    });
-
-    it('away override remains stronger (away + affinity both resolve to iMessage)', () => {
-      expect(
-        resolveReplyDestination({
-          state: { inboundChannel: 'dashboard' },
-          presence: 'away',
-          imessageBridgeConfigured: true,
-          counterpartyIsOwner: true,
-          ownerAffinityChannel: null,
-        }),
-      ).toBe('imessage');
+      expect(dest('email', { counterpartyIsOwner: true, ownerAffinityChannel: 'imessage' })).toBe('email');
     });
   });
 });

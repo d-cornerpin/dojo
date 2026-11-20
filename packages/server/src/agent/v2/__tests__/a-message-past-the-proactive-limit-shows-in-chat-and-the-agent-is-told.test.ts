@@ -23,7 +23,7 @@ import type { TurnCounterparty } from '../counterparty.js';
 const LIMIT = "the owner has not answered the agent's last unprompted messages";
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
 const address = computeTurnAddress({
-  counterparty: owner, isEngineTurn: true, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
+  counterparty: owner, isEngineTurn: true, isNotificationTurn: false, inboundChannel: 'imessage', inboundContext: null,
   presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: null, autoRoutes: true, settledContextWakeTurn: true,
 });
 

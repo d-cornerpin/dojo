@@ -1,4 +1,5 @@
-// While iMessage is switched off in Settings, an away engine turn's reply stays on the dashboard: being reachable
+// While iMessage is switched off in Settings, an away engine turn's reply stays on the dashboard even with his
+// iMessage affinity: being reachable
 // by iMessage asks the switch, not whether an approved sender is on file.
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 
@@ -29,7 +30,7 @@ describe('with iMessage switched off', () => {
     const addr = await computeTurnAddressLive({
       counterparty: { kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false },
       isEngineTurn: true, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
-      ownerAffinityChannel: null, autoRoutes: true,
+      ownerAffinityChannel: 'imessage', autoRoutes: true,
     });
     expect(addr.deliveryChannel).toBe('dashboard');
   });
@@ -39,7 +40,7 @@ describe('with iMessage switched off', () => {
     const addr = await computeTurnAddressLive({
       counterparty: { kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false },
       isEngineTurn: true, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
-      ownerAffinityChannel: null, autoRoutes: true,
+      ownerAffinityChannel: 'imessage', autoRoutes: true,
     });
     expect(addr.deliveryChannel).toBe('imessage');
     setConfig('imessage_enabled', 'false');

@@ -19,9 +19,10 @@ import type { TurnCounterparty } from '../counterparty.js';
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
 const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };
 // Owner ruling 2026-11-04: a person's DASHBOARD ask stays on the dashboard whatever the presence,
-// so the away shapes here use an owner turn that no dashboard message started (inbound null).
+// so the away shapes here use an owner turn that no dashboard message started (inbound null), with iMessage
+// affinity: with no inbound, affinity moves the reply only while he is away.
 const mk = (cp: TurnCounterparty, inbound: 'imessage' | 'dashboard' | null, p: 'in_dojo' | 'away') =>
-  computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: p, imessageBridgeConfigured: true, ownerAffinityChannel: null });
+  computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: p, imessageBridgeConfigured: true, ownerAffinityChannel: cp.relation === 'owner' ? 'imessage' : null });
 
 beforeEach(() => { presence.now = 'in_dojo'; ownerNumbers.clear(); ownerMail.length = 0; endTurnContext('primary'); });
 

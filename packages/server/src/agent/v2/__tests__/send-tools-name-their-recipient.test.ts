@@ -92,9 +92,9 @@ describe('the owner is recognised by the one owner rule, never by a display name
     presence.now = 'away';
     endTurnContext(AGENT);
     const t = openTurnContext(AGENT);
-    // An away owner's turn that no dashboard message started (owner ruling 2026-11-04 keeps a
-    // dashboard ask on the dashboard), so the reply really is texted to the owner.
-    t.address = computeTurnAddress({ autoRoutes: true, counterparty: owner, isEngineTurn: false, isNotificationTurn: false, inboundChannel: null, inboundContext: null, presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+    // An away owner's turn that no dashboard message started, with his iMessage affinity, so the reply
+    // really is texted to the owner.
+    t.address = computeTurnAddress({ autoRoutes: true, counterparty: owner, isEngineTurn: false, isNotificationTurn: false, inboundChannel: null, inboundContext: null, presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: 'imessage' });
     const n = recipientNoteFor(AGENT, 'imessage_send', { recipient: '+15550199', message: 'x' });
     expect(n).toContain('This is the person this turn is talking to.');
     expect(recipientNoteFor(AGENT, 'imessage_send', { recipient: '+15550123', message: 'x' })).toContain('is not the person this turn is talking to');
