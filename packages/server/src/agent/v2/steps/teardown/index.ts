@@ -36,6 +36,7 @@ export interface TeardownContext {
   readonly claimedEngineEvent: { rowid: number; turnNumber: number } | null;
   readonly toolPhaseEndedBySpinBrake: boolean;
   readonly counterparty: TurnCounterparty;
+  readonly counterpartyIsAgentSender: boolean;
   readonly isA2ATurn: boolean;
   readonly isEngineTurn: boolean;
   readonly turnStartedAt: string;

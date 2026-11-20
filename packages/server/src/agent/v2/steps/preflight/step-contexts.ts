@@ -50,7 +50,7 @@ export function runStepContexts(
 ): StepContextsOutputs {
   const { agentId, stopStatusHeartbeat } = ctx;
   const {
-    db, turnNumber, counterparty, chosenConvKey,
+    db, turnNumber, counterparty, counterpartyIsAgentSender, chosenConvKey,
     chosenConversationId, turnStartedAt, settledContextWakeTurn, isA2ATurn, isEngineTurn,
     triggerWorkId, inboundChannel, inboundContext, contextWindow, contextModelId,
     configuredModelId, isAutoRouted, noteTerminalAnswer, persistRoutingMarker,
@@ -68,7 +68,7 @@ export function runStepContexts(
     chosenConvKey, chosenConversationId, lastAssembledAtIso: turnCtx.lastAssembledAtIso,
     terminalAnswerRowId: sc.terminalAnswerRowId, triggerWorkId, claimedEngineEvent: sc.claimedEngineEvent,
     toolPhaseEndedBySpinBrake: turnCtx.toolPhaseEndedBySpinBrake,
-    counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
+    counterparty, counterpartyIsAgentSender, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext,
     reArmIfStrandedNoAnswer, stopStatusHeartbeat,
   });

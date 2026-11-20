@@ -84,6 +84,7 @@ export async function finalizeTurnRecord(
       parkedTask: turnParkedTheJob(agentId) ? turnCtx.jobParked : null, jobTurn: turnCtx.servedJob !== null,
       // The required call returned (a throw or a Stop leaves it pending), nothing cut the turn after it, no answer.
       forcedEmpty: turnCtx.forcedReplySpent && !turnCtx.forceReplyPending && state.engineCutExit === null && !answerRow,
+      peerBox: ctx.counterpartyIsAgentSender,
     };
     const cause = handBackCauseOf(exitReason, turnEnd);
     // A job turn the engine cut: a job that moved resumes at the provider's reset or in a minute, as does one whose

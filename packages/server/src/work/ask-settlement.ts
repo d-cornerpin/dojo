@@ -97,6 +97,7 @@ export interface SettlementContext extends TurnEnd {
  *  its job on, whether it was started from a parked job, and whether its required reply came back with nothing. */
 export interface TurnEnd {
   retryAt?: number | null; paidBeforeLimit?: boolean; parkedTask?: string | null; jobTurn?: boolean; forcedEmpty?: boolean;
+  peerBox?: boolean;
 }
 
 interface AskRow {
@@ -600,8 +601,9 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     return h.kind === 'applied' ? out('held', why) : out('unchanged', `hold refused: ${h.kind}`);
   }
   if (ask.state === 'open') return out('unchanged', 'already open and waiting');
-  if (ctx.askedNothing === true && turnEndedInModelSilence(ask.agent_id, ctx.turnNumber)) {
-    const why = 'settled: the message asked for nothing (it only declined or acknowledged) and the agent stayed silent';
+  if ((ctx.askedNothing === true || ctx.peerBox === true) && turnEndedInModelSilence(ask.agent_id, ctx.turnNumber)) {
+    const why = ctx.peerBox ? 'settled: the agent chose not to answer another Dojo box, and silence to a peer box is an allowed answer'
+      : 'settled: the message asked for nothing (it only declined or acknowledged) and the agent stayed silent';
     const r = transition(workId, { to: 'abandoned', by: 'agent', actorId, expectedState: ask.state, reason: why });
     return r.kind === 'applied' ? out('closed', why) : out('unchanged', `settle refused: ${r.kind}`);
   }
