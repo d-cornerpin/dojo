@@ -231,7 +231,16 @@ export interface ModelCallParams {
   abortSignal?: AbortSignal;
   /** Best-effort utility call with a fallback; downgrades the provider-failure log from ERROR to WARN. */
   bestEffort?: boolean;
+  /** The reply is required: where the transport can name a tool choice, the model must call `reply`. */
+  forceReply?: boolean;
 }
+
+/** The one tool a required reply is given; its `text` becomes the call's answer. */
+const REPLY_TOOL = {
+  name: 'reply',
+  description: 'Your answer to the person who is waiting, in your own words.',
+  input_schema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+};
 
 export interface ModelCallResult {
   content: string;
@@ -1563,8 +1572,10 @@ async function callOpenAIModel(
   refuseIfDoomed(agentId, finalInputEstimate, patience, modelInfo);
 
   // The engine's extra-room ask is honoured up to the contract's ceiling; the result reports what was sent.
-  // A memory-summarize dial forces thinking off where the contract allows; else the model's own value.
-  const thinkingSent = utilityDial(purpose)?.purpose === 'memory_summarize' && contract.thinkingToggle !== 'none' ? false : modelInfo.thinkingEnabled;
+  // A memory-summarize dial and a required reply force thinking off where the contract allows
+  // (a named tool choice is refused while thinking is on); else the model's own value.
+  const thinkingOff = utilityDial(purpose)?.purpose === 'memory_summarize' || params.forceReply === true;
+  const thinkingSent = thinkingOff && contract.thinkingToggle !== 'none' ? false : modelInfo.thinkingEnabled;
   const budgetInfo = { ...modelInfo, thinkingEnabled: thinkingSent, outputEscalationCeiling: contract.outputEscalationCeiling };
   const effectiveMaxTokens = resolveOutputBudget(budgetInfo, finalInputEstimate, params.outputRoomAsk ?? 0);
   const outputRoomCeiling = resolveOutputCeiling(budgetInfo, finalInputEstimate);
@@ -1659,6 +1670,11 @@ async function callOpenAIModel(
       : { max_tokens: effectiveMaxTokens }),
     ...(openaiTools && openaiTools.length > 0 ? { tools: openaiTools } : {}),
   };
+  if (params.forceReply) {
+    const { name, description, input_schema } = REPLY_TOOL;
+    requestParams.tools = [...(openaiTools ?? []), { type: 'function', function: { name, description, parameters: input_schema } }];
+    requestParams.tool_choice = { type: 'function', function: { name } };
+  }
 
   const supportsThinking = modelInfo.capabilities.includes('thinking');
   applyProviderRequestParams(requestParams, contract, {
@@ -2210,10 +2226,27 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     ? AbortSignal.any([params.abortSignal, stopCtl.signal])
     : stopCtl.signal;
   try {
-    return await dialModel({ ...params, abortSignal: signal });
+    return await (params.forceReply ? dialRequiringReply : dialModel)({ ...params, abortSignal: signal });
   } finally {
     releaseAbortable(params.agentId, stopCtl);
   }
+}
+
+// The `reply` call becomes the answer's text. A provider that ignored the choice answered
+// ordinarily, and that answer is kept whole; one that refuses the form bills nothing and gets
+// one ordinary call instead.
+async function dialRequiringReply(params: ModelCallParams): Promise<ModelCallResult> {
+  let r: ModelCallResult;
+  try {
+    r = await dialModel(params);
+  } catch (err) {
+    if (err instanceof AgentError && err.provider?.status === 400) return dialModel({ ...params, forceReply: false });
+    throw err;
+  }
+  const call = r.toolCalls.find((t) => t.name === REPLY_TOOL.name);
+  if (!call) return r;
+  const text = typeof call.arguments?.text === 'string' ? call.arguments.text.trim() : '';
+  return { ...r, content: text || r.content, toolCalls: r.toolCalls.filter((t) => t !== call) };
 }
 
 async function dialModel(params: ModelCallParams): Promise<ModelCallResult> {

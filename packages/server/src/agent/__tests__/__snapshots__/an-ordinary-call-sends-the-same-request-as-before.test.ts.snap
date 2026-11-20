@@ -1,0 +1,212 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`an ordinary call sends the same request as before > anthropic 1`] = `
+"{
+ "model": "claude-x",
+ "max_tokens": 4096,
+ "system": [
+  {
+   "type": "text",
+   "text": "You are a helpful agent.",
+   "cache_control": {
+    "type": "ephemeral"
+   }
+  },
+  {
+   "type": "text",
+   "text": "Now: a fixed moment."
+  }
+ ],
+ "messages": [
+  {
+   "role": "user",
+   "content": "Read the file please."
+  },
+  {
+   "role": "assistant",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "call_1",
+     "name": "file_read",
+     "input": {
+      "arg": "/x"
+     }
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "content": [
+    {
+     "type": "tool_result",
+     "tool_use_id": "call_1",
+     "content": "The file says hello."
+    }
+   ]
+  },
+  {
+   "role": "assistant",
+   "content": "It says hello."
+  },
+  {
+   "role": "user",
+   "content": "Thanks, and what does that mean?"
+  }
+ ],
+ "tools": [
+  {
+   "name": "file_read",
+   "description": "The file_read tool.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "arg": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "arg"
+    ]
+   }
+  },
+  {
+   "name": "load_tool_docs",
+   "description": "The load_tool_docs tool.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "arg": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "arg"
+    ]
+   },
+   "cache_control": {
+    "type": "ephemeral"
+   }
+  },
+  {
+   "name": "web_fetch",
+   "description": "The web_fetch tool.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "arg": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "arg"
+    ]
+   }
+  }
+ ]
+}"
+`;
+
+exports[`an ordinary call sends the same request as before > compatible 1`] = `"{"model":"local-x","messages":[{"role":"system","content":"You are a helpful agent."},{"role":"system","content":"Now: a fixed moment."},{"role":"user","content":"Read the file please."},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"file_read","arguments":"{\\"arg\\":\\"/x\\"}"}}],"reasoning_content":"I should read it."},{"role":"tool","tool_call_id":"call_1","content":"The file says hello."},{"role":"assistant","content":"It says hello."},{"role":"user","content":"Thanks, and what does that mean?"}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":4096,"tools":[{"type":"function","function":{"name":"file_read","description":"The file_read tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"load_tool_docs","description":"The load_tool_docs tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"web_fetch","description":"The web_fetch tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}}]}"`;
+
+exports[`an ordinary call sends the same request as before > deepseek 1`] = `"{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You are a helpful agent."},{"role":"system","content":"Now: a fixed moment."},{"role":"user","content":"Read the file please."},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"file_read","arguments":"{\\"arg\\":\\"/x\\"}"}}],"reasoning_content":"I should read it."},{"role":"tool","tool_call_id":"call_1","content":"The file says hello."},{"role":"assistant","content":"It says hello."},{"role":"user","content":"Thanks, and what does that mean?"}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":4096,"tools":[{"type":"function","function":{"name":"file_read","description":"The file_read tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"load_tool_docs","description":"The load_tool_docs tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"web_fetch","description":"The web_fetch tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}}],"thinking":{"type":"enabled"},"reasoning_effort":"high"}"`;
+
+exports[`an ordinary call sends the same request as before > ollama 1`] = `"{"model":"local-ollama","messages":[{"role":"system","content":"You are a helpful agent."},{"role":"user","content":"Read the file please."},{"role":"assistant","content":"","tool_calls":[{"id":"call_1","function":{"name":"file_read","arguments":{"arg":"/x"}}}]},{"role":"tool","content":"The file says hello.","tool_name":"file_read"},{"role":"assistant","content":"It says hello."},{"role":"user","content":"Thanks, and what does that mean?"}],"stream":true,"think":true,"tools":[{"type":"function","function":{"name":"file_read","description":"The file_read tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"load_tool_docs","description":"The load_tool_docs tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"web_fetch","description":"The web_fetch tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}}],"options":{"num_predict":4096}}"`;
+
+exports[`an ordinary call sends the same request as before > openai 1`] = `"{"model":"gpt-x","messages":[{"role":"system","content":"You are a helpful agent."},{"role":"system","content":"Now: a fixed moment."},{"role":"user","content":"Read the file please."},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"file_read","arguments":"{\\"arg\\":\\"/x\\"}"}}],"reasoning_content":"I should read it."},{"role":"tool","tool_call_id":"call_1","content":"The file says hello."},{"role":"assistant","content":"It says hello."},{"role":"user","content":"Thanks, and what does that mean?"}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":4096,"tools":[{"type":"function","function":{"name":"file_read","description":"The file_read tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"load_tool_docs","description":"The load_tool_docs tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"web_fetch","description":"The web_fetch tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}}]}"`;
+
+exports[`an ordinary call sends the same request as before > openrouter 1`] = `"{"model":"vendor/model-x","messages":[{"role":"system","content":[{"type":"text","text":"You are a helpful agent.","cache_control":{"type":"ephemeral"}}]},{"role":"system","content":"Now: a fixed moment."},{"role":"user","content":"Read the file please."},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"file_read","arguments":"{\\"arg\\":\\"/x\\"}"}}],"reasoning_content":"I should read it."},{"role":"tool","tool_call_id":"call_1","content":"The file says hello."},{"role":"assistant","content":"It says hello."},{"role":"user","content":"Thanks, and what does that mean?"}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":4096,"tools":[{"type":"function","function":{"name":"file_read","description":"The file_read tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"load_tool_docs","description":"The load_tool_docs tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}},{"type":"function","function":{"name":"web_fetch","description":"The web_fetch tool.","parameters":{"type":"object","properties":{"arg":{"type":"string"}},"required":["arg"]}}}],"extra_body":{"reasoning":{"enabled":true}}}"`;
+
+exports[`an ordinary call sends the same request as before > sdk 1`] = `
+"{
+ "apiModelId": "claude-sub",
+ "systemPrompt": "You are a helpful agent.",
+ "messages": [
+  {
+   "role": "user",
+   "content": "Read the file please."
+  },
+  {
+   "role": "assistant",
+   "reasoningContent": "I should read it.",
+   "content": [
+    {
+     "type": "tool_use",
+     "id": "call_1",
+     "name": "file_read",
+     "input": {
+      "arg": "/x"
+     }
+    }
+   ]
+  },
+  {
+   "role": "user",
+   "content": [
+    {
+     "type": "tool_result",
+     "tool_use_id": "call_1",
+     "content": "The file says hello."
+    }
+   ]
+  },
+  {
+   "role": "assistant",
+   "content": "It says hello."
+  },
+  {
+   "role": "user",
+   "content": "Thanks, and what does that mean?"
+  }
+ ],
+ "tools": [
+  {
+   "name": "file_read",
+   "description": "The file_read tool.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "arg": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "arg"
+    ]
+   }
+  },
+  {
+   "name": "load_tool_docs",
+   "description": "The load_tool_docs tool.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "arg": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "arg"
+    ]
+   }
+  },
+  {
+   "name": "web_fetch",
+   "description": "The web_fetch tool.",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "arg": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "arg"
+    ]
+   }
+  }
+ ],
+ "timeoutMs": 90000,
+ "idleTimeoutMs": 60000
+}"
+`;
