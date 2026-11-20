@@ -2,10 +2,9 @@
 //
 // Two floors nulled the agent's final reply: a line of 30 characters or less after the turn already
 // delivered (and `chat:retract`ed it off the screen), and a reply that looked like one sent in the last
-// five. A third, the silent drop of a reply matching the last one sent, is gone: the near-duplicate floor
-// steers it instead. Owner law: engine detects, agent
-// speaks. Each floor now holds the line (demoted to a working note, never discarded), states the fact to
-// the agent once, and lets the agent decide; a reply written again after the fact goes out.
+// five. Owner law: engine detects, agent speaks. Each floor now holds the line (demoted to a working
+// note, never discarded), states the fact to the agent once, and lets the agent decide; a reply written
+// again after the fact goes out.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ToolCall } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
