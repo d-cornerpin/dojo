@@ -69,7 +69,7 @@ export function agentRequests(agentId: string, now = Date.now(), thread: string 
       FROM messages m JOIN agents a ON a.id = m.agent_id LEFT JOIN agents s ON s.id = m.source_agent_id
      WHERE m.agent_id = @agentId AND m.role = 'user' AND m.lane <> 'events'
        AND m.a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK') AND m.a2a_thread_id IS NOT NULL AND m.source_agent_id IS NOT NULL
-       AND m.swept_at IS NULL AND NOT ${RESULT_FOR_ENDED_REQUEST('m')}
+       AND (m.swept_at IS NULL OR ${openPieceOnSql('m.a2a_thread_id')}) AND NOT ${RESULT_FOR_ENDED_REQUEST('m')}
        AND m.created_at >= (unixepoch(COALESCE(a.session_started_at, '1970-01-01')) * 1000) AND (@thread IS NULL OR m.a2a_thread_id = @thread)
        AND (CASE WHEN m.served_by_turn IS NULL THEN ${openPieceOnSql('m.a2a_thread_id')} OR m.created_at >= @now - 86400000
                  WHEN ${openPieceOnSql('m.a2a_thread_id')} THEN EXISTS (SELECT 1 FROM turns t WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn AND (t.exit_reason IS NULL

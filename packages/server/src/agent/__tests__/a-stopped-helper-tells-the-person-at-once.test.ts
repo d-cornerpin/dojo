@@ -166,4 +166,16 @@ describe('a plain question waits for its helper', () => {
     expect(await looked(2)).toEqual(['failed', 1, 1]);
     expect(JSON.stringify(relayRows())).not.toContain('nothing errored');
   });
+
+  it('a restart keeps a request with two pieces out, one closed as history at the update, and both are served again', async () => {
+    delegatedTextRequest({}, [THREAD, 'thread-relay-0002']);
+    for (const t of [THREAD, 'thread-relay-0002']) await asked(t);
+    testDb().prepare("UPDATE messages SET swept_at = created_at WHERE agent_id = ? AND a2a_thread_id = 'thread-relay-0002'").run(HELPER);
+    await resolveJoinsAtBoot();
+    expect([await told(), agentRequests(HELPER).map((r) => r.threadId).sort()]).toEqual([['blocked', 0, 0], [THREAD, 'thread-relay-0002']]);
+    testDb().prepare("INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason) VALUES (?, 1, datetime('now'), datetime('now'), 0, 'answered')").run(HELPER);
+    testDb().prepare('UPDATE messages SET served_by_turn = 1 WHERE agent_id = ? AND a2a_thread_id IS NOT NULL').run(HELPER);
+    expect(await looked(1)).toEqual(['failed', 1, 1]);
+    expect(await looked(1)).toEqual(['failed', 1, 1]);
+  });
 });
