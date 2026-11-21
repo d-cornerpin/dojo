@@ -72,7 +72,7 @@ export function agentRequests(agentId: string, now = Date.now(), thread: string 
        AND (CASE WHEN m.served_by_turn IS NULL THEN kept OR m.created_at >= @now - 86400000
                  WHEN kept THEN EXISTS (SELECT 1 FROM turns t WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn AND (t.exit_reason IS NULL
                    OR t.exit_reason IN ('preempt', 'abort', 'terminated', 'provider_error', 'stream_idle', 'unknown') OR EXISTS (SELECT 1 FROM messages n WHERE n.a2a_thread_id = m.a2a_thread_id
-                     AND n.agent_id IN (m.agent_id, m.source_agent_id) AND n.role = 'user' AND n.id <> m.id AND n.created_at >= unixepoch(t.started_at) * 1000)))
+                     AND (n.agent_id = m.agent_id OR (n.agent_id = m.source_agent_id AND n.a2a_intent NOT IN ('QUESTION', 'BLOCK'))) AND n.role = 'user' AND n.id <> m.id AND n.created_at >= unixepoch(t.started_at) * 1000)))
                  ELSE MAX(COALESCE((SELECT unixepoch(t.started_at) * 1000 FROM turns t
                                      WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn), m.created_at),
                           COALESCE(m.next_attempt_at, 0)) >= @now - @servedWindow END)

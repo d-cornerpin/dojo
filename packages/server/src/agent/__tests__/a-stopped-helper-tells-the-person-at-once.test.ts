@@ -99,7 +99,7 @@ async function looked(hours: number): Promise<[string, number, number]> {
   return told();
 }
 const owes = (): boolean => agentRequests(HELPER).some((r) => r.threadId === THREAD);
-const says = (intent: string): Promise<unknown> => deliverA2AMessage({ intent, threadId: THREAD, requiresResponse: intent === 'QUESTION', payload: 'Still on it: the hall or the garden?', toAgent: AGENT, fromAgent: HELPER } as never);
+const asksBack = (): Promise<unknown> => deliverA2AMessage({ intent: 'QUESTION', threadId: THREAD, requiresResponse: true, payload: 'The hall or the garden?', toAgent: AGENT, fromAgent: HELPER } as never);
 
 describe('a plain question waits for its helper', () => {
   it('a slow helper in one long turn is never ended; served once and silent, it is settled at the next look, once', async () => {
@@ -113,11 +113,11 @@ describe('a plain question waits for its helper', () => {
     expect(await looked(1)).toEqual(['failed', 1, 1]);
   });
 
-  it('a question back keeps it until answered; then it is owed again, and a final reply settles it once', async () => {
+  it('a question back keeps it until answered, with no extra serve meanwhile; the answer makes it owed; a final reply settles it', async () => {
     await asked();
     served();
-    await says('QUESTION');
-    expect(await looked(3)).toEqual(['blocked', 0, 0]);
+    await asksBack();
+    expect([await looked(3), owes()]).toEqual([['blocked', 0, 0], false]);
     await deliverA2AMessage({ intent: 'ANSWER', threadId: THREAD, requiresResponse: false, payload: 'The hall.', toAgent: HELPER, fromAgent: AGENT } as never);
     expect([await looked(1), owes()]).toEqual([['blocked', 0, 0], true]);
     await helperAnswers('The hall is free on the 14th.');
