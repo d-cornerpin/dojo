@@ -7,7 +7,7 @@ import { getDb } from '../db/connection.js';
 import { liveAgentsNamed, liveAgentNamesNear, resolveAgentDisplayName } from './tool-helpers.js';
 import { endedMidRun } from './ended-mid-run.js';
 import {
-  A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX,
+  A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, a2aThreadTokenMatchesSql, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX,
 } from '@dojo/shared';
 import { postAgentNotice, redriveWithoutReply } from './agent-notice.js';
 import { createLogger } from '../logger.js';
@@ -434,7 +434,12 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   }
   const servedThreadId = !envelope.threadId && envelope.fromAgent !== 'system' && FINAL_REPLY_INTENTS.has(effectiveIntent)
     ? servedRequestThreadFrom(envelope.fromAgent, target.id) : null;   // a threadless reply goes on the request it answers
-  const threadId = envelope.threadId || reusedAssignThreadId || servedThreadId || uuidv4();
+  // A thread named by its short marker token is stored under the full id the sender's own store holds.
+  const named = envelope.threadId && envelope.threadId.length <= A2A_THREAD_SHORT_LENGTH ? (getDb().prepare(
+    `SELECT a2a_thread_id AS t FROM messages WHERE agent_id = ? AND length(a2a_thread_id) > ${A2A_THREAD_SHORT_LENGTH}
+       AND ${a2aThreadTokenMatchesSql('a2a_thread_id')} ORDER BY rowid DESC LIMIT 1`,
+  ).get(envelope.fromAgent, envelope.threadId, envelope.threadId) as { t: string } | undefined)?.t : undefined;
+  const threadId = named || envelope.threadId || reusedAssignThreadId || servedThreadId || uuidv4();
   // ⚠ READ BEFORE `ensureThread`, and the order is load-bearing: that insert stamps `datetime('now')`
   // when no row exists, so a later read would report a delivery that never happened.
   const lastDeliveryMs = threadLastDeliveryMs(threadId);
