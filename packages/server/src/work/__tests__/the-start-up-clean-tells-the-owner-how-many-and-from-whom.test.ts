@@ -70,15 +70,21 @@ describe('the start-up clean tells the owner how many and from whom', () => {
       ': 7 from +15550107, 6 from +15550106, 5 from +15550105, 4 from +15550104, 3 from +15550103, and 2 more senders.');
   });
 
-  it('another agent\'s request older than 30 minutes is dropped and counted under its sender; a fresh one is kept', () => {
-    db().prepare("INSERT INTO agents (id, name, status, session_started_at) VALUES ('asker', 'Planner', 'idle', '1970-01-01')").run();
-    for (const [id, minutes] of [['req-old', 40], ['req-new', 10]] as const) {
-      insertMessage({ id, agentId: AGENT, role: 'user', lane: 'a2a', sourceAgentId: 'asker', a2aThreadId: `thread-${id}`,
+  it('old requests between agents are closed without a card; only the people\'s messages are counted; a fresh request is kept', () => {
+    db().prepare("INSERT INTO agents (id, name, status, session_started_at) VALUES ('asker', 'Planner', 'idle', '1970-01-01'), ('gone', 'Old helper', 'terminated', '1970-01-01')").run();
+    oldMessagesFrom('+15550100', 7);
+    const requests: Array<[string, string, number]> = [['req-old', 'asker', 40], ['req-month', 'asker', 45 * 24 * 60], ['req-gone', 'gone', 90 * 24 * 60], ['req-new', 'asker', 10]];
+    for (const [id, from, minutes] of requests) {
+      insertMessage({ id, agentId: AGENT, role: 'user', lane: 'a2a', sourceAgentId: from, a2aThreadId: `thread-${id}`,
         a2aIntent: 'QUESTION', a2aRequiresResponse: true, content: `[A2A:QUESTION thread:${id} from:Planner] the figure?` } as never);
       db().prepare('UPDATE messages SET created_at = ? WHERE id = ?').run(Date.now() - minutes * 60_000, id);
     }
     sweepBootStaleness();
-    expect(servedOwnerNotices()[0]?.words).toContain('dropped 1 old unanswered message (more than 30 minutes old): 1 from Planner.');
+    expect(servedOwnerNotices().map((c) => c.words)).toEqual([
+      'When the Dojo started it dropped 7 old unanswered messages (more than 30 minutes old): 7 from +15550100. Nothing was sent to anyone about them.',
+    ]);
+    const swept = db().prepare("SELECT id FROM messages WHERE lane = 'a2a' AND swept_at IS NOT NULL ORDER BY id").all() as Array<{ id: string }>;
+    expect(swept.map((r) => r.id)).toEqual(['req-gone', 'req-month', 'req-old']);
     expect(agentRequests(AGENT).map((r) => r.messageId)).toEqual(['req-new']);
   });
 

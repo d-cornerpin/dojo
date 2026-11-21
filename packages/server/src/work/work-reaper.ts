@@ -210,7 +210,7 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
     droppedFrom.set(who, (droppedFrom.get(who) ?? 0) + 1);
   }
 
-  // Another agent's request never served is stale history too, and is counted for the owner under its sender.
+  // Another agent's request never served is stale history too, closed silently: it is not a person's message.
   // Engine events still inside their delivery lifecycle (a future retry backoff, or recorded attempts under
   // the max) are excluded, and so is a reminder, which runs its own lifecycle; mass backlog is swept. Keeping them cannot storm: `getPendingEngineEvent`
   // (agent/v2/counterparty.ts) never wakes on a row past the expiry horizon or at max attempts.
@@ -218,22 +218,16 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
   // shield all plain engine backlog. `sweepByRowid` does the disposal and re-applies its own guards per
   // row, so a row claimed in between is still not ours.
   const staleRows = db.prepare(
-    `SELECT m.seq AS rowid, m.agent_id AS agent_id, CASE WHEN m.lane = 'a2a' THEN COALESCE(s.name, m.source_agent_id) END AS asker
-       FROM messages AS m LEFT JOIN agents s ON s.id = m.source_agent_id
+    `SELECT m.seq AS rowid, m.agent_id AS agent_id FROM messages AS m
       WHERE m.role = 'user' AND (m.lane = 'events' OR (m.lane = 'a2a' AND m.a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK')))
         AND m.served_by_turn IS NULL AND m.swept_at IS NULL AND m.origin_intent IS NOT 'scheduler'
         AND m.created_at < (unixepoch('now', '-30 minutes') * 1000)
         AND NOT ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > (unixepoch('now') * 1000))
                  OR (m.delivery_attempts > 0 AND m.delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}))`,
-  ).all() as Array<{ rowid: number; agent_id: string; asker: string | null }>;
+  ).all() as Array<{ rowid: number; agent_id: string }>;
   let swept = 0;
-  let requests = 0;
-  for (const r of staleRows) {
-    const n = sweepByRowid({ rowid: r.rowid, agentId: r.agent_id, requireUnclaimed: true });
-    swept += n;
-    if (n > 0 && r.asker !== null) { requests++; droppedFrom.set(r.asker, (droppedFrom.get(r.asker) ?? 0) + 1); }
-  }
-  if (suppressed + requests > 0) tellOwnerBootDropped(suppressed + requests, droppedFrom);
+  for (const r of staleRows) swept += sweepByRowid({ rowid: r.rowid, agentId: r.agent_id, requireUnclaimed: true });
+  if (suppressed > 0) tellOwnerBootDropped(suppressed, droppedFrom);
 
   // A pending row with nothing to send is a send an earlier version began and never finished; nothing will
   // finish it, so past the boot window it is closed as failed, with its reach unknown.
