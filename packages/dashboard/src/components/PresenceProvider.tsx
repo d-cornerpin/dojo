@@ -3,7 +3,7 @@ import * as api from '../lib/api';
 import type { WsEvent, PresenceChangedEvent } from '@dojo/shared';
 import { useWebSocket } from '../hooks/useWebSocket';
 
-/* Presence (in the dojo vs out / iMessage) is shown + toggled in the composer's
+/* Presence (in the dojo vs out) is shown + toggled in the composer's
    bottom-left, but the orb (sleepy when away) and the stage `is-out` styling
    also need it. This provider is the single source of truth both consume. */
 

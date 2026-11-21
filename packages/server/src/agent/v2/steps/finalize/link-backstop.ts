@@ -20,7 +20,7 @@ export async function appendUndeliveredLinks(
   const { agentId, turnNumber, broadcast } = ctx;
 
   {
-    // Every omitted link rides the channel-routed text (an away user cannot see the canvas); the
+    // Every omitted link rides the channel-routed text (a user on a text channel cannot see the canvas); the
     // dashboard bubble skips the file already on the canvas, which has its own download button.
     const { getCurrentCanvas } = await import('../../../canvas-state.js');
     const { drainTurnLinkArtifacts } = await import('../../../pending-attachments.js');
