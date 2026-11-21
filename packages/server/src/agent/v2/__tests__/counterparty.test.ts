@@ -5,9 +5,8 @@
 //           data, not description prose.
 //   RC-5.2  renderCounterpartyHeader has a NOTIFICATION variant that replaces the
 //           owner-on-dashboard framing on a mailbox/channel notification wake.
-//   RC-10   renderCounterpartyHeader renders the RESOLVED reply destination (owner
-//           affinity / away) so the model is never told "dashboard" on a turn the
-//           engine will text.
+//   RC-10   renderCounterpartyHeader renders the RESOLVED reply destination so the
+//           model is never told "dashboard" on a turn the engine will text.
 
 import { describe, it, expect } from 'vitest';
 import { resolveTurnCounterparty, renderCounterpartyHeader, type TurnCounterparty } from '../counterparty.js';

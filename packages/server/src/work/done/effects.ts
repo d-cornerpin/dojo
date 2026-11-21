@@ -15,6 +15,7 @@ import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../s
 import { latestHandIn, workerOf, OWNER_ID, ENGINE_ID, type HandInRecord } from './record.js';
 import { decide } from './decide.js';
 import { inFlightOccurrence, owedRunDelivery } from '../occurrences.js';
+import { occurrenceRunStatus } from '../occurrence-runs.js';
 import type { Question } from '../../agent/decide.js';
 import { judgment } from '../../agent/decision-hooks.js';
 import { remeasureTask } from '../../agent/tools/cat/measure-door.js';
@@ -42,14 +43,15 @@ const OWES_IT: Question = { type: 'noul',
   criteria: { true: 'Task: remind me to take my vitamins at 8. Message: Time to take your vitamins. / Task: tell me each morning if any bills are due. Message: No bills due this week.',
               false: 'Task: send me the weather each morning. Message: Done, all set! / Sent. / I could not reach the weather service / Which city? / Part 1: sunny, more soon / (empty)' } };
 
-/** Does the small local model read the message this run delivered as what its delivery-owing task owes? */
+/** Does the small local model read the message this run, recorded complete, delivered as what its task owes? */
 async function deliveredWhatItOwes(workId: string): Promise<boolean> {
   const run = inFlightOccurrence(workId, { anyState: true });
+  if (!run || occurrenceRunStatus(run.id) !== 'complete') return false;
   const t = getDb().prepare(
     `SELECT w.title, w.goal, w.task_kind AS kind, COALESCE(m.content, r.sent_text) AS message FROM work w
        JOIN deliveries d ON d.id = ? LEFT JOIN messages m ON m.id = d.message_id LEFT JOIN tool_receipts r ON r.id = d.receipt_id
       WHERE w.id = ?`,
-  ).get(run && owedRunDelivery(run.id), workId) as { title: string | null; goal: string | null; kind: string; message: string | null } | undefined;
+  ).get(owedRunDelivery(run.id), workId) as { title: string | null; goal: string | null; kind: string; message: string | null } | undefined;
   if (!t) return false;
   const said = await judgment('work_done/delivered_what_it_owes', {
     agentId: workerOf(workId), state: { task: { title: t.title, goal: t.goal, kind: t.kind }, message: t.message ?? '' }, questions: { asked: OWES_IT },

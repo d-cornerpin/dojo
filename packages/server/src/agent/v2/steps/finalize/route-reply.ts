@@ -42,7 +42,6 @@ export async function routeTerminalReply(
       // counterparty never auto-routes to a person; without an address the counterparty says so.
       const routeAddress = turnCtx.address ?? {
         kind: counterparty.kind === 'agent' ? 'agent' as const : 'person' as const,
-        isOwner: counterparty.kind === 'user' && counterparty.relation === 'owner',
         boundChannel: state.inboundChannel, autoRoutes: true,
       };
       const destination = resolveDeliveryChannel(routeAddress);
