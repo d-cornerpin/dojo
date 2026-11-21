@@ -4,7 +4,7 @@
 //     approves only after opening every proof item (`open-proof.ts`); the reason is one line.
 //   - owner_done / cancel are the owner's, from the dashboard, from any open state; the main agent may cancel on his words.
 //   - a run of a live schedule (scope `run`) is decided on its own: approve or send back returns it to Open;
-//     the engine approves a finished run whose creator's measure it counted at 0 itself.
+//     the engine approves a finished run on its own count of the creator's measure, or on a delivery the model confirmed.
 // The owner may also decide by words an agent relays from the message it answers (`deciderOf`).
 // One unit per row (`applyDecision`): adjudication, `decided` event, transition (`claim: 'decided'`), effects.
 import { getDb } from '../../db/connection.js';
@@ -20,6 +20,7 @@ import { proofDelivery, engineProof } from './proof.js';
 import { inFlightOccurrence } from '../occurrences.js';
 import { recordOwnerRemainder } from '../measure-close-gate.js';
 import { whoDecides } from './who-decides.js';
+import { DELIVERABLE_OWING_TASK_KINDS } from '../deliverable-declaration.js';
 import { onDecided } from './effects.js';
 import { endStallCard } from '../../healer/owner-notices.js';
 
@@ -32,6 +33,8 @@ export interface DecideInput {
   reason: string;
   /** The owner's own words, when an agent relays his decision. */
   ownerQuote?: string;
+  /** The engine's ground: absent, a run it counted at 0; `delivered`, a delivered message the model confirmed. */
+  engineBasis?: 'delivered';
 }
 /** `unclosed`: a project's open tasks that did not close with it. */
 export type DecideResult = { kind: 'decided'; to: WorkState; text: string; unclosed: string[] } | { kind: 'refused'; text: string };
@@ -86,14 +89,21 @@ function measureSetByCreator(workId: string): boolean {
   return !!r && r.setBy === r.creator && (r.creator !== workerOf(workId) || r.atOpen === 1);
 }
 
+/** The delivery the engine saw a run of this delivery-owing task make, tied to the run, or null. */
+export function owedRunDelivery(workId: string): string | null {
+  const t = getDb().prepare('SELECT task_kind AS kind FROM work WHERE id = ?').get(workId) as { kind: string | null } | undefined;
+  return DELIVERABLE_OWING_TASK_KINDS.includes(t?.kind ?? '') ? proofDelivery(workId, true) : null;
+}
+
 /** Why this agent may not decide this hand-in, or null. The engine decides only the approval of a finished
- *  run whose measure, set by the task's creator, it counted at 0 itself. */
-function agentRefusal(agentId: string, workId: string, name: string, verdict: Verdict): string | null {
+ *  run: one whose measure, set by the task's creator, it counted at 0 itself, or one that delivered what it owes. */
+function agentRefusal(agentId: string, workId: string, name: string, verdict: Verdict, basis?: 'delivered'): string | null {
   if (agentId === ENGINE_ID) {
     const h = latestHandIn(workId);
-    const counted = verdict === 'approve' && h?.scope === 'run' && h.outcome === 'finished'
-      && engineProof(workId).some((i) => i.kind === 'measure') && measureSetByCreator(workId);
-    return counted ? null : `${name} is not a counted run the engine decides.`;
+    const ok = verdict === 'approve' && h?.scope === 'run' && h.outcome === 'finished' && (basis === 'delivered'
+      ? owedRunDelivery(workId) !== null
+      : engineProof(workId).some((i) => i.kind === 'measure') && measureSetByCreator(workId));
+    return ok ? null : `${name} is not a run the engine decides.`;
   }
   if (workersOf(workId).has(agentId)) return `${name} is your own work; no agent decides work it worked or handed in.`;
   const decider = whoDecides(workId);
@@ -151,7 +161,7 @@ export function decide(input: DecideInput): DecideResult {
     if (isTerminal(row.state)) return refused(`${name} is already closed (${row.state}).`);
   } else {
     if (row.state !== 'handed_in') return refused(`${name} is ${row.state}, not handed in; there is nothing to decide.`);
-    const no = who.owner ? null : agentRefusal(who.agentId, row.id, name, input.verdict);
+    const no = who.owner ? null : agentRefusal(who.agentId, row.id, name, input.verdict, input.engineBasis);
     if (no) return refused(no);
   }
 

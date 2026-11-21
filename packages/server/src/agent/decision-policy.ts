@@ -14,6 +14,7 @@ const LINES: ReadonlyMap<string, { yes: number; no: number }> = new Map([
   ['reply_claims/only_promises_to_start', { yes: 0.5, no: 0.5 }],
   ['reply_claims/standing_promise', { yes: 0.7, no: 0.3 }],
   ['reply_claims/asserts_board_state', { yes: 0.7, no: 0.3 }],
+  ['work_done/delivered_what_it_owes', { yes: 0.6, no: 0.6 }],
 ]);
 
 export const onTheModel = (question: string): boolean => LINES.has(question) && getDecisionProvider() !== null;
