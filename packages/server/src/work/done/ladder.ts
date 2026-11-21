@@ -6,9 +6,8 @@
 //      questions stop holding it.
 //   3. A hand-in the PM did not decide after two reviews, or a task sent back three times: the main agent
 //      is woken to decide another agent's task.
-//   4. The owner's card, never a text: for the main agent's own task, for a decision the main agent let sit one
-//      more bound, or a stall a finished PM review listed and left (at once when the PM cannot run; a retask starts the
-//      climb again). Not within 15 minutes, nor the first hour after the upgrade; once a day. A busy worker is left alone.
+//   4. The owner's card, never a text: the main agent's own task, a decision it let sit, or a stall a finished PM
+//      review listed and left (first retask: one more round). Not within 15 minutes or the upgrade hour; once a day.
 // Bounds on the wakes: none to an agent a person is waiting on (`selfWakeStandDown`), one per
 // agent per sweep naming all its due rows, and at most 3 box-wide per 10 minutes; the rest wait for a later sweep.
 // Each wake marks one of its entries; the PM is not armed again until a PM turn finishes after its last arm.

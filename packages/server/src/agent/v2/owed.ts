@@ -58,9 +58,7 @@ export interface AgentRequest {
   createdAt: number; attempts: number; dueAt: number; kept: number;
 }
 
-/** Requests from other agents with no final reply (on `thread` when given), oldest first, with when each may be served. One its
- *  asker waits on is owed until served, and again once that turn was cut or anything new was said on its thread; any other, for a day,
- *  and for its serving window. Once served, an open task on its thread owns it (parked: its job; owner-held: nobody; else the ladder). */
+/** Requests from other agents with no final reply (on `thread` when given), oldest first, with when each may be served. */
 export function agentRequests(agentId: string, now = Date.now(), thread: string | null = null): AgentRequest[] {
   const rows = getDb().prepare(`
     SELECT m.seq AS rowid, m.id AS messageId, m.a2a_thread_id AS threadId, m.a2a_intent AS intent,
@@ -69,10 +67,10 @@ export function agentRequests(agentId: string, now = Date.now(), thread: string 
       FROM messages m JOIN agents a ON a.id = m.agent_id LEFT JOIN agents s ON s.id = m.source_agent_id
      WHERE m.agent_id = @agentId AND m.role = 'user' AND m.lane <> 'events'
        AND m.a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK') AND m.a2a_thread_id IS NOT NULL AND m.source_agent_id IS NOT NULL
-       AND (m.swept_at IS NULL OR ${openPieceOnSql('m.a2a_thread_id')}) AND NOT ${RESULT_FOR_ENDED_REQUEST('m')}
+       AND (m.swept_at IS NULL OR kept) AND NOT ${RESULT_FOR_ENDED_REQUEST('m')}
        AND m.created_at >= (unixepoch(COALESCE(a.session_started_at, '1970-01-01')) * 1000) AND (@thread IS NULL OR m.a2a_thread_id = @thread)
-       AND (CASE WHEN m.served_by_turn IS NULL THEN ${openPieceOnSql('m.a2a_thread_id')} OR m.created_at >= @now - 86400000
-                 WHEN ${openPieceOnSql('m.a2a_thread_id')} THEN EXISTS (SELECT 1 FROM turns t WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn AND (t.exit_reason IS NULL
+       AND (CASE WHEN m.served_by_turn IS NULL THEN kept OR m.created_at >= @now - 86400000
+                 WHEN kept THEN EXISTS (SELECT 1 FROM turns t WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn AND (t.exit_reason IS NULL
                    OR t.exit_reason IN ('preempt', 'abort', 'terminated', 'provider_error', 'stream_idle', 'unknown') OR EXISTS (SELECT 1 FROM messages n WHERE n.a2a_thread_id = m.a2a_thread_id
                      AND n.agent_id IN (m.agent_id, m.source_agent_id) AND n.role = 'user' AND n.id <> m.id AND n.created_at >= unixepoch(t.started_at) * 1000)))
                  ELSE MAX(COALESCE((SELECT unixepoch(t.started_at) * 1000 FROM turns t
@@ -146,8 +144,7 @@ export function personsWaiting(agentId: string): number {
 export interface OwedWork { taskId?: string | null; threadId?: string | null }
 const isFor = (i: OwedItem, w: OwedWork): boolean => (!!w.taskId && (i.event?.taskId === w.taskId || (i.kind === 'job' && i.ref === w.taskId)))
   || (!!w.threadId && i.request?.threadId === w.threadId);
-/** Is anything owed now, and the earliest future due time, read without writing; with `work`, only what is for it: an
- *  event naming its task, the task's own parked job, or the request on its thread. */
+/** Is anything owed now (with `work`, only its task's events and parked job or its thread's request), and the next due time. */
 export function dueOf(agentId: string, now = Date.now(), work?: OwedWork): { now: boolean; next: number | null } {
   const items = owedItems(agentId, { pure: true, thread: work?.threadId }).filter((i) => !work || isFor(i, work));
   const future = items.map((i) => i.dueAt).filter((t) => t > now);

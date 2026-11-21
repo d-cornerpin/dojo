@@ -81,8 +81,7 @@ export function agentActivity(agentId: string, now = Date.now()): Activity {
   };
 }
 
-/** Is the agent working on `work`, or about to: anything in flight, something owed for it, another live delegation of its
- *  own, or paused. Never in error, ended, or flagged SILENT (the PM looks then; its run still keeps its pieces alive). */
+/** Is the agent working on `work`: in flight, owed for it, on another live delegation of its own, or paused; never in error, ended or SILENT. */
 export function workerBusy(agentId: string, work: OwedWork, seen = new Set<string>()): boolean {
   const a = getDb().prepare('SELECT status, silent_notice FROM agents WHERE id = ?').get(agentId) as { status: string; silent_notice: string | null } | undefined;
   if (!a || ['error', 'terminated'].includes(a.status) || a.silent_notice !== null) return false;
@@ -102,8 +101,7 @@ const ALIVE = (c: string): string => `EXISTS (SELECT 1 FROM work t JOIN agents h
   WHERE t.kind = 'task' AND t.a2a_thread_id = ${c}.root_id AND t.state NOT IN ('done', 'failed', 'abandoned')
     AND ((t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
 
-/** The open pieces of a join, each alive while its task is (ALIVE), its helper's run is in flight, or with no task, it is busy
- *  for it or its newest word there is a question back to the asker with nothing after it (`said`). */
+/** Open pieces of a join, alive by their task (ALIVE), a run in flight, or with no task a busy helper or its unanswered question back. */
 export function openPieces(joinId: string, seen = new Set<string>()): Array<{ childId: string; alive: boolean }> {
   return (getDb().prepare(`SELECT c.id, c.assignee_agent AS helper, c.root_id AS thread, ${ALIVE('c')} AS alive,
       EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked,
