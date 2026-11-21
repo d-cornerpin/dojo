@@ -77,7 +77,8 @@ const isKind = (kind: string) => (e: Ev): boolean => e.kind === kind;
 /** Where the row stands on the ladder and the step now due, from its own records. */
 function ladderStep(workId: string, now: number): LadderStep {
   const row = getDb().prepare(`SELECT w.state, w.updated_at, w.a2a_thread_id AS thread, ${stallSinceSql('w')} AS since, ${cardedSinceStallSql('w')} AS carded,
-      ${LADDER_ANCHOR_SQL} AS anchor, (SELECT MAX(r.created_at) FROM work_events r WHERE r.work_id = w.id AND r.kind = 'audit' AND json_extract(r.payload, '$.entry_kind') = 'directive') AS retask
+      ${LADDER_ANCHOR_SQL} AS anchor, (SELECT MIN(r.created_at) FROM work_events r WHERE r.work_id = w.id AND r.kind = 'audit'
+        AND json_extract(r.payload, '$.entry_kind') = 'directive' AND r.created_at >= ${stallSinceSql('w')}) AS retask
       FROM work w WHERE w.id = ?`).get(workId) as { state: string; updated_at: number; thread: string | null; since: number; carded: number; anchor: number; retask: number | null } | undefined;
   if (!row || !(LIVE.includes(row.state) || (row.state === 'open' && row.thread))) return { reached: 0, due: null };
   const evs = eventsOf(workId);
