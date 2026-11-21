@@ -299,7 +299,6 @@ export function bumpWorkAttempts(id: string): number {
 export function deleteTrackerRow(id: string): number {
   const db = getDb();
   let changes = 0;
-  // What waited on the row or its child tasks is released once they are gone.
   const ended = db.prepare("SELECT agent_id, source_message_id, a2a_thread_id FROM work WHERE kind = 'task' AND (id = ? OR parent_id = ?)")
     .all(id, id) as Array<{ agent_id: string; source_message_id: string | null; a2a_thread_id: string | null }>;
   withUnit(() => {

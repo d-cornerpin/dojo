@@ -1273,8 +1273,8 @@ async function handInsNeverHeard(join: JoinState): Promise<void> {
 }
 
 /** Judge an open request: land what came back, end each piece whose helper's work has stopped, and answer or tell
- *  once the last piece is settled. Work still alive is never ended for time: at the deadline the next look moves on. */
-async function resolveOpenJoin(join: JoinState, opts: { atDeadline: boolean }): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled'> {
+ *  once the last piece is settled. Work still alive is never ended for time: its next look moves on. */
+async function resolveOpenJoin(join: JoinState): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled'> {
   await handInsNeverHeard(join);
   const landed = await landStrandedReplies(joinState(join.id) ?? join);
   if (!landed) return 'already-settled';
@@ -1285,7 +1285,7 @@ async function resolveOpenJoin(join: JoinState, opts: { atDeadline: boolean }): 
   for (const p of openPieces(landed.id)) if (!p.alive) await abandonPiece(p.childId, 'its helper\'s work on it has stopped', 'work-reaper');
   const state = joinState(landed.id);
   if (!state || state.complete) return state?.parentState === 'failed' ? 'failed-closed' : 'already-settled';
-  if (opts.atDeadline) extendJoinTtl(state.id);
+  extendJoinTtl(state.id);
   return 'left-open';
 }
 
@@ -1305,8 +1305,8 @@ function landedContentNotice(join: JoinState, snapshot: JoinPiece[]): string {
   const missing = snapshot.filter((p) => !isTerminal(p.state));
   const names = missing.map((p) => resolveAgentDisplayName(p.assigneeAgent) ?? 'another agent');
   const who = names.length === 1 ? names[0] : `${names.length} of the agents it asked`;
-  return `following up on something your agent answered earlier: ${who} never came back `
-    + `inside the deadline. Here is what did arrive:\n${landed.map(arrivedLine).join('\n')}`;
+  return `following up on something your agent answered earlier: ${who} never came back. `
+    + `Here is what did arrive:\n${landed.map(arrivedLine).join('\n')}`;
 }
 
 /** THE SECOND TIMEOUT ARM: a join past its deadline whose parent has ALREADY CLOSED; see
@@ -1321,18 +1321,18 @@ async function resolveJoinUnderClosedParent(join: JoinState): Promise<'noticed' 
   const outstanding = snapshot.filter((p) => !isTerminal(p.state));
   // Everything is back after all: the landing that completed the join already put the answer back.
   if (outstanding.length === 0) return 'already-settled';
-  if (openPieces(state.id).some((p) => p.alive)) { extendJoinTtl(state.id); return 'already-settled'; }   // the deadline only looks
+  if (openPieces(state.id).some((p) => p.alive)) { extendJoinTtl(state.id); return 'already-settled'; }
 
   // Settle FIRST, deliver second: the guard has to be won before the send, exactly as the
   // first arm wins `failJoinClosed` before it delivers.
   let claimed = 0;
   for (const piece of outstanding) {
-    const r = await abandonPiece(piece.childId, 'the deadline passed and the ask it belonged to had already been answered', 'work-reaper');
+    const r = await abandonPiece(piece.childId, 'its helper\'s work on it stopped after the ask it belonged to was answered', 'work-reaper');
     if (r.result.kind === 'applied') claimed++;
   }
   // Defence in depth: the FINDER is the guard; this covers only the two-scanners-at-once race.
   if (claimed === 0) return 'already-settled';
-  tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question ran out of time.', await relayNotice(state, landedContentNotice(state, snapshot)));
+  tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question never came back.', await relayNotice(state, landedContentNotice(state, snapshot)));
   return 'noticed';
 }
 
@@ -1351,7 +1351,7 @@ export async function sweepExpiredJoins(): Promise<{ failedClosed: number; relay
   }
   for (const join of joins) {
     try {
-      const outcome = await resolveOpenJoin(join, { atDeadline: true });
+      const outcome = await resolveOpenJoin(join);
       if (outcome === 'relayed') out.relayedReplies++;
       else if (outcome === 'failed-closed') out.failedClosed++;
       logger.info('join TTL reaper: looked at an expired join', { agentId: join.agentId, work: join.id, outcome });
@@ -1388,14 +1388,14 @@ export async function sweepExpiredJoins(): Promise<{ failedClosed: number; relay
   return out;
 }
 
-/** The boot re-drain, over ALL open joins (bounded): land stranded replies, end stopped pieces, fail closed when
- *  the TTL passed with nothing alive. It never wakes an agent, so no boot storm. */
+/** The boot re-drain, over the open joins looked at in the last week (bounded): land stranded replies and end stopped
+ *  pieces, telling once. It never wakes an agent, so no boot storm. */
 export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; failedClosed: number; leftOpen: number }> {
   const out = { relayedReplies: 0, failedClosed: 0, leftOpen: 0 };
   const joins = openJoins(JOIN_BOOT_BATCH);
   for (const join of joins) {
     try {
-      const outcome = await resolveOpenJoin(join, { atDeadline: join.ttlAt !== null && Date.now() > join.ttlAt });
+      const outcome = await resolveOpenJoin(join);
       if (outcome === 'relayed') out.relayedReplies++;
       else if (outcome === 'failed-closed') out.failedClosed++;
       else if (outcome === 'left-open') out.leftOpen++;
@@ -1469,7 +1469,7 @@ export async function judgeKeptRequests(agentId: string, threadId: string | null
         AND state IN ('open', 'claimed', 'blocked') AND (assignee_agent = ? OR root_id = ?)`).all(agentId, threadId) as Array<{ id: string }>;
     for (const { id } of joins) {
       const j = joinState(id);
-      if (j && !isTerminal(j.parentState)) await resolveOpenJoin(j, { atDeadline: false });
+      if (j && !isTerminal(j.parentState)) await resolveOpenJoin(j);
     }
   } catch (err) {   // an event's judge never breaks the event; the sweep and the boot pass look again from rows
     logger.warn('kept requests could not be judged at the event', { agentId, error: err instanceof Error ? err.message : String(err) });
