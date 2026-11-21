@@ -538,7 +538,8 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     const isDeliverableShape =
       autoPromotedFromFyi ||
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
-    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinChild && !forEndedRequest && !findFailedJoinForThread(target.id, threadId)) {
+    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinChild && !forEndedRequest && !findFailedJoinForThread(target.id, threadId)
+      && !sentBackPiece(target.id, threadId, envelope.fromAgent)) {
       primaryDeliverableHint = deliverableArrivedNote(senderName);
     }
   } catch { /* best effort */ }
@@ -1213,18 +1214,23 @@ function deliverLateAnswerIfJoinFailedClosed(p: LandInput): boolean {
   return true;
 }
 
-/** Corrected work for a request already answered: the helper's job was sent back after its piece landed. The piece
- *  takes the corrected text and delivery, and the request goes back to its person; false when this is not that. */
-function updateAfterSendBack(p: LandInput): boolean {
-  if (p.intent === 'FAIL' || !p.payload.trim()) return false;
-  const r = getDb().prepare(
+/** The landed piece of an answered request on this thread whose helper's job was sent back since it landed. */
+function sentBackPiece(agentId: string, threadId: string, helperId: string): { pieceId: string; joinId: string } | undefined {
+  return getDb().prepare(
     `SELECT c.id AS pieceId, c.parent_id AS joinId FROM work c JOIN work a ON a.id = c.parent_id
       WHERE c.agent_id = ? AND c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.root_id = ? AND c.state = 'done' AND a.state = 'done'
         AND EXISTS (SELECT 1 FROM work t JOIN work_events e ON e.work_id = t.id AND e.kind = 'decided'
                      WHERE t.kind = 'task' AND t.agent_id = ? AND t.a2a_thread_id = c.root_id
                        AND json_extract(e.payload, '$.verdict') = 'send_back' AND e.created_at > c.closed_at)
       ORDER BY c.opened_at DESC LIMIT 1`,
-  ).get(p.agentId, p.threadId, p.fromAgent) as { pieceId: string; joinId: string } | undefined;
+  ).get(agentId, threadId, helperId) as { pieceId: string; joinId: string } | undefined;
+}
+
+/** Corrected work for a request already answered: the helper's job was sent back after its piece landed. The piece
+ *  takes the corrected text and delivery, and the request goes back to its person; false when this is not that. */
+function updateAfterSendBack(p: LandInput): boolean {
+  if (p.intent === 'FAIL' || !p.payload.trim()) return false;
+  const r = sentBackPiece(p.agentId, p.threadId, p.fromAgent);
   const join = r ? joinState(r.joinId) : null;
   const evidence = r && join ? recordPieceDelivery({ fromAgent: p.fromAgent, toAgent: p.agentId, messageId: p.messageId, intent: p.intent }) : null;
   if (!r || !join || !evidence) return false;

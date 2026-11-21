@@ -19,6 +19,7 @@ import {
   agentStaysSilent, delegatedTextRequest, helperAnswers, relayed, relayRows, requestState, textsSent, ASK, HELPER, THREAD,
 } from './helpers/text-relay.js';
 import { turnReplies } from './helpers/turn-reply.js';
+import { clearPlatformConfigCache } from '../../config/platform.js';
 
 const putBackKinds = (): string[] => (testDb().prepare(
   "SELECT json_extract(payload, '$.kind') AS k FROM work_events WHERE work_id = ? AND kind = 'compile_resolved' AND json_extract(payload, '$.kind') IS NOT NULL ORDER BY id",
@@ -74,6 +75,18 @@ describe('rejected work the person had comes back as the agent\'s Update', () =>
 
     agentAnswers(3);
     expect([requestState(), repliesOf(3), relayRows()]).toEqual(['done', 1, []]);
+  });
+
+  it('the corrected answer is stored without the hint that whoever asked is owed it: the Update order carries it', async () => {
+    testDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?)").run(AGENT);
+    clearPlatformConfigCache();
+    await helperAnswers('The venue is free on the 12th.');
+    agentAnswers(2);
+    managerSendsItBack();
+    await helperAnswers('Corrected: the venue is free on the 14th.');
+    const rows = testDb().prepare("SELECT content FROM messages WHERE content LIKE '%Corrected: the venue%'").all() as Array<{ content: string }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.content).not.toContain('is owed it');
   });
 
   it('a second send-back and correction give a second Update; the same reply sent again without one gives none', async () => {
