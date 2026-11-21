@@ -6,7 +6,7 @@ import { WORKING_NOTE_PREFIX } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { isRowLabelOnly } from '../../../../memory/row-label-only.js';
+import { isRowLabelOnly } from '../../../../memory/message-stamp.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { PROACTIVE_SEND_DEMOTE_THRESHOLD, bumpProactiveSendStreak, getProactiveSendStreak } from '../../proactive-budget.js';
