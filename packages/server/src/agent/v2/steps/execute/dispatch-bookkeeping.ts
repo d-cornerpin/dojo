@@ -1,4 +1,4 @@
-// The moment of dispatch: the tool-call broadcast, the A2A send flag, gate flags, and the other agents'
+// The moment of dispatch: the tool-call broadcast, gate flags, and the other agents'
 // destructive-action hold. A held call comes back as `{ state, refusal }`, the refusal being its result.
 
 import { isHealerAgent, isPrimaryAgent } from '../../../../config/platform.js';
@@ -26,9 +26,6 @@ export async function recordDispatchAndHold(
   try {
     broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: redactDeclaredSecretArgs(tc.name, tc.arguments) ?? {} });
   } catch { /* best effort */ }
-  if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') {
-    state = advance(state, { sentToAgentThisTurn: true });
-  }
   // The post-compaction recall flag is only cleared here: recall stays an on-demand tool, never
   // auto-injected (an injection bloats the fresh tail and re-triggers compaction).
   if (state.awaitingPostCompactRecall) {
