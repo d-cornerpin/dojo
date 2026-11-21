@@ -1,5 +1,6 @@
 // A finished run whose measure the engine itself counts at 0 is approved by the engine, pointing at the run, when the
-// task's creator set that measure (at the opening, when the creator also works it). Anything else goes to the manager.
+// task's creator set that measure (at the opening, when the creator also works it), and the Dojo recorded the run
+// complete. Anything else, a run that owed a message and delivered none included, goes to the manager.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -85,5 +86,13 @@ describe('a measured run at zero is decided by the engine', () => {
     await runFinishes(0);
     expect(stateOf()).toBe('open');
     expect(engineDecision()?.actor).toBe('engine');
+  });
+
+  it('a run that owed a message and delivered none goes to the manager, even at 0', async () => {
+    aCountedRun(MAIN, { setBy: MAIN });
+    doneDb().prepare("UPDATE work SET task_kind = 'report' WHERE id = ?").run(TASK);
+    await runFinishes(0);
+    expect(stateOf()).toBe('handed_in');
+    expect(eventCount('decided')).toBe(0);
   });
 });
