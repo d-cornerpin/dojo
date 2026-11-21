@@ -19,13 +19,14 @@ const logger = createLogger('v2-loop');
 export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext): StepOutcome {
   const {
     agentId, turnNumber, db, counterparty, triggerRow, triggerWorkId,
-    triggerConversationId, persistedContent, deferredDeliveredByAck,
+    triggerConversationId, persistedContent, deferredDeliveredByAck, result,
   } = ctx;
 
   // This turn's reply-warranting sends that went out, whichever tool made them, keyed by turn number on their own
   // delivery rows: a2a rows are stored to the whole second, so a clock bound would sweep in the previous turn's sends.
-  // Read per turn, not per response: once the turn has delegated, any later tool step ends it after the one status-line steer.
-  const sentRows = counterparty.kind === 'agent' ? [] : db.prepare(
+  // Read only when this response delegated: any other tool step proceeds, so the model sees its result and writes its line.
+  const delegatedNow = result.toolCalls.some((tc) => tc.name === 'send_to_agent' || tc.name === 'spawn_agent');
+  const sentRows = counterparty.kind === 'agent' || !delegatedNow ? [] : db.prepare(
     `SELECT m.a2a_thread_id AS a2a_thread_id, m.agent_id AS agent_id, m.a2a_intent AS a2a_intent
        FROM deliveries d JOIN messages m ON m.id = d.message_id
       WHERE d.agent_id = @agentId AND d.turn_number = @turnNumber
