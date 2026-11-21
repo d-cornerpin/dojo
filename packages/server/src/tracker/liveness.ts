@@ -81,17 +81,19 @@ export function agentActivity(agentId: string, now = Date.now()): Activity {
   };
 }
 
-/** Is the agent working on `work`, or about to: anything in flight, something owed or parked for this work, a live
- *  delegation of its own, or paused. Never an agent in error, ended, or in a run the Dojo flagged SILENT. */
+/** Is the agent working on `work`, or about to: anything in flight, something owed for it, another live delegation of its
+ *  own, or paused. Never in error, ended, or flagged SILENT (the PM looks then; its run still keeps its pieces alive). */
 export function workerBusy(agentId: string, work: OwedWork, seen = new Set<string>()): boolean {
   const a = getDb().prepare('SELECT status, silent_notice FROM agents WHERE id = ?').get(agentId) as { status: string; silent_notice: string | null } | undefined;
-  if (!a || ['error', 'terminated'].includes(a.status) || a.silent_notice !== null || seen.has(agentId)) return false;
+  if (!a || ['error', 'terminated'].includes(a.status) || a.silent_notice !== null) return false;
   const live = liveWork(agentId), due = dueOf(agentId, Date.now(), work);
   if (a.status === 'paused' || activeRuns.has(agentId) || live.turn > 0 || live.background > parkedJobs(agentId).length
     || due.now || due.next !== null) return true;
+  if (seen.has(agentId)) return false;
   seen.add(agentId);
-  return (getDb().prepare("SELECT id FROM work WHERE agent_id = ? AND remaining_children > 0 AND state NOT IN ('done', 'failed', 'abandoned')")
-    .all(agentId) as Array<{ id: string }>).some((j) => openPieces(j.id, seen).some((p) => p.alive));
+  return (getDb().prepare(`SELECT j.id FROM work j WHERE j.agent_id = ? AND j.remaining_children > 0 AND j.state NOT IN ('done', 'failed', 'abandoned')
+      AND NOT EXISTS (SELECT 1 FROM work c WHERE c.parent_id = j.id AND c.root_id = ?)`).all(agentId, work.threadId ?? '') as Array<{ id: string }>)
+    .some((j) => openPieces(j.id, seen).some((p) => p.alive));
 }
 
 /** SQL: piece `c` has a task on its thread still open, its agent not ended, and not ended by the owner's card: a card
@@ -100,13 +102,13 @@ const ALIVE = (c: string): string => `EXISTS (SELECT 1 FROM work t JOIN agents h
   WHERE t.kind = 'task' AND t.a2a_thread_id = ${c}.root_id AND t.state NOT IN ('done', 'failed', 'abandoned')
     AND ((t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
 
-/** The open pieces of a join, each alive while its work is: its task (ALIVE), or with no task, its helper busy for it. */
+/** The open pieces of a join, each alive while its task is (ALIVE), its helper's run is in flight, or, with no task, it is busy. */
 export function openPieces(joinId: string, seen = new Set<string>()): Array<{ childId: string; alive: boolean }> {
   return (getDb().prepare(`SELECT c.id, c.assignee_agent AS helper, c.root_id AS thread, ${ALIVE('c')} AS alive,
       EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked
       FROM work c WHERE c.parent_id = ? AND c.kind = 'task' AND c.state IN ('open', 'claimed', 'blocked')`).all(joinId) as
     Array<{ id: string; helper: string | null; thread: string; alive: number; tasked: number }>).map((p) => ({
-    childId: p.id, alive: p.alive === 1 || (p.tasked === 0 && !!p.helper && workerBusy(p.helper, { threadId: p.thread }, seen)),
+    childId: p.id, alive: p.alive === 1 || activeRuns.has(p.helper ?? '') || (p.tasked === 0 && !!p.helper && workerBusy(p.helper, { threadId: p.thread }, seen)),
   }));
 }
 
