@@ -1051,8 +1051,8 @@ export function findFailedJoinForThread(
   const r = getDb().prepare(`
     SELECT c.id AS child_id, c.parent_id AS parent_id
       FROM work c JOIN work p ON p.id = c.parent_id
-     WHERE c.agent_id = ? AND c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.root_id = ? AND c.state <> 'done'
-       AND (p.state = 'failed' OR EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = p.id AND e.kind = 'compile_resolved' AND json_extract(e.payload, '$.kind') = 'late'))
+     WHERE c.agent_id = ? AND c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.root_id = ?
+       AND (p.state = 'failed' OR (c.state <> 'done' AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = p.id AND e.kind = 'compile_resolved' AND json_extract(e.payload, '$.kind') = 'late')))
      ORDER BY c.opened_at DESC LIMIT 1
   `).get(agentId, threadId) as { child_id: string; parent_id: string } | undefined;
   return r ? { childId: r.child_id, parentId: r.parent_id } : null;
