@@ -16,7 +16,7 @@ import { agentActivity } from './liveness.js';
 import { planStepLineOf } from '../work/plan-store.js';
 import { ownerWordsLines, projectOf, workFile } from '../work/project-file.js';
 import { listTaskLog } from './task-log.js';
-import { workingExpr } from '../work/terminal-states.js';
+import { isTerminalName, workingExpr } from '../work/terminal-states.js';
 import { createLogger } from '../logger.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
@@ -180,8 +180,12 @@ export function armDebouncedReview(taskId: string, why: string): void {
   }, REVIEW_DEBOUNCE_MS);
 }
 
+/** The request a card was opened for, owed by the card's requester, and the delivery that answered it. */
+const requestOf = (id: string) => getDb().prepare(`SELECT a.state, d.id, d.recipient_display AS who, d.created_at AS at FROM work w JOIN work a ON a.kind = 'ask'
+  AND a.root_id = w.source_message_id AND a.agent_id = w.requester_id LEFT JOIN deliveries d ON d.id = a.result_delivery_id WHERE w.id = ?`)
+  .get(id) as { state: string; id: string | null; who: string | null; at: string | null } | undefined;
 function waitingForPM(pmId: string): string[] {
-  return decidedBy(pmId).filter((id) => questionsHoldUntil(id) <= Date.now()).slice(0, 10);
+  return decidedBy(pmId).filter((id) => questionsHoldUntil(id) <= Date.now() && isTerminalName(requestOf(id)?.state ?? 'done')).slice(0, 10);
 }
 
 function markedStalls(pmId: string): string[] {
@@ -198,11 +202,12 @@ function handInBlock(id: string, n: number, roomTokens: number): string {
   const w = getDb().prepare('SELECT title, goal FROM work WHERE id = ?').get(id) as { title: string | null; goal: string | null };
   const h = latestHandIn(id);
   const items = h?.items ?? [];
-  const backs = sendBacks(id);
+  const backs = sendBacks(id), asked = requestOf(id);
   return `${n}. HANDED IN: "${w.title ?? id}" [${id}] by ${h?.filedBy ?? workerOf(id)}, as ${h?.outcome === 'cant_be_done' ? "can't be done" : 'finished'}`
     + `${h?.scope === 'run' ? ' (one run of a recurring task; the schedule goes on whatever you decide)' : ''}.\n  Goal: ${w.goal ?? '(none recorded)'}\n  Note: ${h?.note ?? '(none)'}\n`
     + (items.length > 0 ? `  Proof (open each item before approving):\n${proofLines(items).map((l, i) => `    ${i}. ${l}`).join('\n')}` : '  Proof: none.')
     + `\n  Sent back so far: ${backs.length === 0 ? 'never' : backs.map((b) => `"${b.reason}"`).join('; ')}`
+    + (asked ? `\n  The request this was opened for: ${asked.id ? `answered to ${asked.who ?? 'its sender'} at ${asked.at} UTC (delivery ${asked.id})` : 'not answered'}` : '')
     + `${validationMeasureLines(id, roomTokens)}${heldDeliveryLine(id)}${ownerWordsLines(id)}${taskLines(id)}`;
 }
 
