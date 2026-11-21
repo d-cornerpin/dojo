@@ -4,7 +4,7 @@ import { primaryReady } from '../agent/primary-ready.js';
 import { proofLines } from '../work/done/proof.js';
 import { latestHandIn, workerOf } from '../work/done/record.js';
 import {
-  decidedBy, holdingQuestions, questionsHoldUntil, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS,
+  decidedBy, holdingQuestions, questionsHoldUntil, requestOf, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS,
 } from '../work/done/who-decides.js';
 import { LADDER_ENTRY, pmCanRun } from '../work/done/ladder.js';
 import { appendAuditEntry } from '../work/audit-trail.js';
@@ -16,7 +16,7 @@ import { agentActivity } from './liveness.js';
 import { planStepLineOf } from '../work/plan-store.js';
 import { ownerWordsLines, projectOf, workFile } from '../work/project-file.js';
 import { listTaskLog } from './task-log.js';
-import { isTerminalName, workingExpr } from '../work/terminal-states.js';
+import { workingExpr } from '../work/terminal-states.js';
 import { createLogger } from '../logger.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
@@ -180,12 +180,8 @@ export function armDebouncedReview(taskId: string, why: string): void {
   }, REVIEW_DEBOUNCE_MS);
 }
 
-/** The request a card was opened for, owed by the card's requester, and the delivery that answered it. */
-const requestOf = (id: string) => getDb().prepare(`SELECT a.state, d.id, d.recipient_display AS who, d.created_at AS at FROM work w JOIN work a ON a.kind = 'ask'
-  AND a.root_id = w.source_message_id AND a.agent_id = w.requester_id LEFT JOIN deliveries d ON d.id = a.result_delivery_id WHERE w.id = ?`)
-  .get(id) as { state: string; id: string | null; who: string | null; at: string | null } | undefined;
 function waitingForPM(pmId: string): string[] {
-  return decidedBy(pmId).filter((id) => questionsHoldUntil(id) <= Date.now() && isTerminalName(requestOf(id)?.state ?? 'done')).slice(0, 10);
+  return decidedBy(pmId).filter((id) => questionsHoldUntil(id) <= Date.now()).slice(0, 10);
 }
 
 function markedStalls(pmId: string): string[] {
