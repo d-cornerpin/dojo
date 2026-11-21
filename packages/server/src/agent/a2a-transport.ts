@@ -1292,7 +1292,7 @@ async function resolveOpenJoin(join: JoinState): Promise<'relayed' | 'failed-clo
 /** One piece for the person: who sent it, a failure or a missing answer said as what it was, the text whole. */
 function arrivedLine(p: JoinPiece): string {
   const text = (p.content ?? '').trim();
-  const label = p.state === 'done' ? '' : p.state !== 'failed' ? ' (it never answered)' : text ? ' (it reported a failure)' : ' (it did not answer in time)';
+  const label = p.state === 'done' ? '' : p.state !== 'failed' ? ' (it never answered)' : ' (it reported a failure)';
   return `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}${label}: ${text}`;
 }
 
@@ -1309,9 +1309,9 @@ function landedContentNotice(join: JoinState, snapshot: JoinPiece[]): string {
     + `Here is what did arrive:\n${landed.map(arrivedLine).join('\n')}`;
 }
 
-/** THE SECOND TIMEOUT ARM: a join past its deadline whose parent has ALREADY CLOSED; see
- *  `dueJoinsUnderClosedParent` for why widening the first arm was refused. Same discipline:
- *  land stranded replies; relay if all landed; else settle children `abandoned`, ONE notice.
+/** THE SECOND ARM: a join due a look whose parent has ALREADY CLOSED; see `dueJoinsUnderClosedParent` for why
+ *  widening the first arm was refused. Same discipline: land stranded replies; relay if all landed; else, once
+ *  nothing on it is alive, settle children `abandoned`, ONE notice.
  *  The child transition IS the exactly-once guard; the PARENT is not transitioned at all. */
 async function resolveJoinUnderClosedParent(join: JoinState): Promise<'noticed' | 'already-settled'> {
   const state = await landStrandedReplies(join);

@@ -57,7 +57,7 @@ export const LADDER_HINT = {
 } as const;
 
 type LadderAction = 'hint' | 'pm' | 'decider' | 'owner';
-interface LadderStep { reached: 0 | 1 | 2 | 3 | 4; due: LadderAction | null }
+interface LadderStep { reached: 0 | 1 | 2 | 3 | 4; due: LadderAction | null; thread?: string | null }
 interface Due { id: string; due: LadderAction }
 
 interface Ev { id: number; kind: string; entry: string | null; at: number }
@@ -121,8 +121,8 @@ function ladderStep(workId: string, now: number): LadderStep {
   const pm = evs.find((e) => e.entry === LADDER_ENTRY.pm && e.at >= from);
   const floor = now - since >= OWNER_FLOOR_MS;
   if (row.carded) return { reached: 4, due: null };
-  if (pm) return { reached: 2, due: !pmCanRun() || pmReviewed(pm.at, workId) ? owner(floor) : workerBusy(getPMAgentId(), {}) ? null : 'pm' };
-  if (hint) return { reached: 1, due: !pmCanRun() ? owner(floor) : now - hint.at >= bound ? 'pm' : null };
+  if (pm) return { reached: 2, thread: row.thread, due: !pmCanRun() || pmReviewed(pm.at, workId) ? owner(floor) : workerBusy(getPMAgentId(), {}) ? null : 'pm' };
+  if (hint) return { reached: 1, thread: row.thread, due: !pmCanRun() ? owner(floor) : now - hint.at >= bound ? 'pm' : null };
   return { reached: 0, due: now - since >= bound ? 'hint' : null };
 }
 
@@ -176,12 +176,11 @@ export async function hintOnce(agentId: string, rows: Array<{ workId: string; te
 }
 
 /** Step 4: the owner's card (once a day per task), the ask his words decide by; a stall's card tells whoever waits on it. */
-function tellOwner(workId: string, stall: boolean): void {
+function tellOwner(workId: string, thread?: string | null): void {
   const key = stallKey(workId);
   if (!tellOwnerOncePerWindow(key, wordsOf(key), DAY_MS)) return;
   recordValidationEscalation(workId, 'engine', null);
-  const thread = (getDb().prepare('SELECT a2a_thread_id AS t FROM work WHERE id = ?').get(workId) as { t: string | null }).t;
-  if (stall) void import('../../agent/a2a-transport.js').then((m) => m.judgeKeptRequests(workerOf(workId), thread));
+  if (thread !== undefined) void import('../../agent/a2a-transport.js').then((m) => m.judgeKeptRequests(workerOf(workId), thread));
 }
 
 const rowOf = (workId: string) => getDb().prepare(`SELECT w.title, w.state, ${holdWordsSql('w')} AS hold, ${taskMovedAtSql('w')} AS moved FROM work w WHERE w.id = ?`)
@@ -219,8 +218,8 @@ export async function runLadder(now = Date.now()): Promise<void> {
   const byAgent = new Map<string, Due[]>();
   for (const { id } of candidates(now)) {
     try {
-      const { due, reached } = ladderStep(id, now);
-      if (due === 'owner') tellOwner(id, reached < 3);
+      const { due, thread } = ladderStep(id, now);
+      if (due === 'owner') tellOwner(id, thread);
       else if (due) {
         const to = due === 'pm' ? getPMAgentId() : due === 'decider' ? getPrimaryAgentId() : workerOf(id);
         byAgent.set(to, [...(byAgent.get(to) ?? []), { id, due }]);

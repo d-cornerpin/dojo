@@ -11,10 +11,11 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
 
 import { resolveJoinsAtBoot, sweepExpiredJoins } from '../a2a-transport.js';
+import { findJoinChildByThread, settlePieceWithoutResult } from '../../work/store.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import { clearPlatformConfigCache } from '../../config/platform.js';
-import { agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, relayRows, requestState, textsSent, ASK, THREAD } from './helpers/text-relay.js';
+import { agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, relayRows, requestState, textsSent, ASK, HELPER, THREAD } from './helpers/text-relay.js';
 
 const pieceState = (): string => (testDb().prepare('SELECT state FROM work WHERE parent_id = ?').get(ASK) as { state: string }).state;
 
@@ -76,5 +77,14 @@ describe('a late answer reaches the person once with its own text', () => {
     await helperAnswers('   ');
     expect([requestState(), pieceState()]).toEqual(['failed', 'abandoned']);
     expect(relayRows()).toHaveLength(1);
+  });
+
+  it('a piece that came back FAIL with no words is said to have reported a failure', async () => {
+    delegatedTextRequest({}, [THREAD, 'thread-relay-0002']);
+    settlePieceWithoutResult(findJoinChildByThread(AGENT, 'thread-relay-0002')!.id, { to: 'failed', reason: 'the peer replied FAIL', actorId: HELPER });
+    await helperAnswers('First: the 14th.');
+    await agentStaysSilent();
+    await deliverDueReplies(Date.now());
+    expect(textsSent().at(-1)).toContain('From Helper (it reported a failure):');
   });
 });
