@@ -106,7 +106,7 @@ describe('§2 the owner-facing notice', () => {
       .run(`${parent}-child`, parent, Date.now() - secondsAgo * 1000);
   }
 
-  it('⚠ THE REPORT\'S CASE: delivered, unanswered — and it says so without calling it a reply', () => {
+  it('⚠ THE REPORT\'S CASE: nothing came back, and it says only that, without calling it a reply', () => {
     seedOpened('p1', 45);
     const text = joinFailureNotice({
       parentWorkId: 'p1',
@@ -126,11 +126,10 @@ describe('§2 the owner-facing notice', () => {
     // "my agent got an answer" is a FAILURE here, however many substrings match. So the clause
     // now demands the negation AND rejects the lie by name — both halves, because either one
     // alone is satisfiable by a sentence that is wrong in the other direction.
-    expect(text, 'that no answer came').toMatch(/never answered|did not answer/);
+    expect(text, 'that no answer came').toMatch(/nothing came back from them/);
     expect(text, '⛔ and silence is never rendered as a reply (C1)')
       .not.toMatch(/\bthey answered\b|\band answered\b/);
-    // ⚠ The two claims the report called contradictory, now impossible together.
-    expect(text, 'the send succeeded and the notice must not disown it').toMatch(/delivered/);
+    expect(text, 'it claims no delivery or error state the record does not show').not.toMatch(/delivered|errored/);
     expect(text, 'and it must not describe silence as a reply')
       .not.toMatch(/came back empty, failed or abandoned/i);
   });
@@ -150,7 +149,7 @@ describe('§2 the owner-facing notice', () => {
     // was the one that happened to be correct, which is exactly why it is pinned — the defect was
     // a negation shared between two arities, and a clause that only watches the arity that broke
     // lets the next edit lose the other one.
-    expect(text).toMatch(/none of them answered/);
+    expect(text).toMatch(/nothing came back from any of them/);
     expect(text, '⛔ nor may several silent peers be rendered as having replied (C1)')
       .not.toMatch(/\bthey answered\b|\band answered\b/);
   });

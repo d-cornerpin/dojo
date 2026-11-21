@@ -124,6 +124,6 @@ describe('a fan-out with one stopped helper answers with what arrived', () => {
     await sweep();
     const msgs = ownerFacing();
     expect(msgs).toHaveLength(1);
-    expect(msgs[0].content).toMatch(/none of them answered/i);
+    expect(msgs[0].content).toMatch(/nothing came back from any of them/i);
   });
 });
