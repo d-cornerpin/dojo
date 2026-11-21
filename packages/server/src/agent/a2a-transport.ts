@@ -37,7 +37,7 @@ import {
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, type PutBackKind } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, CALLED_OFF_BY_OWNER, type PutBackKind } from '../work/ask-settlement.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
 import { afterCommit, withUnit } from '../db/unit.js';
 import { serveLater } from './v2/serve-later.js';
@@ -1288,6 +1288,10 @@ async function resolveOpenJoin(join: JoinState): Promise<'relayed' | 'failed-clo
     await resolveCompletedJoin(landed);
     return 'relayed';
   }
+  // A helper's task the owner called off ends the request as called off by him; its end stops the other pieces.
+  if (getDb().prepare(`SELECT 1 FROM work c JOIN work t ON t.kind = 'task' AND t.agent_id = c.assignee_agent AND t.a2a_thread_id = c.root_id
+      WHERE c.parent_id = ? AND ${CALLED_OFF_BY_OWNER('t')}`).get(landed.id)
+    && transition(landed.id, { to: 'abandoned', by: 'owner', actorId: 'owner', reason: 'the owner called off the work it waited on' }).kind === 'applied') return 'already-settled';
   for (const p of openPieces(landed.id)) if (!p.alive) await abandonPiece(p.childId, 'its helper\'s work on it has stopped', 'work-reaper');
   const state = joinState(landed.id);
   if (!state || state.complete) return state?.parentState === 'failed' ? 'failed-closed' : 'already-settled';

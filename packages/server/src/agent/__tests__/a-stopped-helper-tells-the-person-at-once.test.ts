@@ -1,5 +1,7 @@
-// When a helper's work stops by an event the Dojo already records (its task cancelled or deleted, its project
-// deleted, the helper ended, even while its run unwinds), the person waiting is told at that moment, once, with no sweep, however old the request.
+// When a helper's work stops by an event the Dojo already records (its task deleted, its project deleted, the helper
+// ended, even while its run unwinds), the person waiting is told at that moment, once, with no sweep, however old the
+// request. When the owner cancels the helper's task on the board or removes the helper, the request ends as called off
+// by him: nobody is told, nothing redoes it, and a late answer is refused.
 // Until then the request is kept however long the task is open. A stop the Dojo missed while it was down is caught
 // by the boot pass from the rows. A later answer reaches the person once, as an Update. A plain question (no task) is
 // kept while its helper is in a run, has not yet been served it (whatever its age, a restart or a pause), or said it is
@@ -8,7 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
 vi.mock('../../services/imessage-bridge.js', async (orig) => (await import('../v2/__tests__/helpers/reply-sender.js')).bridgeMock(await orig()));
-vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => {} }) }));
+vi.mock('../runtime.js', async (orig) => ({ ...(await orig<object>()), getAgentRuntime: () => ({ handleMessage: async () => {} }) }));
 vi.mock('../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engineRouteRefusalReason: () => 'no grant' }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
@@ -20,6 +22,7 @@ import { sweepBootStaleness } from '../../work/work-reaper.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { writeAgentStatus } from '../agent-status.js';
 import { decide } from '../../work/done/decide.js';
+import { agentsRouter } from '../../gateway/routes/agents.js';
 import { deleteTrackerRow } from '../../work/tracker-store.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import {
@@ -36,20 +39,27 @@ async function told(): Promise<[string, number, number]> {
 beforeEach(() => { activeRuns.clear(); delegatedTextRequest(); });
 
 describe('a stopped helper tells the person at once', () => {
-  it('kept past its deadline while the task is open; told once at the cancel; the late answer is an Update', async () => {
+  it('kept past its deadline while the task is open; the owner cancels it on the board while the helper runs: called off by him', async () => {
     helperTask();
     vi.setSystemTime(Date.now() + 5 * 3_600_000);
     await sweepExpiredJoins();
     expect(await told()).toEqual(['blocked', 0, 0]);
+    activeRuns.add(HELPER);
     expect(decide({ workId: 'task-helper-1', deciderAgentId: null, verdict: 'cancel', reason: 'The venue closed for good' }).kind).toBe('decided');
-    expect(await told()).toEqual(['failed', 1, 1]);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
     await sweepExpiredJoins();
     await resolveJoinsAtBoot();
-    expect(await told()).toEqual(['failed', 1, 1]);
-    await helperAnswers('It reopens on the 14th after all.');
-    await agentStaysSilent();
-    await deliverDueReplies(Date.now());
-    expect(textsSent().filter((t) => t.startsWith('Dojo: Update:'))).toEqual(['Dojo: Update: Helper answered after all. It reopens on the 14th after all.']);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
+    expect(await deliverA2AMessage({ intent: 'COMPLETE', threadId: THREAD, requiresResponse: true, payload: 'Done anyway.', toAgent: AGENT, fromAgent: HELPER } as never))
+      .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
+    expect(textsSent()).toEqual([]);
+  });
+
+  it('the owner removes the helper on the dashboard mid-job: called off by him, nobody is told', async () => {
+    helperTask();
+    activeRuns.add(HELPER);
+    expect((await agentsRouter.request(`/${HELPER}`, { method: 'DELETE' })).status).toBe(200);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
   });
 
   it('its task deleted', async () => {
