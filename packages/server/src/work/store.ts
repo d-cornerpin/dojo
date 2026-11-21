@@ -324,9 +324,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     retireObligationMemory({ workId, agentId: row.agent_id, title: row.title, state: input.to });
   }
 
-  // A tracker task that ended or was handed in may settle the owner's request linked to it; one that ended, a request kept
-  // on its thread (a hand-in's words land by themselves).
-  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal ? row.a2a_thread_id : null);
+  // A task ended or handed in may settle its owner's request; one ended undone also judges the request on its thread.
+  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal && input.to !== 'done' ? row.a2a_thread_id : null);
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
   return { kind: 'applied', value };
@@ -499,8 +498,12 @@ export function abandonUnservableAsks(agentId?: string): {
 
 export const JOIN_TTL_MINUTES = 60;
 
-/** How far back the deadline sweep and the boot pass scan; the events judge a request of any age (`judgeKeptRequests`). */
+/** How far back since its last look the sweep and the boot pass scan a join. */
 export const JOIN_MAX_AGE_DAYS = 7;
+
+/** SQL: an asker's piece is still open on the thread `thread` (a column or expression). */
+export const openPieceOnSql = (thread: string): string => `EXISTS (SELECT 1 FROM work c WHERE c.root_kind = 'a2a_thread'
+  AND c.root_id = ${thread} AND c.parent_id IS NOT NULL AND c.state IN ('open', 'claimed', 'blocked'))`;
 
 /** The A2A per-thread hop cap, keyed on `work.hop_count`. */
 export const THREAD_HOP_CAP = 8;
@@ -945,7 +948,7 @@ export function dueJoins(nowMs: number, limit = 25): JoinState[] {
   const rows = getDb().prepare(`
     SELECT id FROM work
      WHERE remaining_children IS NOT NULL AND ttl_at IS NOT NULL
-       AND ttl_at <= ? AND opened_at >= ?
+       AND ttl_at <= ? AND updated_at >= ?
        AND state NOT IN ('done','failed','abandoned')
      ORDER BY opened_at ASC LIMIT ?
   `).all(nowMs, floor, limit) as Array<{ id: string }>;
@@ -962,7 +965,7 @@ export function dueJoinsUnderClosedParent(nowMs: number, limit = 25): JoinState[
   const rows = getDb().prepare(`
     SELECT id FROM work
      WHERE remaining_children > 0 AND ttl_at IS NOT NULL
-       AND ttl_at <= ? AND opened_at >= ?
+       AND ttl_at <= ? AND updated_at >= ?
        AND state = 'done'
      ORDER BY opened_at ASC LIMIT ?
   `).all(nowMs, floor, limit) as Array<{ id: string }>;
@@ -1007,7 +1010,7 @@ export function openJoins(limit = 50): JoinState[] {
   const floor = now() - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
   const rows = getDb().prepare(`
     SELECT id FROM work
-     WHERE remaining_children IS NOT NULL AND opened_at >= ?
+     WHERE remaining_children IS NOT NULL AND updated_at >= ?
        AND state NOT IN ('done','failed','abandoned')
      ORDER BY opened_at DESC LIMIT ?
   `).all(floor, limit) as Array<{ id: string }>;
