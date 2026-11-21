@@ -101,13 +101,13 @@ const ALIVE = (c: string): string => `EXISTS (SELECT 1 FROM work t JOIN agents h
   WHERE t.kind = 'task' AND t.a2a_thread_id = ${c}.root_id AND t.state NOT IN ('done', 'failed', 'abandoned')
     AND ((t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
 
-/** Open pieces of a join, alive by their task (ALIVE), a run in flight, or with no task a busy helper or a question back its asker owes. */
+/** Open pieces of a join, alive by their task (ALIVE), or with no task a busy helper or a question back its asker owes. */
 export function openPieces(joinId: string, seen = new Set<string>()): Array<{ childId: string; alive: boolean }> {
   return (getDb().prepare(`SELECT c.id, c.agent_id AS asker, c.assignee_agent AS helper, c.root_id AS thread, ${ALIVE('c')} AS alive,
       EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked
       FROM work c WHERE c.parent_id = ? AND c.kind = 'task' AND c.state IN ('open', 'claimed', 'blocked')`).all(joinId) as
     Array<{ id: string; asker: string; helper: string | null; thread: string; alive: number; tasked: number }>).map((p) => ({
-    childId: p.id, alive: p.alive === 1 || activeRuns.has(p.helper ?? '') || (p.tasked === 0 && !!p.helper
+    childId: p.id, alive: p.alive === 1 || (p.tasked === 0 && !!p.helper
       && (agentRequests(p.asker, Date.now(), p.thread).length > 0 || workerBusy(p.helper, { threadId: p.thread }, seen))),
   }));
 }

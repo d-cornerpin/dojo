@@ -1,5 +1,5 @@
 // When a helper's work stops by an event the Dojo already records (its task cancelled or deleted, its project
-// deleted, the helper ended), the person waiting is told at that moment, once, with no sweep, however old the request.
+// deleted, the helper ended, even while its run unwinds), the person waiting is told at that moment, once, with no sweep, however old the request.
 // Until then the request is kept however long the task is open. A stop the Dojo missed while it was down is caught
 // by the boot pass from the rows. A later answer reaches the person once, as an Update. A plain question (no task) is
 // kept while its helper is in a run, has not yet been served it (whatever its age, a restart or a pause), or said it is
@@ -33,7 +33,7 @@ async function told(): Promise<[string, number, number]> {
   return [requestState(), failedNotices(), agentLines()];
 }
 
-beforeEach(() => delegatedTextRequest());
+beforeEach(() => { activeRuns.clear(); delegatedTextRequest(); });
 
 describe('a stopped helper tells the person at once', () => {
   it('kept past its deadline while the task is open; told once at the cancel; the late answer is an Update', async () => {
@@ -73,6 +73,13 @@ describe('a stopped helper tells the person at once', () => {
     testDb().prepare('UPDATE work SET opened_at = ? WHERE id = ? OR parent_id = ?').run(Date.now() - 8 * 24 * 3_600_000, ASK, ASK);
     writeAgentStatus(HELPER, 'terminated');
     expect(await told()).toEqual(['failed', 1, 1]);
+    writeAgentStatus(HELPER, 'terminated');
+    expect(await told()).toEqual(['failed', 1, 1]);
+  });
+
+  it('the helper ended while its stopped run still unwinds', async () => {
+    helperTask();
+    activeRuns.add(HELPER);
     writeAgentStatus(HELPER, 'terminated');
     expect(await told()).toEqual(['failed', 1, 1]);
   });
