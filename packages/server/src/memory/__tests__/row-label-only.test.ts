@@ -12,8 +12,9 @@ describe('isRowLabelOnly', () => {
     expect(isRowLabelOnly('[Sep 5, 2026, 9:05 PM]')).toBe(true); // one-digit day and hour
   });
 
-  it('reads an instant plus a subject as nothing but a label', () => {
-    expect(isRowLabelOnly('[Sep 5, 2026, 11:05 PM · invoice thread]')).toBe(true);
+  it('reads an instant with its offset plus a subject as nothing but a label', () => {
+    expect(isRowLabelOnly('[Sep 5, 2026, 11:05 PM UTC+02:00 · invoice thread]')).toBe(true);
+    expect(stripLeadingTimeStamp('[Nov 21, 2026, 3:00 PM · Dentist appointment] Bring your card'), 'a dated title with no offset is the reply\'s own').toBe('[Nov 21, 2026, 3:00 PM · Dentist appointment] Bring your card');
   });
 
   it('trims before reading', () => {
@@ -27,13 +28,13 @@ describe('isRowLabelOnly', () => {
   });
 
   it('refuses a bracket inside the subject', () => {
-    expect(isRowLabelOnly('[Oct 26, 2026, 3:45 PM · a [b] c]')).toBe(false);
+    expect(isRowLabelOnly('[Oct 26, 2026, 3:45 PM UTC+00:00 · a [b] c]')).toBe(false);
   });
 
   it('refuses a different shape', () => {
     expect(isRowLabelOnly('[Oct 26, 2026, 15:45]')).toBe(false); // 24-hour clock
     expect(isRowLabelOnly('[October 26, 2026, 3:45 PM]')).toBe(false); // long month
-    expect(isRowLabelOnly('[Oct 26, 2026, 3:45 PM ·x]')).toBe(false); // middle dot without its spacing
+    expect(isRowLabelOnly('[Oct 26, 2026, 3:45 PM UTC+00:00 ·x]')).toBe(false); // middle dot without its spacing
   });
 
   it('a reply that opens with a copied row label keeps only its words, mood marker included', () => {

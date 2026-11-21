@@ -23,10 +23,10 @@ export function renderMessageTimeStamp(createdAt: string | number | null | undef
 }
 
 /** A stamp or row label the model echoed at the start of its reply: the shape `renderMessageTimeStamp` writes
- *  (month-name with an optional UTC offset and ` · <subject>`, or ISO date and time), a leading run of them. A bracket
+ *  (month-name with an optional UTC offset, then ` · <subject>`, or ISO date and time), a leading run of them. A bracket
  *  with no clock time is real content. */
 const STAMP_SOURCE =
-  String.raw`\[(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)(?: UTC(?:[+-]\d{2}:\d{2})?)?(?: · [^\]]*)?|\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2})?[\s\u202F\u00A0]?(?:AM|PM|UTC|Z)?)\]\s*`;
+  String.raw`\[(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)(?: UTC(?:[+-]\d{2}:\d{2}(?: · [^\]]*)?)?)?|\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2})?[\s\u202F\u00A0]?(?:AM|PM|UTC|Z)?)\]\s*`;
 // A leading mood marker is kept: the stamp behind it is what goes.
 const LEADING_TIME_STAMP_RE = new RegExp(String.raw`^\s*((?:${MOOD_MARKER_SOURCE}\s*)?)` + STAMP_SOURCE, 'i');
 
