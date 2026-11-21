@@ -713,7 +713,7 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
 
   const chosenPhrase = chosenMinutes ? `${chosenMinutes}-minute ` : '';
   const elapsedPhrase = elapsedMinutes ? ` after about ${elapsedMinutes} min` : '';
-  const brief = `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) reached its ${chosenPhrase}timeout${elapsedPhrase} and ${workerBusy(agentId, {}) ? 'is still working' : 'is idle'}; ${taskLine}. You created it, so the call is yours: spawn_timeout_decision(agent_id="${agentId}", action="extend", extend_minutes=<n>) to give it more time, or action="terminate" to let it stop. It keeps running until you decide.`;
+  const brief = `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) reached its ${chosenPhrase}timeout${elapsedPhrase} and ${workerBusy(agentId, {}) ? 'is still working' : 'is idle'}; ${taskLine}. You created it, so the call is yours: spawn_timeout_decision(agent_id="${agentId}", action="extend", extend_minutes=<n>) to give it more time, or action="terminate" to let it stop. It stays until you decide.`;
 
   postAgentNotice({
     toAgentId: recipientId,
