@@ -11,7 +11,7 @@ import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { recordedInstant } from '../../../../memory/message-stamp.js';
-import { linkedTaskOf } from '../../../../work/ask-settlement.js';
+import { jobOfTurn } from '../../../../work/job-continuation.js';
 import { openTrackerTask } from '../../../../work/tracker-store.js';
 
 const logger = createLogger('v2-loop');
@@ -103,8 +103,8 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       }, agentId);
     }
     if (
-      // Open a task only when none is linked to the request this turn serves, whatever other tasks the agent holds.
-      !linkedTaskOf(agentId, state.lastUserMessageId) &&
+      // Open a task only when no task carries this turn's work, whatever other tasks the agent holds.
+      !jobOfTurn(agentId, state.lastUserMessageId) &&
       effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT &&
       // The floor opens a row only for a turn serving a request it can link to; it never invents one.
       state.lastUserMessageId &&
