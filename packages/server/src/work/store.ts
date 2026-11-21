@@ -500,11 +500,6 @@ export const JOIN_TTL_MINUTES = 60;
 /** Joins older than this are stale: nothing re-fires them and the owner is not told about them. */
 export const JOIN_MAX_AGE_DAYS = 7;
 
-/** Hard ceiling on TTL extension (four TTLs): the reaper grants more time while a piece's assignee is
- *  provably working, and this bounds that so a wedged agent that looks busy is still reaped. Past it the
- *  join fails closed. */
-export const JOIN_LIVENESS_MAX_TOTAL_MS = 4 * JOIN_TTL_MINUTES * 60_000;
-
 /** The A2A per-thread hop cap, keyed on `work.hop_count`. */
 export const THREAD_HOP_CAP = 8;
 
@@ -984,25 +979,12 @@ export function failJoinClosed(
   });
 }
 
-/** Grant a waiting join more time because its assignee is provably working: a `ttl_at` write, not a
- *  `transition()`. Refuses (`extended: false`) once the join's total life passes
- *  `JOIN_LIVENESS_MAX_TOTAL_MS`, or when `opened_at` is null, so the caller can fail it closed. */
-export function extendJoinTtl(
-  parentWorkId: string, p: { grantMs: number; nowMs?: number },
-): { extended: boolean; ttlAt: number | null; reason?: 'no-join' | 'no-opened-at' | 'past-ceiling' } {
-  const nowMs = p.nowMs ?? now();
-  const state = joinState(parentWorkId);
-  if (!state) return { extended: false, ttlAt: null, reason: 'no-join' };
-  if (state.openedAt === null) return { extended: false, ttlAt: state.ttlAt, reason: 'no-opened-at' };
-  if (nowMs - state.openedAt >= JOIN_LIVENESS_MAX_TOTAL_MS) {
-    return { extended: false, ttlAt: state.ttlAt, reason: 'past-ceiling' };
-  }
-  // Granted from NOW, never from the expired deadline: a reaper that ran late must not hand out
-  // a grant that is already spent.
-  const ttlAt = nowMs + p.grantMs;
+/** Give a waiting join one more deadline (`JOIN_TTL_MINUTES`) from now, never from the expired one: a `ttl_at`
+ *  write, not a `transition()`. */
+export function extendJoinTtl(parentWorkId: string): void {
+  const nowMs = now();
   getDb().prepare('UPDATE work SET ttl_at = ?, updated_at = ? WHERE id = ?')
-    .run(ttlAt, nowMs, parentWorkId);
-  return { extended: true, ttlAt };
+    .run(nowMs + JOIN_TTL_MINUTES * 60_000, nowMs, parentWorkId);
 }
 
 // The join-delivered settle is `settleAskOnJoin` in `work/ask-settlement.ts`;
