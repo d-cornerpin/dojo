@@ -176,7 +176,8 @@ describe('the declared precedence table', () => {
     // The repeat rule replaced `thrash-gate`, `thrash-drift` and `repetition`; `dead-end` replaced
     // `spinning` and `no-results`.
     // `forced-reply` is the required reply's steer.
-    expect(STEER_PRECEDENCE.length).toBe(23);
+    // `start-ack-reminder` left: an ignored start-line steer is followed by one held pass, a refusal, not a steer.
+    expect(STEER_PRECEDENCE.length).toBe(22);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'forced-reply').length).toBe(1);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
       expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);
@@ -248,10 +249,10 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
     expect(steerFiredAny(q, TRACKER_STEER_FLOORS)).toBe(true);
   });
 
-  it('records the loop the floor fired at (the start-ack reminder reads it off the entry)', () => {
+  it('records the loop the floor fired at (the start-ack hold reads it off the entry)', () => {
     const q = enqueueSteer(emptySteerQueue(), { floor: 'start-ack', content: 'ack', atLoop: 4 });
     expect(steerFiredAtLoop(q, 'start-ack')).toBe(4);
-    expect(steerFiredAtLoop(q, 'start-ack-reminder')).toBeNull();
+    expect(steerFiredAtLoop(q, 'owed-interrupt')).toBeNull();
   });
 });
 
