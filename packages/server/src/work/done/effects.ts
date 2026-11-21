@@ -13,7 +13,8 @@ import { getPMAgentId, getPrimaryAgentId, isDreamerAgent } from '../../config/pl
 import { workerOfRecord, rehome } from '../row-authority.js';
 import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
 import { latestHandIn, workerOf, OWNER_ID, ENGINE_ID, type HandInRecord } from './record.js';
-import { decide, owedRunDelivery } from './decide.js';
+import { decide } from './decide.js';
+import { inFlightOccurrence, owedRunDelivery } from '../occurrences.js';
 import type { Question } from '../../agent/decide.js';
 import { judgment } from '../../agent/decision-hooks.js';
 import { remeasureTask } from '../../agent/tools/cat/measure-door.js';
@@ -43,11 +44,12 @@ const OWES_IT: Question = { type: 'noul',
 
 /** Does the small local model read the message this run delivered as what its delivery-owing task owes? */
 async function deliveredWhatItOwes(workId: string): Promise<boolean> {
+  const run = inFlightOccurrence(workId, { anyState: true });
   const t = getDb().prepare(
     `SELECT w.title, w.goal, w.task_kind AS kind, COALESCE(m.content, r.sent_text) AS message FROM work w
        JOIN deliveries d ON d.id = ? LEFT JOIN messages m ON m.id = d.message_id LEFT JOIN tool_receipts r ON r.id = d.receipt_id
       WHERE w.id = ?`,
-  ).get(owedRunDelivery(workId), workId) as { title: string | null; goal: string | null; kind: string; message: string | null } | undefined;
+  ).get(run && owedRunDelivery(run.id), workId) as { title: string | null; goal: string | null; kind: string; message: string | null } | undefined;
   if (!t) return false;
   const said = await judgment('work_done/delivered_what_it_owes', {
     agentId: workerOf(workId), state: { task: { title: t.title, goal: t.goal, kind: t.kind }, message: t.message ?? '' }, questions: { asked: OWES_IT },

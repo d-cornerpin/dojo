@@ -16,11 +16,10 @@ import { tellUnfinishedTasks } from './project-state.js';
 import { latestHandIn, workerOf, workersOf, unitOrRollback, recordAdjudication, OWNER_ID, ENGINE_ID } from './record.js';
 import { openedEveryItem } from './open-proof.js';
 import { proofDelivery, engineProof } from './proof.js';
-import { inFlightOccurrence } from '../occurrences.js';
+import { inFlightOccurrence, owedRunDelivery } from '../occurrences.js';
 import { occurrenceRunStatus } from '../occurrence-runs.js';
 import { recordOwnerRemainder } from '../measure-close-gate.js';
 import { whoDecides } from './who-decides.js';
-import { DELIVERABLE_OWING_TASK_KINDS } from '../deliverable-declaration.js';
 import { onDecided } from './effects.js';
 import { endStallCard } from '../../healer/owner-notices.js';
 
@@ -89,12 +88,6 @@ function measureSetByCreator(workId: string): boolean {
   return !!r && r.setBy === r.creator && (r.creator !== workerOf(workId) || r.atOpen === 1);
 }
 
-/** The delivery the engine saw a run of this delivery-owing task make, tied to the run, or null. */
-export function owedRunDelivery(workId: string): string | null {
-  const t = getDb().prepare('SELECT task_kind AS kind FROM work WHERE id = ?').get(workId) as { kind: string | null } | undefined;
-  return DELIVERABLE_OWING_TASK_KINDS.includes(t?.kind ?? '') ? proofDelivery(workId, true) : null;
-}
-
 /** Why this agent may not decide this hand-in, or null. The engine decides only the approval of a finished
  *  run the Dojo recorded complete: one whose measure, set by the task's creator, it counted at 0 itself, or one that delivered what it owes. */
 function agentRefusal(agentId: string, workId: string, name: string, verdict: Verdict, basis?: 'delivered'): string | null {
@@ -103,7 +96,7 @@ function agentRefusal(agentId: string, workId: string, name: string, verdict: Ve
     const run = inFlightOccurrence(workId, { anyState: true });
     const ok = verdict === 'approve' && h?.scope === 'run' && h.outcome === 'finished'
       && !!run && occurrenceRunStatus(run.id) === 'complete' && (basis === 'delivered'
-      ? owedRunDelivery(workId) !== null
+      ? owedRunDelivery(run.id) !== null
       : engineProof(workId).some((i) => i.kind === 'measure') && measureSetByCreator(workId));
     return ok ? null : `${name} is not a run the engine decides.`;
   }

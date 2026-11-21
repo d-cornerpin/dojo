@@ -118,10 +118,15 @@ export function runsReadyToCloseOnDelivery(): RunReadyToClose[] {
        AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.root_kind = w.kind AND t.root_id = w.id AND t.ended_at IS NULL)
   `).all(OCCURRENCE_KIND) as Array<{ occurrence_id: string; task_id: string }>;
   return rows.flatMap((row) => {
-    if (!occurrenceOwesDeliverable(row.occurrence_id).owes) return [];
-    const deliveryId = proofDelivery(row.task_id, true);
+    const deliveryId = owedRunDelivery(row.occurrence_id);
     return deliveryId ? [{ occurrenceId: row.occurrence_id, taskId: row.task_id, deliveryId }] : [];
   });
+}
+
+/** The delivery the engine saw this run make, tied to it, when its task owes a message; else null. */
+export function owedRunDelivery(occurrenceId: string): string | null {
+  const o = occurrenceOwesDeliverable(occurrenceId);
+  return o.owes && o.taskId ? proofDelivery(o.taskId, true) : null;
 }
 
 export interface RunSettlement {
