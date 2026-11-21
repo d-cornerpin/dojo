@@ -3,8 +3,7 @@
 //   - approve / send_back decide a waiting hand-in, by `whoDecides` (never the worker) or the owner. An agent
 //     approves only after opening every proof item (`open-proof.ts`); the reason is one line.
 //   - owner_done / cancel are the owner's, from the dashboard, from any open state; the main agent may cancel on his words.
-//   - a run of a live schedule (scope `run`) is decided on its own: approve or send back returns it to Open;
-//     the engine approves a finished run on its own count of the creator's measure, or on a delivery the model confirmed.
+//   - a run of a live schedule (scope `run`) is decided on its own: approve or send back returns it to Open.
 // The owner may also decide by words an agent relays from the message it answers (`deciderOf`).
 // One unit per row (`applyDecision`): adjudication, `decided` event, transition (`claim: 'decided'`), effects.
 import { getDb } from '../../db/connection.js';
