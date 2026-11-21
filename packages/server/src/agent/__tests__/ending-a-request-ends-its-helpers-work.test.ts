@@ -18,6 +18,8 @@ import { pressStop } from '../v2/__tests__/helpers/owner-stop.js';
 import { handleIMCommand } from '../../services/imessage-commands.js';
 import { clearPlatformConfigCache } from '../../config/platform.js';
 import { sweepExpiredJoins, deliverA2AMessage } from '../a2a-transport.js';
+import { executeTool, toolResultOf } from '../tools/index.js';
+import { nextOwed } from '../v2/owed.js';
 import { trackerHandlers } from '../tools/cat/tracker.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
@@ -68,8 +70,8 @@ describe("ending a request ends its helpers' work", () => {
     await settled();
     expect([helperTaskState(), cancelledByOwner(), isStopFenced(HELPER), helperPrompts()]).toEqual(['abandoned', true, true, 0]);
     // The send its turn had already made arrives: refused at the door, so the agent never sees it.
-    expect(await deliverA2AMessage({ intent: 'COMPLETE', threadId: THREAD, requiresResponse: true, payload: 'Free on the 14th.', toAgent: AGENT, fromAgent: HELPER } as never))
-      .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
+    const sent = toolResultOf(await executeTool(HELPER, { id: 'tc-h', name: 'send_to_agent', arguments: { agent: AGENT, intent: 'COMPLETE', thread_id: THREAD, payload: 'The venue is free on the 14th.' } }));
+    expect(sent.content).toContain('the request this answered was called off, so nothing was passed on');
     expect(testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND a2a_intent = 'COMPLETE'").get(AGENT)).toEqual({ n: 0 });
   });
 
@@ -84,6 +86,7 @@ describe("ending a request ends its helpers' work", () => {
     expect([requestState(), pieceState()]).toEqual(['abandoned', 'abandoned']);
     await settled();
     expect([helperTaskState(), cancelledByOwner(), isStopFenced(HELPER), helperPrompts()]).toEqual(['abandoned', true, false, 0]);
+    expect(nextOwed(HELPER)).toEqual([]);   // its request is no longer served to it
   };
 
   it('the Stop button with nothing running ends a request waiting on a helper behind a later turn', async () => {
