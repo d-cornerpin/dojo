@@ -32,11 +32,11 @@ const FUTURE_MARKERS = /\b(?:i['’]ll|ill|will|won['’]t|going to|gonna|about 
 
 // The inverse of the positive guard: denying a send a receipt proves happened.
 // Deliberately generous: the receipt ledger, not this text match, is the real gate.
-// A bare "not yet" counts only with a delivery word present (DELIVERY_CONTEXT).
+// A bare "not yet" counts only with a delivery word present (DELIVERY_CONTEXT). A promise to send later denies nothing.
 const DENIAL_PATTERNS: RegExp[] = [
   /\b(?:have\s*n['’]?t|have not|has\s*n['’]?t|has not|had\s*n['’]?t|did\s*n['’]?t|did not|not)\s+(?:yet\s+)?(?:actually\s+)?(?:\w+\s+){0,2}?(?:sent|texted|e-?mailed|messaged|forwarded|relayed|delivered|pinged|notified|shared)\b/i,
   /\b(?:sending|texting|e-?mailing|messaging|forwarding)\s+(?:it\s+|that\s+|them\s+)?(?:now|right now|in a\s+(?:sec|second|minute|moment))\b/i,
-  /\b(?:still\s+)?(?:need to|have to|about to|going to|gonna|will|i['’]?ll)\s+(?:\w+\s+){0,2}?(?:send|text|e-?mail|message|forward|relay|deliver)\b/i,
+  /\b(?:still\s+)?(?:need to|have to)\s+(?:\w+\s+){0,2}?(?:send|text|e-?mail|message|forward|relay|deliver)\b/i,
   /\bno,?\s+not yet\b|\bnot yet\b/i,
 ];
 
