@@ -110,6 +110,15 @@ function handedInTask(id: string, deliveryId: string, handedInAtMs: number, open
   ).run(id, JSON.stringify({ outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }], note: '', filedBy: AGENT }), AGENT, handedInAtMs);
 }
 
+/** The message a task was opened from: the owner's (no thread) or another agent's (on a peer thread). */
+function sourceMessage(id: string, threadId: string | null): string {
+  mockDb.current!.prepare(
+    `INSERT INTO messages (id, agent_id, role, content, conversation_id, a2a_thread_id, turn_number, created_at)
+     VALUES (?, ?, 'user', 'a request', ?, ?, 4887, ?)`,
+  ).run(id, AGENT, threadId ? null : CONV, threadId, Date.now());
+  return id;
+}
+
 const reportEvents = (): Array<{ content: string }> =>
   mockDb.current!.prepare(
     `SELECT content FROM messages WHERE origin_intent = 'completion_report' ORDER BY seq ASC`,
@@ -271,7 +280,8 @@ describe('the guard narrows nothing else', () => {
     const relay = autoCreateAssignTask({ senderId: 'agent-helper', receiverId: AGENT, payload: 'Relay the list to the owner.', threadId: 'thread-relay' })!;
     delivery('d-peer', { channel: 'a2a', tool: 'send_to_agent' });
     handedInTask('task-card', 'd-peer', Date.now(), t);
-    mockDb.current!.prepare("UPDATE work SET requester = 'agent', requester_id = ?, a2a_thread_id = 'thread-card' WHERE id = 'task-card'").run(AGENT);
+    mockDb.current!.prepare("UPDATE work SET requester = 'agent', requester_id = ?, a2a_thread_id = 'thread-card', source_message_id = ? WHERE id = 'task-card'")
+      .run(AGENT, sourceMessage('m-owner', null));
     mockDb.current!.prepare("UPDATE work SET state = 'handed_in', updated_at = ? WHERE id = ?").run(Date.now(), relay.taskId);
     mockDb.current!.prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'handed_in', '{}', ?, ?)").run(relay.taskId, AGENT, Date.now());
 
@@ -280,5 +290,28 @@ describe('the guard narrows nothing else', () => {
     expect(events).toHaveLength(1);
     expect(events[0].content).toContain(TITLE);
     expect(events[0].content).not.toContain('Relay the list');
+  });
+
+  it("a task the agent opened itself while serving another agent's request is not reported to the owner", async () => {
+    const t = Date.now() - 5 * 60_000;
+    delivery('d-pm', { channel: 'a2a', tool: 'send_to_agent' });
+    handedInTask('task-pm', 'd-pm', Date.now(), t);
+    mockDb.current!.prepare("UPDATE work SET requester = 'agent', requester_id = ?, source_message_id = ? WHERE id = 'task-pm'")
+      .run(AGENT, sourceMessage('m-pm', 'thread-pm'));
+
+    await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
+    expect(reportEvents()).toHaveLength(0);
+  });
+
+  it("the owner's card the agent gave a helper is not the helper's to report", async () => {
+    const t = Date.now() - 5 * 60_000;
+    mockDb.current!.prepare("INSERT INTO agents (id, name, status, session_started_at) VALUES ('agent-helper', 'Helper', 'idle', '1970-01-01')").run();
+    delivery('d-job', { channel: 'a2a', tool: 'send_to_agent' });
+    handedInTask('task-given', 'd-job', Date.now(), t);
+    mockDb.current!.prepare("UPDATE work SET agent_id = 'agent-helper', requester = 'agent', requester_id = ?, a2a_thread_id = 'thread-job', source_message_id = ? WHERE id = 'task-given'")
+      .run(AGENT, sourceMessage('m-owner', null));
+
+    await scheduleCompletionReport({ ...ctx(asTurnStartedAt(t)), agentId: 'agent-helper' });
+    expect(reportEvents()).toHaveLength(0);
   });
 });
