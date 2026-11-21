@@ -15,6 +15,7 @@ import { steerFired, type SteerFloorId } from '../../steer-queue.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { jobTaskOf } from './job-turn-end.js';
 import { noteDeliveryHeld, tasksOwingADelivery } from '../../../../tracker/owed-delivery.js';
+import { recordOwedInterruptSubjects } from '../../../../work/ask-settlement.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
 const logger = createLogger('v2-loop');
@@ -102,7 +103,8 @@ export function runCloseoutFloors(
   }
 
   // A round the owed-interrupt step granted after a reply had landed was bought to ask about the arrival,
-  // which its own turn answers (the ask stays open and re-serves), so that round's text becomes a note.
+  // which its own turn answers, so that round's text becomes a note and whatever it already sent (a voice
+  // burst speaks the stream before this hold) is recorded as not the arrival's answer: the ask stays owed.
   // `afterReply` guards the mirror case: a round granted before any reply carries the turn's one answer.
   const grant = state.owedInterruptGrant;
   if (
@@ -118,6 +120,7 @@ export function runCloseoutFloors(
     demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }, {
       why: 'a second answer to a message that arrived mid-turn; that message is answered by its own turn', owed,
     });
+    try { recordOwedInterruptSubjects(agentId, grant.messageIds, turnNumber); } catch { /* the hold still stands */ }
     persistedContent = null;
   }
 
