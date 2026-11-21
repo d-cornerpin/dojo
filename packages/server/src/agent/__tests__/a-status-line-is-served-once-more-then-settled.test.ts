@@ -1,5 +1,6 @@
-// A helper's status line on a plain question is not its answer and does not keep it: the question is served once
-// more; if that turn ends with no final reply and nothing in flight, it is settled once. A final reply settles it as answered.
+// A helper's status line on a plain question is not its answer and does not keep it: its first status buys exactly one
+// more serve in the life of the request, a second buys nothing, and the next look settles it once. A final reply settles
+// it as answered.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -27,12 +28,23 @@ const status = (): Promise<unknown> => deliverA2AMessage({ intent: 'STATUS', thr
 beforeEach(() => delegatedTextRequest());
 
 describe('a status line is served once more, then settled', () => {
-  it('status then silence: one more serve, then settled once', async () => {
-    served();
-    await status();
+  it('status, one more serve, status again: no third serve, settled once', async () => {
+    // Every stamp is set from one base, so the turns and the words are in a known order.
+    const base = (testDb().prepare('SELECT created_at AS at FROM messages WHERE agent_id = ? AND a2a_thread_id = ?').get(HELPER, THREAD) as { at: number }).at;
+    const sec = (n: number): string => new Date(base + n * 1000).toISOString();
+    const turn = (n: number, from: number): void => {
+      testDb().prepare("INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason) VALUES (?, ?, ?, ?, 0, 'answered')").run(HELPER, n, sec(from), sec(from + 20));
+      testDb().prepare('UPDATE messages SET served_by_turn = ? WHERE agent_id = ? AND a2a_thread_id = ?').run(n, HELPER, THREAD);
+    };
+    const statusAt = async (at: number): Promise<void> => {
+      await status();
+      testDb().prepare("UPDATE messages SET created_at = ? WHERE id = (SELECT id FROM messages WHERE agent_id = ? AND a2a_intent = 'STATUS' ORDER BY seq DESC LIMIT 1)").run(base + at * 1000, AGENT);
+    };
+    turn(1, 10);
+    await statusAt(20);
     expect([await looked(), owes()]).toEqual([['blocked', 0], true]);
-    testDb().prepare("INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason) VALUES (?, 2, datetime('now', '+2 seconds'), datetime('now', '+2 seconds'), 0, 'answered')").run(HELPER);
-    testDb().prepare('UPDATE messages SET served_by_turn = 2 WHERE agent_id = ? AND a2a_thread_id = ?').run(HELPER, THREAD);
+    turn(2, 40);
+    await statusAt(50);
     expect([await looked(), owes()]).toEqual([['failed', 1], false]);
     expect(await looked()).toEqual(['failed', 1]);
   });
