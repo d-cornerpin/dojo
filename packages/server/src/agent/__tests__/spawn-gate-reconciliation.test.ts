@@ -85,6 +85,7 @@ vi.mock('../../work/tracker-store.js', () => ({
 }));
 vi.mock('../../work/done/proof.js', () => ({ proofDelivery: vi.fn() }));
 vi.mock('../../work/store.js', () => ({ workSettled: vi.fn() }));
+vi.mock('../../tracker/liveness.js', () => ({ workerBusy: () => false }));
 vi.mock('../main-model-floor.js', () => ({ refuseNonChatModel: () => null, refuseSmallMainModel: () => null }));
 vi.mock('../local-model-fit.js', () => ({ refuseUnfitLocalModel: async () => null }));
 vi.mock('../../work/tracker-view.js', () => ({ taskScope: () => '1=1', STATE_TO_STATUS_SQL: "'open'" }));
