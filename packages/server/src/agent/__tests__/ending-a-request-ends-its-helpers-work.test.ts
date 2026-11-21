@@ -1,6 +1,7 @@
 // A request that ends ends its helpers' work with it: called off ("never mind" in the person's words, or Stop),
 // its pieces are abandoned, each helper is told once to stop, and a later answer relays nothing; failed for want
 // of an answer, its pieces end, nobody is told, and a late answer still goes back to the agent for the person.
+// Stop with nothing running ends a request waiting on a helper even when a later turn served something else.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -11,6 +12,9 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
 
 import { stopByOwner, getAgentRuntime } from '../runtime.js';
+import { pressStop } from '../v2/__tests__/helpers/owner-stop.js';
+import { handleIMCommand } from '../../services/imessage-commands.js';
+import { clearPlatformConfigCache } from '../../config/platform.js';
 import { sweepExpiredJoins } from '../a2a-transport.js';
 import { trackerHandlers } from '../tools/cat/tracker.js';
 import { executeTool } from '../tools/index.js';
@@ -60,6 +64,36 @@ describe("ending a request ends its helpers' work", () => {
     await settled();
     expect(toldToStop()).toHaveLength(1);
     expect(toldToStop()[0]).toContain('was called off by the owner. Stop working on "Check the venue" [task-helper-1]');
+  });
+
+  // The delegating turn, then a later turn on a quick question that is over; nothing is running when Stop comes.
+  const laterTurnOnSomethingElse = (): void => {
+    insertMessage({ id: 'm-quick', agentId: AGENT, role: 'user', content: 'What time is it in Tokyo?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
+    expect(testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'ask:m-quick'").run(Date.now()).changes).toBe(1);
+    testDb().prepare(`INSERT INTO turns (agent_id, turn_number, root_kind, root_id, answered, effectful_calls)
+      VALUES (?, 1, 'ask', 'm-ask', 0, 0), (?, 2, 'ask', 'm-quick', 1, 0)`).run(AGENT, AGENT);
+  };
+  const helperToldOwnerEnded = async (): Promise<void> => {
+    expect([requestState(), pieceState()]).toEqual(['abandoned', 'abandoned']);
+    await settled();
+    expect(toldToStop()).toHaveLength(1);
+  };
+
+  it('the Stop button with nothing running ends a request waiting on a helper behind a later turn', async () => {
+    laterTurnOnSomethingElse();
+    const { status, body } = await pressStop();
+    expect(status).toBe(200);
+    expect(body.data).toMatchObject({ ended: 1 });
+    await helperToldOwnerEnded();
+  });
+
+  it('a texted stop with nothing running ends it the same way', async () => {
+    laterTurnOnSomethingElse();
+    testDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('imessage_approved_senders', ?), ('primary_agent_id', ?)")
+      .run(JSON.stringify([{ address: PERSON, name: 'Owner', is_primary: true, sharing_level: 'full' }]), AGENT);
+    clearPlatformConfigCache();
+    expect(await handleIMCommand('stop', PERSON)).toBe('Dojo: Stopped. 1 request ended.');
+    await helperToldOwnerEnded();
   });
 
   it('a request whose helper\'s job ended unanswered fails, tells no helper, and a late answer goes back to the agent', async () => {

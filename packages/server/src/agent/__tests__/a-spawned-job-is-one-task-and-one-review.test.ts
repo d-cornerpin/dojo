@@ -1,7 +1,7 @@
 // A helper made for a job is given it the way any agent is: one ASSIGN on its own thread carrying the job's
 // rules, which is one task on the board, handed in by its reply. A transfer's task rides that ASSIGN; a task
 // that already has a thread is refused before any agent is made, with a way forward; a kept helper's work is
-// its own task and it can finish; a helper spawned with a narrow tool list can still reply and finish; and an
+// its own task and it can finish; a helper spawned with a narrow tool list or web-only reach can still reply and finish; and an
 // undeclared task_id on send_to_agent is never read.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -133,6 +133,18 @@ describe('a spawned job is one task and one review', () => {
     const done = await call(helper, 'complete_task', { status: 'complete', summary: 'The report is written.' });
     expect(done.isError, done.content).toBeFalsy();
     expect(tasksHeldBy(helper)[0].state).toBe('handed_in');
+  });
+
+  it('a helper spawned with web-only reach keeps its floor, answers its job and finishes', async () => {
+    const r = await spawn({ task_id: 'task-mine-0001', task_handling: 'transfer', grants: { tools: { categories: ['Web'] } } });
+    expect(r.isError, r.content).toBeFalsy();
+    const helper = helperId()!;
+    expect(getFilteredTools(helper).map((t) => t.name)).toEqual(expect.arrayContaining(['web_search', 'send_to_agent', 'complete_task']));
+    const reply = await call(helper, 'send_to_agent', { agent: 'main', intent: 'COMPLETE', thread_id: assignsTo(helper)[0].thread, payload: 'Found it.' });
+    expect(reply.isError, reply.content).toBeFalsy();
+    expect(tasksHeldBy(helper)[0].state).toBe('handed_in');
+    const done = await call(helper, 'complete_task', { status: 'complete', summary: 'Found it.' });
+    expect(done.isError, done.content).toBeFalsy();
   });
 
   it('an agent with no job thread and an allow list without send_to_agent does not gain it', async () => {

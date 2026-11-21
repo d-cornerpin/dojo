@@ -69,6 +69,11 @@ describe('detectDeliveryDenial (denial direction)', () => {
     expect(detectDeliveryDenial({ responseText: 'Not yet sure what you mean.' }).denied).toBe(false);
   });
 
+  it('does NOT fire on a promise to send later', () => {
+    expect(detectDeliveryDenial({ responseText: "I'll text you the short list as soon as she's back." }).denied).toBe(false);
+    expect(detectDeliveryDenial({ responseText: 'I will send the notes once they are ready.' }).denied).toBe(false);
+  });
+
   it('does NOT fire on an ordinary confirmation', () => {
     expect(detectDeliveryDenial({ responseText: 'All set, let me know if you need anything else.' }).denied).toBe(false);
   });

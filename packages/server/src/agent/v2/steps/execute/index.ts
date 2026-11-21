@@ -174,6 +174,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     }))),
     repeatRefusedThisTurn:
       state.repeatRefusedThisTurn || anyRepeatRefused(agentId, ctx.turnCtx),
+    sentToAgentThisTurn: state.sentToAgentThisTurn || sc.a2aSendsExecuted > 0,
   });
   if (stoppedMidBatch) state = latchEngineCut(state, 'stop');
 
@@ -197,8 +198,7 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   const generatorExit = endAfterGenerator(state, ctx, calledFireAndForgetGen);
   if (generatorExit) return generatorExit as ExecuteOutcome;
   // On an A2A turn an executed send is the response, so the turn ends (its text is suppressed, so nothing
-  // else would end it). Count executed sends from the scratch: a refused send must not end the turn, and
-  // `state.sentToAgentThisTurn` can be clobbered by the parallel callbacks.
+  // else would end it). A refused send is not counted, so it does not end the turn.
   if (counterparty.kind === 'agent' && sc.a2aSendsExecuted > 0) {
     logger.info('v2: A2A reply sent, exiting loop (send_to_agent is the response)', { agentId }, agentId);
     return requestExit(state, 'a2a-reply-sent') as ExecuteOutcome;

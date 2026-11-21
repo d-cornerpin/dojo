@@ -132,15 +132,15 @@ const SHELL_BUILTINS: ReadonlySet<string> = new Set<string>([
 const INLINE_SCRIPT_FLAGS: ReadonlySet<string> = new Set<string>(['-c', '--command', '-lc', '-ic']);
 
 /**
- * INLINE SCRIPT TEXT IS NOT AN ARGUMENT, AND THAT IS THE ONLY THING THE ARGV DOOR REFUSES: `sh -c`
- * is a shell script in argv's clothes, refused over EVERY element (`env FOO=1 sh -c` re-points the
- * program after argv[0] was read). Running a script FILE still runs: refusing it is a capability loss.
+ * INLINE SCRIPT TEXT IS NOT AN ARGUMENT: for other agents `sh -c` is a shell script in argv's clothes,
+ * refused over EVERY element (`env FOO=1 sh -c` re-points the program after argv[0] was read), so it
+ * meets the shell door's checks. The main agent skips those checks, so its `sh -c` runs. A script FILE runs.
  */
 function isInlineShellScript(argv: readonly string[]): boolean {
   return argv.some((a) => SHELL_INTERPRETERS.has(path.basename(a))) && argv.some((a) => INLINE_SCRIPT_FLAGS.has(a));
 }
 
-/** The argv door. Refusals in order: builtins and -c on the program; a hidden file named and the global
+/** The argv door. Refusals in order: builtins and (for other agents) -c on the program; a hidden file named and the global
  *  deny on the rebuilt line. Then the proc rows, deny before allow; no row means deny. */
 export function authorizeArgv(grant: Grant, resource: ResolvedArgv, cwd?: string): Verdict {
   if (SHELL_BUILTINS.has(resource.base)) {
@@ -151,7 +151,7 @@ export function authorizeArgv(grant: Grant, resource: ResolvedArgv, cwd?: string
       `[BLOCKED] exec refused: "${resource.base}" is a shell builtin, not a program, so there is nothing for exec to run. If you need shell behaviour use the shell tool — shell({script:"…"}) runs the whole line under /bin/zsh.`,
     );
   }
-  if (isInlineShellScript(resource.argv)) {
+  if (!isPrimaryAgent(grant.agentId) && isInlineShellScript(resource.argv)) {
     return deny(
       'ladder-parity',
       'argv-inline-script',

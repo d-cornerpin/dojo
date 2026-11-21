@@ -252,7 +252,7 @@ describe('resolveSpawnGrants / resolveUpdateGrants', () => {
     expect(g.channels.imessage).toBe('owner');
     expect(g.channels.sms).toBe('none');          // untouched sections keep the floor
     expect(g.integrations.credentials).toBe(false);
-    expect(g.tools.categories).toEqual(['Web']);
+    expect(g.tools.categories).toEqual([...(MOST_RESTRICTIVE_GRANTS.tools.categories as string[]), 'Web']);
   });
 
   it('⚠ UPDATE MERGES OVER THE TARGET’S CURRENT OBJECT — an omitted section is not erased', () => {

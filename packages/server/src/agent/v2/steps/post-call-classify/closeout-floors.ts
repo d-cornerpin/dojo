@@ -6,7 +6,7 @@ import { WORKING_NOTE_PREFIX } from '@dojo/shared';
 import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { insertMessageIfAbsent } from '../../../../memory/message-store.js';
-import { isRowLabelOnly } from '../../../../memory/row-label-only.js';
+import { isRowLabelOnly } from '../../../../memory/message-stamp.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { turnDeliveredToPerson } from '../../answered-edge.js';
 import { PROACTIVE_SEND_DEMOTE_THRESHOLD, bumpProactiveSendStreak, getProactiveSendStreak } from '../../proactive-budget.js';
@@ -49,9 +49,9 @@ function demoteToWorkingNote(
 export function holdAndSteer(
   state: AgentTurnState,
   at: { agentId: string; messageId: string; turnNumber: number; sc: PostCallScratch; db?: PostCallClassifyContext['db'] },
-  p: { floor: SteerFloorId; text: string; steer: string },
+  p: { floor: SteerFloorId; text: string; steer: string; key?: string },
 ): StepOutcome | null {
-  if (steerFired(state.steerQueue, p.floor)) return null;
+  if (steerFired(state.steerQueue, p.floor, p.key)) return null;
   at.sc.persistedContent = null;
   broadcast({ type: 'chat:chunk', agentId: at.agentId, messageId: at.messageId, content: '', done: true });
   demoteToWorkingNote({ agentId: at.agentId, messageId: at.messageId, turnNumber: at.turnNumber, text: p.text }, at.db ? {
@@ -59,7 +59,7 @@ export function holdAndSteer(
     owed: () => tasksOwingADelivery(at.agentId, state.turnStartMs, jobTaskOf(at.agentId, at.db!)?.id ?? null),
   } : undefined);
   return continueLoop(persistEngineSteer(state, {
-    agentId: at.agentId, content: p.steer, turnNumber: at.turnNumber, floor: p.floor, atLoop: state.loopCount,
+    agentId: at.agentId, content: p.steer, turnNumber: at.turnNumber, floor: p.floor, atLoop: state.loopCount, key: p.key,
   }, { broadcast }));
 }
 
