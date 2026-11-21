@@ -632,13 +632,13 @@ export function deleteAllForAgent(agentId: string): number {
   return db.prepare(`DELETE FROM messages WHERE agent_id = ?`).run(agentId).changes;
 }
 
-export interface ThreadReply { id: string; from: string; content: string; at: number }
+export interface ThreadReply { id: string; from: string; content: string; at: number; intent: string | null }
 
 /** The replies on `threadId` in `askerId`'s store since `sinceMs` (epoch ms), oldest first: rows from anyone but
  *  the asker. */
 export function repliesSince(askerId: string, threadId: string, sinceMs: number): ThreadReply[] {
   return getDb().prepare(`
-    SELECT id, source_agent_id AS "from", content, created_at AS at
+    SELECT id, source_agent_id AS "from", content, created_at AS at, a2a_intent AS intent
       FROM messages
      WHERE agent_id = ? AND a2a_thread_id = ? AND source_agent_id IS NOT NULL AND source_agent_id <> ?
        AND created_at >= ?
@@ -646,9 +646,9 @@ export function repliesSince(askerId: string, threadId: string, sinceMs: number)
   `).all(askerId, threadId, askerId, sinceMs) as ThreadReply[];
 }
 
-/** Did `fromAgentId` write on `threadId` to `askerId` at or after `sinceMs`? The one "replied" reader. */
-export function repliedOnThread(fromAgentId: string, askerId: string, threadId: string, sinceMs: number): boolean {
-  return repliesSince(askerId, threadId, sinceMs).some((r) => r.from === fromAgentId);
+/** Did `fromAgentId` write on `threadId` to `askerId` at or after `sinceMs`, with one of `intents` when given? The one "replied" reader. */
+export function repliedOnThread(fromAgentId: string, askerId: string, threadId: string, sinceMs: number, intents?: ReadonlySet<string>): boolean {
+  return repliesSince(askerId, threadId, sinceMs).some((r) => r.from === fromAgentId && (!intents || intents.has(r.intent ?? '')));
 }
 
 // Add no by-agent conversation wipe: `deleteAllForAgent` is for teardown only, where erasing everything is meant.

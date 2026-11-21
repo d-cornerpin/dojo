@@ -1,6 +1,6 @@
 // Who is owed what by an agent, and when the engine next wakes it. One timer for every agent and every due reply.
 
-import { A2A_THREAD_SHORT_LENGTH, FINAL_REPLY_SQL } from '@dojo/shared';
+import { A2A_THREAD_SHORT_LENGTH, FINAL_REPLY_SQL, FINAL_REPLY_INTENTS } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
@@ -58,7 +58,7 @@ export interface AgentRequest {
   createdAt: number; attempts: number; dueAt: number;
 }
 
-/** Unreplied requests from other agents (on `thread` when given), oldest first, with when each may be served (a
+/** Requests from other agents with no final reply (on `thread` when given), oldest first, with when each may be served (a
  *  provider's reset). One whose asker still waits on it is owed until answered or given up; any other, for a day, and
  *  once served for its serving window. Once served, an open task on its thread owns it: parked, the job item serves it;
  *  held by the owner, nobody does; working, the PM's ladder watches it. */
@@ -80,7 +80,7 @@ export function agentRequests(agentId: string, now = Date.now(), thread: string 
                          AND ${workingExpr('t')}
                          AND (t.next_attempt_at IS NOT NULL OR t.hold_kind IS NOT NULL OR m.served_by_turn IS NOT NULL))
      ORDER BY m.seq ASC LIMIT 20`).all({ agentId, now, thread, servedWindow: TERMINAL_WAKE_WINDOW_MS }) as Array<Omit<AgentRequest, 'threadShort'>>;
-  return rows.filter((r) => !repliedOnThread(agentId, r.fromId, r.threadId, r.createdAt))
+  return rows.filter((r) => !repliedOnThread(agentId, r.fromId, r.threadId, r.createdAt, FINAL_REPLY_INTENTS))
     .map((r) => ({ ...r, threadShort: r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH) }));
 }
 

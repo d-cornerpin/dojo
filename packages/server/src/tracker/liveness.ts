@@ -9,6 +9,7 @@
 // decides the text, the card and the clear (the agent moving again). Not told: an agent the owner stopped,
 // or one whose status says something louder (paused, error, rate-limited). Window: `agents.silent_window_minutes`.
 
+import { FINAL_REPLY_SQL } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { countAbortable, isStopFenced, activeRuns } from '../agent/shared-state.js';
 import { isPrimaryAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../config/platform.js';
@@ -102,13 +103,16 @@ const ALIVE = (c: string): string => `EXISTS (SELECT 1 FROM work t JOIN agents h
   WHERE t.kind = 'task' AND t.a2a_thread_id = ${c}.root_id AND t.state NOT IN ('done', 'failed', 'abandoned')
     AND ((t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
 
-/** The open pieces of a join, each alive while its task is (ALIVE), its helper's run is in flight, or, with no task, it is busy. */
+/** The open pieces of a join, each alive while its task is (ALIVE), its helper's run is in flight, or with no task, it is busy
+ *  for it or its newest word there is not final (a status, a question back) with nothing after it (`said`). */
 export function openPieces(joinId: string, seen = new Set<string>()): Array<{ childId: string; alive: boolean }> {
   return (getDb().prepare(`SELECT c.id, c.assignee_agent AS helper, c.root_id AS thread, ${ALIVE('c')} AS alive,
-      EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked
+      EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked,
+      EXISTS (SELECT 1 FROM messages w WHERE w.agent_id = c.agent_id AND w.a2a_thread_id = c.root_id AND w.source_agent_id = c.assignee_agent
+        AND w.a2a_intent NOT IN (${FINAL_REPLY_SQL}) AND NOT EXISTS (SELECT 1 FROM messages x WHERE x.a2a_thread_id = c.root_id AND x.created_at > w.created_at AND x.agent_id IN (c.agent_id, c.assignee_agent) AND x.role = 'user')) AS said
       FROM work c WHERE c.parent_id = ? AND c.kind = 'task' AND c.state IN ('open', 'claimed', 'blocked')`).all(joinId) as
-    Array<{ id: string; helper: string | null; thread: string; alive: number; tasked: number }>).map((p) => ({
-    childId: p.id, alive: p.alive === 1 || activeRuns.has(p.helper ?? '') || (p.tasked === 0 && !!p.helper && workerBusy(p.helper, { threadId: p.thread }, seen)),
+    Array<{ id: string; helper: string | null; thread: string; alive: number; said: number; tasked: number }>).map((p) => ({
+    childId: p.id, alive: p.alive === 1 || activeRuns.has(p.helper ?? '') || (p.tasked === 0 && !!p.helper && (p.said === 1 || workerBusy(p.helper, { threadId: p.thread }, seen))),
   }));
 }
 
