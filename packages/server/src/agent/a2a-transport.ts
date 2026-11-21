@@ -253,12 +253,12 @@ export function payloadLooksDeliverable(payload: string): boolean {
 }
 
 
-// SENDER_TERMINATED is transport-local: intentionally NOT in the shared union.
-type A2ADropReasonLocal = A2ADropReason | 'SENDER_TERMINATED';
+// SENDER_TERMINATED and REQUEST_ENDED are transport-local: intentionally NOT in the shared union.
+type A2ADropReasonLocal = A2ADropReason | 'SENDER_TERMINATED' | 'REQUEST_ENDED';
 
 /** A drop is a RETURN most callers discard, so logDrops are loud; a semantic duplicate is exempt because
  * the sender is told synchronously in the tool result. Unknown future reasons land at warn. */
-const DROPS_THE_SENDER_IS_TOLD_ABOUT: ReadonlySet<A2ADropReasonLocal> = new Set(['SEMANTIC_DUPLICATE']);
+const DROPS_THE_SENDER_IS_TOLD_ABOUT: ReadonlySet<A2ADropReasonLocal> = new Set(['SEMANTIC_DUPLICATE', 'REQUEST_ENDED']);
 
 function logDrop(envelope: A2AEnvelope, reason: A2ADropReasonLocal, extra: Record<string, unknown> = {}): void {
   const say = DROPS_THE_SENDER_IS_TOLD_ABOUT.has(reason)
@@ -442,6 +442,9 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   const threadId = named || envelope.threadId || reusedAssignThreadId || servedThreadId || uuidv4();
   // ⚠ READ BEFORE `ensureThread`, and the order is load-bearing: that insert stamps `datetime('now')`
   // when no row exists, so a later read would report a delivery that never happened.
+  // On a request that was called off a result is refused (it is never passed on as news); anything else wakes nobody.
+  const forEndedRequest = resultForEndedRequest(target.id, threadId);
+  if (forEndedRequest && FINAL_REPLY_INTENTS.has(effectiveIntent)) { logDrop(envelope, 'REQUEST_ENDED'); return { delivered: false, reason: 'REQUEST_ENDED', threadId }; }
   const lastDeliveryMs = threadLastDeliveryMs(threadId);
   ensureThread(threadId, envelope.fromAgent);
 
@@ -535,8 +538,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   let primaryDeliverableHint = '';
   // Read BEFORE the piece lands below: landing settles the child.
   const joinChild = findJoinChildByThread(target.id, threadId);
-  // A result for a request the owner stopped is stored and starts nothing: no hint, no wake.
-  const forEndedRequest = resultForEndedRequest(target.id, threadId);
   try {
     const { isPrimaryAgent, isPMAgent, isHealerAgent } = await import('../config/platform.js');
     const targetIsPrimary = isPrimaryAgent(target.id);
@@ -544,7 +545,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     const isDeliverableShape =
       autoPromotedFromFyi ||
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
-    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinChild && !forEndedRequest && !findFailedJoinForThread(target.id, threadId)
+    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinChild && !findFailedJoinForThread(target.id, threadId)
       && !sentBackPiece(target.id, threadId, envelope.fromAgent)) {
       primaryDeliverableHint = deliverableArrivedNote(senderName);
     }
@@ -742,7 +743,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   });
 
   // ── 13. Route based on requires_response ──
-  if (forEndedRequest) logger.info('A2A delivery: a result for a request the owner stopped; stored, no wake', { targetId: target.id, threadId });
+  if (forEndedRequest) logger.info('A2A delivery: a message on a request that was called off; stored, no wake', { targetId: target.id, threadId });
   else if (requiresResponse) {
     // Wake-block is paused-only: re-waking an error agent is safe; paused is the error-loop signal, which the main agent and the Healer may lift.
     const targetIsLockedOut = target.status === 'paused';

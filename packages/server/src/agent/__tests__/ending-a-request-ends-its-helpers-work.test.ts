@@ -17,7 +17,7 @@ import { stopByOwner, getAgentRuntime } from '../runtime.js';
 import { pressStop } from '../v2/__tests__/helpers/owner-stop.js';
 import { handleIMCommand } from '../../services/imessage-commands.js';
 import { clearPlatformConfigCache } from '../../config/platform.js';
-import { sweepExpiredJoins } from '../a2a-transport.js';
+import { sweepExpiredJoins, deliverA2AMessage } from '../a2a-transport.js';
 import { trackerHandlers } from '../tools/cat/tracker.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
@@ -55,7 +55,8 @@ describe("ending a request ends its helpers' work", () => {
     await settled();
     expect(isStopFenced(HELPER)).toBe(true);
     expect([cancelledByOwner(), helperPrompts()]).toEqual([false, 0]);   // a contact's words are not the owner's cancel
-    await helperAnswers('The venue is free on the 14th.');
+    expect(await deliverA2AMessage({ intent: 'ANSWER', threadId: THREAD, requiresResponse: false, payload: 'Free on the 14th.', toAgent: AGENT, fromAgent: HELPER } as never))
+      .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
     expect(relayRows()).toEqual([]);
   });
 
@@ -66,6 +67,10 @@ describe("ending a request ends its helpers' work", () => {
     expect(pieceState()).toBe('abandoned');
     await settled();
     expect([helperTaskState(), cancelledByOwner(), isStopFenced(HELPER), helperPrompts()]).toEqual(['abandoned', true, true, 0]);
+    // The send its turn had already made arrives: refused at the door, so the agent never sees it.
+    expect(await deliverA2AMessage({ intent: 'COMPLETE', threadId: THREAD, requiresResponse: true, payload: 'Free on the 14th.', toAgent: AGENT, fromAgent: HELPER } as never))
+      .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
+    expect(testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND a2a_intent = 'COMPLETE'").get(AGENT)).toEqual({ n: 0 });
   });
 
   // The delegating turn, then a later turn on a quick question that is over; nothing is running when Stop comes.
