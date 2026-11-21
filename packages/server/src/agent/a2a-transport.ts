@@ -5,9 +5,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { liveAgentsNamed, liveAgentNamesNear, resolveAgentDisplayName } from './tool-helpers.js';
-import { activeRuns } from './shared-state.js';
 import { endedMidRun } from './ended-mid-run.js';
-import { patienceFloorFor } from '../tracker/assignee-patience.js';
 import {
   A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX,
 } from '@dojo/shared';
@@ -34,7 +32,7 @@ import {
   dueJoinsUnderClosedParent,
   failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
-  extendJoinTtl, JOIN_LIVENESS_MAX_TOTAL_MS,
+  extendJoinTtl,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
@@ -1239,27 +1237,13 @@ function updateAfterSendBack(p: LandInput): boolean {
   return true;
 }
 
-/** IS ANY AGENT THIS JOIN IS WAITING ON PROVABLY STILL WORKING? `activeRuns` is in-process
- *  truth; `agents.status` is the cross-restart fallback. The grant scales with the assignee's
- *  declared patience; a piece with no assignee is not counted. */
-function liveAssigneeForJoin(join: JoinState): { agentId: string; grantMs: number; basis: string } | null {
-  for (const piece of joinPieces(join.id)) {
-    if (isTerminal(piece.state)) continue;
-    const assignee = piece.assigneeAgent;
-    if (!assignee) continue;
-    let live = activeRuns.has(assignee);
-    if (!live) {
-      try {
-        const row = getDb().prepare('SELECT status FROM agents WHERE id = ?').get(assignee) as
-          | { status: string } | undefined;
-        live = row?.status === 'working';
-      } catch { live = false; }
-    }
-    if (!live) continue;
-    const floor = patienceFloorFor(assignee);
-    return { agentId: assignee, grantMs: floor.floorSeconds * 1000, basis: floor.basis };
-  }
-  return null;
+/** Is an open piece of this join waiting on a job whose task is still open and whose helper is not ended? */
+function jobStillOpen(join: JoinState): boolean {
+  return !!getDb().prepare(`SELECT 1 FROM work c
+      JOIN work t ON t.kind = 'task' AND t.a2a_thread_id = c.root_id AND t.agent_id = c.assignee_agent
+        AND t.state NOT IN ('done', 'failed', 'abandoned')
+      JOIN agents h ON h.id = c.assignee_agent AND h.status <> 'terminated'
+     WHERE c.parent_id = ? AND c.kind = 'task' AND c.state IN ('open', 'claimed', 'blocked') LIMIT 1`).get(join.id);
 }
 
 /** LAND a stranded reply before judging the join, through the one landing: the owner must not hear "no answer"
@@ -1301,32 +1285,12 @@ async function resolveOpenJoin(
     return 'relayed';
   }
   if (!opts.failIfUnanswered) return 'left-open';
-
-  // THE DEADLINE YIELDS TO PROOF OF LIFE: one patience-scaled grant, the assignee's own
-  // declared speed, bounded by `JOIN_LIVENESS_MAX_TOTAL_MS` so it cannot renew for ever.
-  const alive = liveAssigneeForJoin(state);
-  if (alive) {
-    const granted = extendJoinTtl(state.id, { grantMs: alive.grantMs });
-    if (granted.extended) {
-      logger.info('a2a join past its deadline but its assignee is still WORKING — granting more time, not failing it', {
-        joinId: state.id, assignee: alive.agentId, grantMs: alive.grantMs,
-        patienceBasis: alive.basis, newTtlAt: granted.ttlAt,
-        landed: state.landed, total: state.total,
-      });
-      return 'extended';
-    }
-    logger.warn('a2a join assignee still looks alive but the join hit its hard ceiling — failing closed', {
-      joinId: state.id, assignee: alive.agentId, refusedBecause: granted.reason,
-      ceilingMs: JOIN_LIVENESS_MAX_TOTAL_MS,
-    });
-  }
+  // A job still open on the join is never failed for time; whether it moves is the stall ladder's question.
+  if (jobStillOpen(state)) { extendJoinTtl(state.id); return 'extended'; }
 
   const snapshot = joinPieces(state.id);   // before the settle: the notice names what landed and what did not
   const claimed = failJoinClosed(state.id, {
-    reason: alive
-      ? 'the delegated answer never came back, and the wait reached its hard ceiling'
-      : 'the delegated answer never came back inside the deadline',
-    expectedState: state.parentState,
+    reason: 'the delegated answer never came back inside the deadline', expectedState: state.parentState,
   });
   if (claimed.kind !== 'applied') return 'already-settled';
   tellAgentTheJoinFailed(state, 'the delegated answer never came back inside the deadline.', await relayNotice(state, landedContentNotice(state, snapshot, false, opts.askedNameHint)));
@@ -1391,7 +1355,7 @@ async function resolveJoinUnderClosedParent(
  *  the guard). `dueJoins` and `dueJoinsUnderClosedParent` are complementary arms on `state`. */
 export async function sweepExpiredJoins(): Promise<{
   failedClosed: number; relayedReplies: number; noticedUnderClosedParent: number;
-  /** Joins the reaper REFUSED to fail because their assignee was provably working. */
+  /** Joins the reaper kept open because a job on them is still open. */
   extendedForLiveAssignee: number;
 }> {
   const out = { failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0, extendedForLiveAssignee: 0 };
@@ -1411,7 +1375,7 @@ export async function sweepExpiredJoins(): Promise<{
       else if (outcome === 'extended') out.extendedForLiveAssignee++;
       // Name the outcome: a join kept open is not a join closed.
       logger.info(outcome === 'extended'
-        ? 'join TTL reaper: expired join KEPT OPEN — its assignee is still working'
+        ? 'join TTL reaper: expired join kept open, a job on it is still open'
         : 'join TTL reaper: closed expired join', {
         agentId: join.agentId, work: join.id, outcome,
       });

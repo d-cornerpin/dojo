@@ -1,34 +1,5 @@
-// ════════════════════════════════════════════════════════════════════════════════════
-// t114 (CENSUS U3) — A JOIN WHOSE ASSIGNEE IS STILL WORKING IS NOT FAILED.
-//
-// `JOIN_TTL_MINUTES = 60` is the one row of the work-reaper's thirteen declared deadlines that
-// KILLED work rather than expiring an obligation. `dueJoins` selects on `ttl_at` alone, and
-// `resolveOpenJoin` went straight from "nothing landed" to `failJoinClosed`. So a sub-agent
-// healthily grinding its delegated piece at minute 61 — well inside its own creator-set
-// `max_runtime` — had its join declared dead, the owner was told the answer never came back, and
-// the delegate's eventual reply arrived at a terminal join. No assignee liveness was ever read.
-// It is the direct contradiction of row 33's spawn-timeout contract one file over, where every
-// expiry lands on a DECISION POINT rather than a kill.
-//
-// Pinned before this? No. `join-closed-parent-reaper.test.ts` and `work/fanout-join.test.ts` pin
-// the closed-parent arm and the fan-out landing. Nothing pinned the 60-minute bound against
-// healthy work — which is how it survived a release ritual.
-//
-// THE BACKWARDS LIFECYCLE, both directions:
-//
-//   §1 HEALTHY WORK IN THE WINDOW SURVIVES. A join an hour past its deadline whose assignee is
-//      `working` is kept open, its deadline moved forward by a PATIENCE-SCALED grant (the
-//      assignee's own declared model speed, via `patienceFloorFor` — not a number invented
-//      here), and the owner is NOT told a false story about a missing answer.
-//
-//   §2 DEAD WORK STILL DIES, LOUDLY. The same join with an idle assignee is failed closed and
-//      the owner is told, exactly as before — the behaviour this fix must not cost.
-//
-//   §3 THE CEILING, which is what keeps §1 from being an unbounded renewal: an agent that looks
-//      busy for ever cannot hold a join open for ever. Past `JOIN_LIVENESS_MAX_TOTAL_MS` the
-//      join fails closed whatever the assignee looks like, and the exit reason says the ceiling
-//      ended it rather than claiming silence.
-// ════════════════════════════════════════════════════════════════════════════════════
+// A join past its deadline whose assignee still has its task for the job open is kept open and its deadline moves
+// on, and the owner is told nothing; one with no open job is failed closed and the owner is told.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -70,7 +41,7 @@ vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  openAsk, claimAsk, openDelegationJoin, joinState, JOIN_LIVENESS_MAX_TOTAL_MS,
+  openAsk, claimAsk, openDelegationJoin, joinState,
 } from '../../work/store.js';
 // Loaded ONCE, at file load, outside every clause's budget. This used to be a dynamic import
 // after `vi.resetModules()` inside each clause, so every clause paid the whole cold a2a-transport
@@ -123,9 +94,18 @@ function seedLiveJoinPastTtl(opts: { openedMinutesAgo?: number; ttlMinutesAgo?: 
   return parent;
 }
 
-/** Put the assignee in a given status — the cross-restart liveness fact the reaper reads. */
+/** Put the assignee in a given status. */
 function setAssigneeStatus(status: string): void {
   mockDb.current!.prepare('UPDATE agents SET status = ? WHERE id = ?').run(status, ASSIGNEE);
+}
+
+/** The assignee's own task for the job on THREAD, still open: what the reaper reads as a job in progress. */
+function seedAssigneeJob(): void {
+  const at = Date.now();
+  mockDb.current!.prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes,
+      closes_thread, title, a2a_thread_id, opened_at, updated_at, provenance)
+    VALUES ('task-u3', 'task', ?, 'agent', 'tracker', 'task-u3', 'claimed', 'tracker', 0, 0, 'the survey', ?, ?, ?, 'live')`)
+    .run(ASSIGNEE, THREAD, at, at);
 }
 
 async function sweep(): Promise<{
@@ -144,9 +124,9 @@ beforeEach(() => {
 });
 
 describe('§1 a healthy delegate past the deadline keeps its join', () => {
-  it('THE RED: an assignee still `working` means the join is NOT failed closed', async () => {
+  it('THE RED: an assignee whose task for the job is open means the join is NOT failed closed', async () => {
     const parent = seedLiveJoinPastTtl();
-    setAssigneeStatus('working');
+    seedAssigneeJob();
 
     const out = await sweep();
 
@@ -157,7 +137,7 @@ describe('§1 a healthy delegate past the deadline keeps its join', () => {
 
   it('the deadline MOVES FORWARD, so the next sweep does not re-litigate the same row', async () => {
     const parent = seedLiveJoinPastTtl();
-    setAssigneeStatus('working');
+    seedAssigneeJob();
     const before = joinState(parent)!.ttlAt!;
 
     await sweep();
@@ -169,7 +149,7 @@ describe('§1 a healthy delegate past the deadline keeps its join', () => {
 
   it('the owner is NOT told a false story about a missing answer', async () => {
     seedLiveJoinPastTtl();
-    setAssigneeStatus('working');
+    seedAssigneeJob();
 
     const out = await sweep();
 
@@ -204,43 +184,5 @@ describe('§2 a dead delegate still fails the join, and the owner still hears ab
     expect(said.length, 'the person is never left in silence').toBeGreaterThan(0);
     expect(said.map((m) => m.content).join('\n'), 'the platform says plainly that nothing answered')
       .toMatch(/never answered/i);
-  });
-});
-
-describe('§3 the ceiling — proof of life buys time, not an unbounded renewal', () => {
-  it('a join past JOIN_LIVENESS_MAX_TOTAL_MS fails closed even with a working assignee', async () => {
-    // One minute past the ceiling, measured from when the join OPENED — which is why `openedAt`
-    // is read rather than the deadline the extension itself moves.
-    const ceilingMinutes = JOIN_LIVENESS_MAX_TOTAL_MS / MIN;
-    const parent = seedLiveJoinPastTtl({ openedMinutesAgo: ceilingMinutes + 1 });
-    setAssigneeStatus('working');
-
-    const out = await sweep();
-
-    expect(out.failedClosed, 'a permanently busy-looking agent cannot hold a join for ever').toBe(1);
-    expect(out.extendedForLiveAssignee, 'the grant was refused at the ceiling').toBe(0);
-    expect(workRow(parent).state).toBe('failed');
-  });
-
-  it('the ceiling kill is HONEST: it says the wait ran out, not that the delegate was silent', async () => {
-    const ceilingMinutes = JOIN_LIVENESS_MAX_TOTAL_MS / MIN;
-    const parent = seedLiveJoinPastTtl({ openedMinutesAgo: ceilingMinutes + 1 });
-    setAssigneeStatus('working');
-
-    await sweep();
-
-    const reason = (mockDb.current!.prepare(
-      `SELECT payload FROM work_events WHERE work_id = ? ORDER BY rowid DESC`,
-    ).all(parent) as Array<{ payload: string | null }>)
-      .map((r) => r.payload ?? '')
-      .join('\n');
-    expect(reason, 'the exit reason names the ceiling, because that is what happened')
-      .toMatch(/hard ceiling/i);
-  });
-
-  it('CONTROL: the ceiling is well clear of the ordinary deadline — a 61-minute join is inside it', () => {
-    // Guards against a ceiling so tight it would swallow §1: the extension must have real room.
-    expect(JOIN_LIVENESS_MAX_TOTAL_MS, 'the ceiling is a multiple of the declared TTL')
-      .toBeGreaterThan(61 * MIN);
   });
 });

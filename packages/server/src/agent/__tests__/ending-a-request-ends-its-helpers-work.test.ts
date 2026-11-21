@@ -64,6 +64,7 @@ describe("ending a request ends its helpers' work", () => {
   });
 
   it('a request that runs out of time fails its piece, tells nobody, and a late answer goes back to the agent', async () => {
+    testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'task-helper-1'").run(Date.now());   // the job ended unanswered
     vi.setSystemTime(Date.now() + 3_700_000);
     await sweepExpiredJoins();
     expect([requestState(), pieceState()]).toEqual(['failed', 'failed']);
