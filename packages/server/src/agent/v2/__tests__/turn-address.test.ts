@@ -20,7 +20,7 @@ const peer: TurnCounterparty = {
 function addr(over: Partial<ComputeTurnAddressInput> & { counterparty: TurnCounterparty }) {
   return computeTurnAddress({ autoRoutes: true,
     isEngineTurn: false, isNotificationTurn: false, inboundChannel: null, inboundContext: null,
-    presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null, ...over,
+    ...over,
   });
 }
 
@@ -44,50 +44,34 @@ describe('the turn address: who the written reply really goes to', () => {
     expect(addr({ counterparty: contact, inboundChannel: null }).deliveryChannel).toBe('dashboard');
   });
 
-  it('A4: affinity never moves a dashboard ask, and "away" alone moves nothing', () => {
-    // Field fix 3 test-2 rank 2 (channel identity): the owner asking ON the dashboard is the
-    // opposite of RC-10's "invisible dashboard" premise, so affinity leaves that reply where he is.
-    // An ENGINE turn that defaults to the dashboard still follows affinity (RC-10's own case).
-    expect(addr({ counterparty: owner, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('dashboard');
-    expect(addr({ counterparty: owner, isEngineTurn: true, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('imessage');
-    // Owner ruling 2026-11-04 ("if a user types a message on the dashboard, they get a response on
-    // the dashboard"): a dashboard ask stays on the dashboard even when away; a proactive turn with no
-    // inbound stays there too: a result goes where it was asked.
-    expect(addr({ counterparty: owner, inboundChannel: 'dashboard', presence: 'away' }).deliveryChannel).toBe('dashboard');
-    expect(addr({ counterparty: owner, inboundChannel: null, presence: 'away' }).deliveryChannel).toBe('dashboard');
-    // Affinity alone with no inbound is refused (phantom-outreach rule).
-    expect(addr({ counterparty: owner, inboundChannel: null, ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('dashboard');
-  });
-
-  it('A4: affinity never promotes a contact', () => {
-    const a = addr({ counterparty: { ...contact, channel: 'dashboard' }, inboundChannel: 'dashboard', ownerAffinityChannel: 'imessage' });
-    expect(a.deliveryChannel).toBe('dashboard');
+  // Owner ruling 2026-11-04: "obviously if a user types a message on the dashboard, they get a response on the dashboard."
+  it('A4: a dashboard ask, a reminder asked on the dashboard and a result nobody asked for all stay on the dashboard', () => {
+    expect(addr({ counterparty: owner, inboundChannel: 'dashboard' }).deliveryChannel).toBe('dashboard');
+    expect(addr({ counterparty: owner, isEngineTurn: true, inboundChannel: 'dashboard' }).deliveryChannel).toBe('dashboard');
+    expect(addr({ counterparty: owner, isEngineTurn: true, inboundChannel: null }).deliveryChannel).toBe('dashboard');
   });
 
   it('A5: an A2A turn is not routed to a person and names no human', () => {
-    const a = addr({ counterparty: peer, inboundChannel: 'dashboard', presence: 'away' });
+    const a = addr({ counterparty: peer, inboundChannel: 'dashboard' });
     expect(a.kind).toBe('agent');
     expect(a.deliveryChannel).toBe('dashboard');
     expect(a.routed).toBe(false);
   });
 
   it('A6: engine and notification turns have no reply line and are never routed to a person as a reply', () => {
-    const e = addr({ counterparty: owner, isEngineTurn: true, presence: 'away' });
-    const n = addr({ counterparty: owner, isNotificationTurn: true, presence: 'away' });
+    const e = addr({ counterparty: owner, isEngineTurn: true });
+    const n = addr({ counterparty: owner, isNotificationTurn: true });
     expect(e.kind).toBe('engine');
     expect(n.kind).toBe('notification');
     expect(n.deliveryChannel).toBe('dashboard');
-    // An away owner's reminder that no one asked for by text stays on the dashboard; the address says so.
     expect(e.deliveryChannel).toBe('dashboard');
   });
 
-  it('delivery reads the address: live presence still applies to affinity, the bound inbound does not move', () => {
-    // A proactive owner turn (no inbound): his affinity moves it only while he is away.
-    const a = addr({ counterparty: owner, inboundChannel: null });
-    expect(resolveDeliveryChannel(a, { presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: 'imessage' })).toBe('imessage');
-    expect(resolveDeliveryChannel(a, { presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: null })).toBe('dashboard');
-    const c = addr({ counterparty: contact, inboundChannel: 'imessage' });
-    expect(resolveDeliveryChannel(c, { presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: 'imessage' })).toBe('imessage');
+  it('a routed inbound is answered on its own channel, a reminder asked by text included', () => {
+    for (const ch of ['imessage', 'teams', 'email', 'sms', 'voice'] as const) {
+      expect(resolveDeliveryChannel(addr({ counterparty: contact, inboundChannel: ch }))).toBe(ch);
+    }
+    expect(addr({ counterparty: owner, isEngineTurn: true, inboundChannel: 'imessage' }).deliveryChannel).toBe('imessage');
   });
 
   it('the tail restatement exists only for a routed reply', () => {
@@ -97,15 +81,12 @@ describe('the turn address: who the written reply really goes to', () => {
   });
 });
 
-describe('only the primary agent\'s written reply is texted to an away owner', () => {
-  it('a sub-agent\'s address says the dashboard and is not routed, away or not', () => {
-    const a = addr({ counterparty: owner, inboundChannel: 'dashboard', presence: 'away', autoRoutes: false });
+describe('only the primary agent\'s written reply is routed', () => {
+  it('a sub-agent\'s address says the dashboard and is not routed', () => {
+    const a = addr({ counterparty: owner, inboundChannel: 'dashboard', autoRoutes: false });
     expect(a.deliveryChannel).toBe('dashboard');
     expect(a.routed).toBe(false);
     expect(renderTailRestatement(a)).toBeNull();
-    expect(resolveDeliveryChannel(a, { presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: 'imessage' })).toBe('dashboard');
-  });
-  it('the primary agent\'s says iMessage for the same away owner on his affinity (an engine turn; a dashboard ask stays on the dashboard)', () => {
-    expect(addr({ counterparty: owner, isEngineTurn: true, inboundChannel: 'dashboard', presence: 'away', ownerAffinityChannel: 'imessage' }).deliveryChannel).toBe('imessage');
+    expect(resolveDeliveryChannel({ ...a, boundChannel: 'imessage' })).toBe('dashboard');
   });
 });

@@ -29,7 +29,7 @@ const AGENT = randomUUID();
 async function reply(boundChannel: string): Promise<void> {
   const state = { lastAssistantTextForIM: 'here it is', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundContext: null, inboundChannel: boundChannel } as never;
   const address = { kind: 'person', isOwner: true, boundChannel, autoRoutes: true };
-  const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: { address, ownerAffinityDestination: null, root: null, replyFiles: [] }, counterparty: { kind: 'user', channel: boundChannel, senderId: 'owner@example.com', relation: 'owner' }, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false, persistRoutingMarker: () => {} } as never;
+  const ctx = { agentId: AGENT, turnNumber: 1, turnCtx: { address, root: null, replyFiles: [] }, counterparty: { kind: 'user', channel: boundChannel, senderId: 'owner@example.com', relation: 'owner' }, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false, persistRoutingMarker: () => {} } as never;
   await routeTerminalReply(state, ctx);
 }
 

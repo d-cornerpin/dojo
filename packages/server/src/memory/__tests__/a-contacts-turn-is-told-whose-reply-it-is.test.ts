@@ -65,7 +65,7 @@ describe("a contact's turn is told whose reply it is", () => {
   it('the header names the contact as the recipient, and the owner row in view is labelled as his', async () => {
     const counterparty: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: CONTACT, threadId: null, senderIsAgent: false };
     const address = computeTurnAddress({ autoRoutes: true, counterparty, isEngineTurn: false, isNotificationTurn: false,
-      inboundChannel: 'imessage', inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+      inboundChannel: 'imessage', inboundContext: null });
     const turn = { latestUserSource: 'text' as const, counterparty, address, isEngineTurn: false, isNotificationTurn: false };
     const ctx = await assembleContext(AGENT, 'm', turn);
     injectRegistryMessage('msg.turn-context', ctx.messages, buildAssemblyContext(AGENT, 'm', turn));

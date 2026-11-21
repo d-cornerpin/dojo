@@ -52,8 +52,7 @@ import { createWorkTable, seedTrackerTask } from './work-fixture.js';
 const CONTACT_TURN: TurnAddress = {
   kind: 'person', name: 'Sam Example', relation: 'known_contact', isOwner: false,
   senderId: '+15550000123', threadId: null, inboundChannel: 'imessage', boundChannel: 'imessage',
-  inboundContext: null, deliveryChannel: 'imessage', routed: true, autoRoutes: true,
-  ownerAffinity: null, heldWake: false,
+  inboundContext: null, deliveryChannel: 'imessage', routed: true, autoRoutes: true, heldWake: false,
 };
 const OWNER_TURN: TurnAddress = { ...CONTACT_TURN, name: 'the owner', relation: 'owner', isOwner: true };
 const ENGINE_TURN: TurnAddress = {

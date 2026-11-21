@@ -16,7 +16,7 @@ const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation:
 const FORBIDDEN = /dashboard chat|the owner is watching|reply to the owner|as your chat reply|owner's channel|in this conversation \(do NOT|send Owner Example a note, a promise/i;
 
 describe('a contact\'s turn never gets owner-route text, on any outbound path the engine writes', () => {
-  const addr = computeTurnAddress({ autoRoutes: true, counterparty: contact, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'imessage', inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+  const addr = computeTurnAddress({ autoRoutes: true, counterparty: contact, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'imessage', inboundContext: null });
 
   it('the turn block, the start-ack steer, the compile steer, the send-tool results and the failure words', () => {
     endTurnContext('primary');

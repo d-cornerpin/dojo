@@ -6,8 +6,6 @@ import { createLogger } from '../../../../logger.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
 import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { resolveRecipientDisplay } from '../../../../contacts/resolve-recipient.js';
-import type { PresenceStatus } from '../../../../services/presence.js';
-import { recordAffinityPromotion, affinityPromotionRefusedNoBasis } from '../../owner-affinity.js';
 import { outboundRoot, describeOutboundRoot } from '../../outbound-root.js';
 import { resolveDeliveryChannel } from '../../turn-address.js';
 import { steerFired } from '../../steer-queue.js';
@@ -34,27 +32,12 @@ export async function routeTerminalReply(
 
   // Chips (a canvas document, the live screen) stay on the dashboard; real files ride the reply.
   const files = turnCtx.replyFiles.filter((f) => !f.openInCanvas && !f.screenShare).map((f) => f.path);
-  // Route the reply back to the inbound channel, else the dashboard (iMessage if the owner is away).
+  // Route the reply back to the inbound channel, else the dashboard.
   if (isPrimaryAgent(agentId) && (state.lastAssistantTextForIM || files.length > 0)) {
     try {
-      const { getPresence, isImessageConfigured } = await import('../../../../services/presence.js');
-
-      const presenceNow = getPresence();
-      // Affinity alone is not consent: an affinity-only promotion with no basis is refused. The bound
-      // inbound comes from the turn's address, since a continuation has no trigger row.
+      const { isImessageConfigured } = await import('../../../../services/presence.js');
+      // The bound inbound comes from the turn's address, since a continuation has no trigger row.
       const boundInbound = turnCtx.address ? turnCtx.address.boundChannel : state.inboundChannel;
-      const affinityRefused = affinityPromotionRefusedNoBasis({
-        ownerAffinityChannel: turnCtx.ownerAffinityDestination,
-        inboundChannel: boundInbound,
-        presence: presenceNow,
-        personAskedHere: (turnCtx.address?.kind ?? (counterparty.kind === 'agent' ? 'agent' : 'person')) === 'person',
-      });
-      if (affinityRefused) {
-        logger.info('v2.7.23 route: affinity iMessage promotion refused (no basis: no inbound with the owner not away, or the owner asked on the dashboard); text stays in dashboard', {
-          agentId, turnNumber, convKey: chosenConvKey ?? null, presence: presenceNow,
-        }, agentId);
-      }
-      const effectiveOwnerAffinity = affinityRefused ? null : turnCtx.ownerAffinityDestination;
       // One source for the rule: the resolver that told the agent where its reply goes. An agent
       // counterparty never auto-routes to a person; without an address the counterparty says so.
       const routeAddress = turnCtx.address ?? {
@@ -62,23 +45,13 @@ export async function routeTerminalReply(
         isOwner: counterparty.kind === 'user' && counterparty.relation === 'owner',
         boundChannel: state.inboundChannel, autoRoutes: true,
       };
-      const destination = resolveDeliveryChannel(routeAddress, {
-        presence: presenceNow,
-        imessageBridgeConfigured: isImessageConfigured(),
-        ownerAffinityChannel: turnCtx.ownerAffinityDestination,
-      });
+      const destination = resolveDeliveryChannel(routeAddress);
       // Files go only by iMessage, so a turn with files and no words routes only there, as a reply with no text.
       if (!state.lastAssistantTextForIM && (destination !== 'imessage' || files.length === 0)) return state;
       if (state.lastAssistantTextForIM === null) state = advance(state, { lastAssistantTextForIM: '' });
       state = await appendUndeliveredLinks(state, ctx);
       // An answer already queued mid-turn is not queued again: only what finalize added to it follows it.
       const linksOnly = state.lastAssistantTextForIM!.slice(said.trimEnd().length).trim();
-      // Record the promotion only when affinity drove this reply onto iMessage with the owner not
-      // away, so the per-conversation cooldown keeps a wake storm from becoming a text storm.
-      if (destination === 'imessage' && effectiveOwnerAffinity === 'imessage' && presenceNow !== 'away') {
-        recordAffinityPromotion(agentId, turnCtx.ownerAffinityConversationId);
-      }
-
       // A user-facing CHANNEL PUSH needs an affirmative root (`outbound-root.ts`); with none it is held.
       // Only the push is withheld: the reply stays persisted and visible in the dashboard.
       const routeRoot = outboundRoot({
@@ -95,7 +68,7 @@ export async function routeTerminalReply(
         const heldNow = (settledContextHold || !!turnCtx.pushHeld) && destination !== 'dashboard';
         logger.warn('settled-context tripwire: user-facing outbound from a wake turn whose visible conversations were all answered; verify it is a genuine delivery and not a re-answer', {
           agentId, turnNumber, convKey: chosenConvKey ?? null,
-          inboundChannel: state.inboundChannel, presence: presenceNow, destination,
+          inboundChannel: state.inboundChannel, destination,
           outcome: heldNow ? 'held' : (destination === 'dashboard' ? 'dashboard' : `channel:${destination}`),
           outboundRoot: routeRoot.root, outboundRoots: routeRoot.roots,
           explicitSend: Object.values(state.explicitSendThisTurn).some(Boolean),
@@ -103,7 +76,7 @@ export async function routeTerminalReply(
         }, agentId);
       }
 
-      await sendOrHold(state, ctx, { destination, settledContextHold, routeRoot, presenceNow, imessageConfigured: isImessageConfigured(), linksOnly, files });
+      await sendOrHold(state, ctx, { destination, settledContextHold, routeRoot, imessageConfigured: isImessageConfigured(), linksOnly, files });
     } catch (err) {
       logger.warn('v2.7.23: reply-destination routing failed', {
         agentId,
@@ -119,7 +92,6 @@ interface RouteDecision {
   readonly destination: ReplyDestination;
   readonly settledContextHold: boolean;
   readonly routeRoot: ReturnType<typeof outboundRoot>;
-  readonly presenceNow: PresenceStatus;
   readonly imessageConfigured: boolean;
   readonly linksOnly: string;
   readonly files: string[];
@@ -133,7 +105,7 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
   // The caller already asserted this non-null at run time (`link-backstop.ts`); restated as a type only.
   const state = stateIn as AgentTurnState & { lastAssistantTextForIM: string };
   const { agentId, turnNumber, turnCtx, counterparty, persistRoutingMarker } = ctx;
-  const { destination, settledContextHold, routeRoot, presenceNow } = r;
+  const { destination, settledContextHold, routeRoot } = r;
   const conversationId = turnCtx.root?.conversationId ?? null;
 
   if ((settledContextHold || !!turnCtx.pushHeld) && destination !== 'dashboard') {
@@ -143,7 +115,7 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
       'v2: settled-context hold', { agentId, turnNumber });
     persistRoutingMarker(turnCtx.pushHeld ? 'held in dashboard: the proactive limit' : 'held in dashboard: no active conversation');
     logger.warn('settled-context hold: withheld auto-route channel push; reply stays visible in dashboard', {
-      agentId, turnNumber, destination, presence: presenceNow,
+      agentId, turnNumber, destination,
       outboundRoot: routeRoot.root, pushHeld: turnCtx.pushHeld,
     }, agentId);
     if (turnCtx.pushHeld) tellAgentReplyHeld(agentId, destination, 'the owner has not answered your last messages sent on your own', '');
@@ -161,7 +133,7 @@ async function sendOrHold(stateIn: AgentTurnState, ctx: FinalizeContext, r: Rout
   } else if (isTextChannel(destination) && !state.repliedToCounterpartyThisTurn[destination]) {
     const text = turnCtx.earlyAnswerRowId ? r.linksOnly : state.lastAssistantTextForIM;
     if (!text && r.files.length === 0) return;
-    // An iMessage reply goes to this turn's iMessage counterparty; with none (the away override) to the owner.
+    // An iMessage reply goes to this turn's iMessage counterparty; with none, to the owner.
     const sender = counterparty.kind === 'user' && counterparty.channel === 'imessage' ? counterparty.senderId ?? undefined : undefined;
     const address = destination === 'imessage' && !r.imessageConfigured
       ? null

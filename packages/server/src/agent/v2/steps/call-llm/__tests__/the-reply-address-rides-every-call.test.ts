@@ -15,7 +15,7 @@ const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation:
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
 
 function clock(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard'): string {
-  const address = computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+  const address = computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null });
   const entry = getMessageEntries().find((e) => e.id === 'msg.current-time')!;
   const out = (entry.render as (c: unknown) => { content: string })({ agentId: 'a', turnContext: { counterparty: cp, address } });
   return out.content;

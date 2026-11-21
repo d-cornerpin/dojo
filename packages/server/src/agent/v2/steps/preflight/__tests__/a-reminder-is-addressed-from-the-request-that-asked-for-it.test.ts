@@ -1,5 +1,5 @@
-// A reminder's run is addressed from the request that asked for its task: asked by text, the run's turn carries that
-// text's row (so its result is texted back); a run with no such request carries none.
+// A reminder's run is addressed from the request that asked for its task: asked by text, its result is texted back;
+// asked on the dashboard, it stays on the dashboard, away or not; a run no request asked for stays there too.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -17,6 +17,8 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { insertMessage, insertEngineEvent } from '../../../../../memory/message-store.js';
 import { transition } from '../../../../../work/store.js';
 import { runTurnTrigger } from '../turn-trigger.js';
+import { runInboundAndAbort } from '../inbound-and-abort.js';
+import { computeTurnAddress } from '../../../turn-address.js';
 import type { PreflightContext } from '../index.js';
 import type { TurnContext } from '../../../../turn-context.js';
 
@@ -47,6 +49,15 @@ function aReminderRunDue(sourceMessageId: string | null): void {
   insertEngineEvent({ agentId: AGENT, content: 'Time for the reminder', originIntent: 'scheduler', work: { taskId: 'task-r', runId: 'run-1', rootKind: 'occurrence', rootId: 'run-1' } });
 }
 
+/** Where the due run's turn delivers its reply, from the preflight's own trigger and inbound steps. */
+function whereTheRunReplies(): string {
+  const out = runTurnTrigger({} as unknown as TurnContext, ctx);
+  if (out.directive !== 'proceed') throw new Error('expected proceed');
+  const { inboundChannel } = runInboundAndAbort({} as unknown as TurnContext, ctx, { jobRow: out.outputs.jobRow } as never);
+  const owner = { kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false } as const;
+  return computeTurnAddress({ counterparty: owner, isEngineTurn: true, isNotificationTurn: false, inboundChannel, inboundContext: null, autoRoutes: true }).deliveryChannel;
+}
+
 describe('a reminder is addressed from the request that asked for it', () => {
   it('a reminder asked by text: the run\'s turn carries that text\'s row', () => {
     const m = insertMessage({
@@ -68,5 +79,19 @@ describe('a reminder is addressed from the request that asked for it', () => {
     if (out.directive !== 'proceed') throw new Error('expected proceed');
     expect(out.outputs.item?.kind).toBe('clock');
     expect(out.outputs.jobRow).toBeUndefined();
+  });
+
+  it('a reminder asked on the dashboard is answered on the dashboard; asked by text, by text', () => {
+    mockDb.current!.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('user_presence', 'away')").run();
+    const m = insertMessage({
+      id: 'm-dash', agentId: AGENT, role: 'user', content: 'remind me at 8 to take my vitamins', lane: 'owner', channel: 'dashboard',
+      senderId: 'owner', authorized: true, inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    } as never).id;
+    transition(`ask:${m}`, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 1, reason: 'answered' });
+    aReminderRunDue(m);
+    expect(whereTheRunReplies()).toBe('dashboard');
+    mockDb.current!.prepare("UPDATE messages SET channel = 'imessage', inbound_meta = ? WHERE id = ?")
+      .run(JSON.stringify({ channel: 'imessage', sender: '+15550100', relation: 'owner' }), m);
+    expect(whereTheRunReplies()).toBe('imessage');
   });
 });

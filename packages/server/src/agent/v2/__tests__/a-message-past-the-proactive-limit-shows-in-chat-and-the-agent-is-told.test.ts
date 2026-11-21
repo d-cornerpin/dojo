@@ -23,8 +23,7 @@ import type { TurnCounterparty } from '../counterparty.js';
 const LIMIT = "the owner has not answered the agent's last unprompted messages";
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
 const address = computeTurnAddress({
-  counterparty: owner, isEngineTurn: true, isNotificationTurn: false, inboundChannel: 'imessage', inboundContext: null,
-  presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: null, autoRoutes: true, settledContextWakeTurn: true,
+  counterparty: owner, isEngineTurn: true, isNotificationTurn: false, inboundChannel: 'imessage', inboundContext: null, autoRoutes: true, settledContextWakeTurn: true,
 });
 
 async function reply(pushHeld: string | null): Promise<void> {
@@ -34,7 +33,7 @@ async function reply(pushHeld: string | null): Promise<void> {
   } as never;
   const ctx = {
     agentId: 'primary', turnNumber: 1, counterparty: owner, chosenConvKey: 'c',
-    turnCtx: { address, ownerAffinityDestination: null, replyFiles: [], root: null, pushHeld },
+    turnCtx: { address, replyFiles: [], root: null, pushHeld },
     settledContextWakeTurn: true, isEngineTurn: true, persistRoutingMarker: () => {},
   } as never;
   await routeTerminalReply(state, ctx);

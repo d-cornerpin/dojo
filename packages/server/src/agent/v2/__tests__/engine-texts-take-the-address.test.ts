@@ -10,7 +10,7 @@ import { computeTurnAddress, deliveryLabel } from '../turn-address.js';
 
 const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
-const addrOf = (cp: TurnCounterparty, inbound: 'imessage' | 'dashboard') => computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+const addrOf = (cp: TurnCounterparty, inbound: 'imessage' | 'dashboard') => computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null });
 
 describe('the header\'s close-the-loop line says HOW to reach the owner', () => {
   it('on a contact turn the written reply goes to the contact, so the owner is reached by an explicit send that names them', () => {

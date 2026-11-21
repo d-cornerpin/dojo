@@ -91,7 +91,7 @@ export async function pmTurn(pmId: string, act: () => Promise<void>, thread: str
   if (thread) {
     ctx.address = (await import('../../../../agent/v2/turn-address.js')).computeTurnAddress({
       counterparty: await answerCounterparty(thread, from), isEngineTurn: false, isNotificationTurn: false, inboundChannel: null,
-      inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: false, ownerAffinityChannel: null, autoRoutes: false,
+      inboundContext: null, autoRoutes: false,
     });
   }
   try { await act(); } finally { endTurnContext(pmId); }

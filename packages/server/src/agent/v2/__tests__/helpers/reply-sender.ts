@@ -65,6 +65,6 @@ export function personTurn(text: string, meta: Partial<InboundMeta> & { channel:
   const address = { kind: 'person', isOwner: false, boundChannel: meta.channel, autoRoutes: true, deliveryChannel: meta.channel, routed: true, inboundChannel: meta.channel, senderId: sender };
   const root = { kind: 'ask', id: `ask-${turnNumber}`, sourceMessageId: null, conversationId: `conv-${sender}` };
   const turnState = { lastAssistantTextForIM: text, explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: meta.channel, inboundContext: inboundContext ?? { chatType: 'dm', recipientAddress: sender } };
-  const ctx = { agentId: AGENT, turnNumber, turnCtx: { address, ownerAffinityDestination: null, root, replyFiles: [] }, counterparty, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false, persistRoutingMarker: () => {} };
+  const ctx = { agentId: AGENT, turnNumber, turnCtx: { address, root, replyFiles: [] }, counterparty, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false, persistRoutingMarker: () => {} };
   return [turnState, ctx] as [never, never];
 }

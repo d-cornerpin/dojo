@@ -5,8 +5,7 @@ import type { Channel, Relation } from '@dojo/shared';
 import type { TurnCounterparty } from './counterparty.js';
 import type { InboundChannel } from './inbound-channel.js';
 import type { ChannelInboundContext } from './state.js';
-import { resolveReplyDestination, type ReplyDestination } from './reply-destination.js';
-import { affinityPromotionRefusedNoBasis } from './owner-affinity.js';
+import type { ReplyDestination } from './reply-destination.js';
 import { turnContext } from '../turn-context.js';
 
 export interface TurnAddress {
@@ -28,8 +27,6 @@ export interface TurnAddress {
   readonly routed: boolean;
   /** Only the primary agent's reply is auto-routed; a sub-agent's stays in the dashboard. */
   readonly autoRoutes: boolean;
-  /** The owner-affinity promotion resolved at preflight, kept so the live resolver re-applies it. */
-  readonly ownerAffinity: 'imessage' | null;
   /** A settled-context wake with no inbound: the text is held in the dashboard, not pushed. */
   readonly heldWake: boolean;
 }
@@ -41,40 +38,16 @@ export interface ComputeTurnAddressInput {
   /** Null on a wake with no trigger and no request row. */
   inboundChannel: InboundChannel;
   inboundContext: ChannelInboundContext | null;
-  presence: 'in_dojo' | 'away';
-  imessageBridgeConfigured: boolean;
-  ownerAffinityChannel: 'imessage' | null;
   autoRoutes: boolean;
   /** Every visible conversation was answered at turn start: such a wake is held, not pushed. */
   settledContextWakeTurn?: boolean;
 }
 
-export interface LiveDeliveryInputs {
-  presence: 'in_dojo' | 'away';
-  imessageBridgeConfigured: boolean;
-  ownerAffinityChannel: 'imessage' | null;
-}
-
-/** Where the written reply goes, from the address plus live facts that can still change. Preflight and
- * finalize read the same address, so they cannot disagree on who or which inbound the reply is bound to. */
-export function resolveDeliveryChannel(
-  addr: Pick<TurnAddress, 'kind' | 'isOwner' | 'boundChannel' | 'autoRoutes'>,
-  live: LiveDeliveryInputs,
-): ReplyDestination {
+/** Where the written reply goes: a routed inbound (voice included, which is spoken back) is answered on the
+ *  channel it arrived on, whatever presence says; everything else stays in the dashboard. */
+export function resolveDeliveryChannel(addr: Pick<TurnAddress, 'kind' | 'boundChannel' | 'autoRoutes'>): ReplyDestination {
   if (addr.kind === 'agent' || addr.kind === 'notification' || !addr.autoRoutes) return 'dashboard';
-  const affinityRefused = affinityPromotionRefusedNoBasis({
-    ownerAffinityChannel: live.ownerAffinityChannel,
-    inboundChannel: addr.boundChannel,
-    presence: live.presence,
-    personAskedHere: addr.kind === 'person',
-  });
-  return resolveReplyDestination({
-    state: { inboundChannel: addr.boundChannel },
-    imessageBridgeConfigured: live.imessageBridgeConfigured,
-    counterpartyIsOwner: addr.isOwner,
-    ownerAffinityChannel: affinityRefused ? null : live.ownerAffinityChannel,
-    personAskedHere: addr.kind === 'person',
-  });
+  return addr.boundChannel ?? 'dashboard';
 }
 
 const ROUTED: ReadonlySet<ReplyDestination> = new Set(['imessage', 'sms', 'email', 'teams', 'phone']);
@@ -90,16 +63,8 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
   const boundChannel: InboundChannel = input.inboundChannel ?? null;
   const inboundContext = input.inboundContext ?? null;
 
-  let deliveryChannel: ReplyDestination = 'dashboard';
   // An engine turn's text is delivered like the owner's, so it gets the real channel.
-  if (kind === 'person' || kind === 'engine') {
-    deliveryChannel = resolveDeliveryChannel(
-      { kind, isOwner, boundChannel, autoRoutes: input.autoRoutes },
-      { presence: input.presence, imessageBridgeConfigured: input.imessageBridgeConfigured, ownerAffinityChannel: input.ownerAffinityChannel },
-    );
-    // A held wake keeps its text in the dashboard; engine turns are never held (outbound-root.ts).
-    if (kind === 'person' && input.settledContextWakeTurn && boundChannel === null) deliveryChannel = 'dashboard';
-  }
+  const deliveryChannel = resolveDeliveryChannel({ kind, boundChannel, autoRoutes: input.autoRoutes });
 
   return {
     kind,
@@ -114,30 +79,9 @@ export function computeTurnAddress(input: ComputeTurnAddressInput): TurnAddress 
     deliveryChannel,
     routed: kind === 'person' && ROUTED.has(deliveryChannel),
     autoRoutes: input.autoRoutes,
-    ownerAffinity: input.ownerAffinityChannel,
     heldWake: kind === 'person' && !!input.settledContextWakeTurn && boundChannel === null,
   };
 }
-
-/** Preflight's entry: reads presence and bridge state; a failed read keeps the dashboard default. */
-export async function computeTurnAddressLive(
-  input: Omit<ComputeTurnAddressInput, 'presence' | 'imessageBridgeConfigured'>,
-): Promise<TurnAddress> {
-  let presence: 'in_dojo' | 'away' = 'in_dojo';
-  let imessageBridgeConfigured = false;
-  try {
-    const pres = await import('../../services/presence.js');
-    presence = pres.getPresence();
-    imessageBridgeConfigured = pres.isImessageConfigured();
-  } catch { /* best effort */ }
-  return computeTurnAddress({ ...input, presence, imessageBridgeConfigured });
-}
-
-/** The same address with its delivery channel replaced (and `routed` re-derived from it). */
-export function withDelivery(addr: TurnAddress, deliveryChannel: ReplyDestination): TurnAddress {
-  return { ...addr, deliveryChannel, routed: addr.kind === 'person' && ROUTED.has(deliveryChannel) };
-}
-
 
 const DELIVERY_LABEL: Record<ReplyDestination, string> = {
   dashboard: 'the dashboard chat',

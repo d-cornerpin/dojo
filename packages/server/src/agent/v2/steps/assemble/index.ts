@@ -2,7 +2,6 @@
 // shared turn context, picks the model before the build, records the volatile boundary, appends the
 // loop's tail entries, and drains one steer onto the tail. The driver owns the advance into this phase.
 
-import { liveAddress } from '../../turn-address-live.js';
 import { assembleContext, type AssembledContext } from '../../../../memory/assembler.js';
 import { assembleWithNothingOutOfViewUnsummarised } from '../../../../memory/out-of-view.js';
 import { buildAssemblyContext } from '../../../../prompt/registry/assembler.js';
@@ -111,7 +110,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
     } catch { /* best effort, fall back to the truncated awareness gist */ }
   }
   // ONE shared turn context, threaded into BOTH `assembleContext` (system) AND the injection mctx.
-  const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, isNotificationTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId, address: liveAddress(turnCtx.address) };
+  const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, isNotificationTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId, address: turnCtx.address };
   // Pre-model terms only, stamped now because suppression needs the kind early; the post-call re-stamp adds
   // the rest. In both places a human-counterparty turn stays 'user' its whole life, never flipped to 'a2a'.
   const preModelInterAgent = counterparty.kind !== 'user' && (isA2ATurn || counterparty.kind === 'agent' || (mostRecentIsA2A && !hasUnansweredUser));

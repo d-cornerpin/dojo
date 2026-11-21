@@ -12,7 +12,6 @@ import { persistEngineSteer } from '../../engine-steer.js';
 import type { AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
 import { replyChannelWords } from '../../turn-address.js';
-import { liveAddress } from '../../turn-address-live.js';
 import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { SENT_TEXT_MAX_CHARS } from '../../../../receipts/store.js';
@@ -84,7 +83,7 @@ export function runRefusalGates(
     const served = turnCtx.servedWork;
     const a = (tc.arguments ?? {}) as Record<string, unknown>;
     const recip = String(a.recipient ?? a.to ?? '').trim();
-    const addr = liveAddress(turnCtx.address);
+    const addr = turnCtx.address;
     const asker = addr && !addr.isOwner && addr.senderId ? addr : null;
     const who = asker?.name ?? 'the owner';
     const recipIsAsked = recip ? isOwnerIMessageRecipient(recip) || (asker !== null && recipientIdsMatch(recip, asker.senderId)) : false;
