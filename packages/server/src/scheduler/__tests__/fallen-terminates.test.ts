@@ -45,83 +45,9 @@ vi.mock('../../config/platform.js', () => ({
 }));
 
 import { terminateLiveScheduleOnFallen, onTaskRunComplete } from '../runner.js';
-import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
+import { runMigrations } from '../../db/migrations.js';
+import { seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
 import { occurrenceRunStatus } from '../../work/occurrence-runs.js';
-
-function applySchema(db: Database.Database): void {
-  createWorkTable(db);
-  db.exec(`
-    -- PHASE-2 T10F: the close-out resolves the run's delivery (G7 -- a run that reached
-    -- nobody cannot be 'done'), so this suite now reaches deliveryForAgentSince. It could
-    -- not before: inFlightOccurrence found nothing in a task_runs-only fixture, so the whole
-    -- settle branch was dark here. More of the real path runs now, which is the point.
-    -- UX-REPAIR round 2 T11: turn_number joins the fixture because the close-receipt
-    -- resolver reads it now (a delivery from an EARLIER turn is not what this close is
-    -- reporting). Widening the fixture is the honest fix, exactly as the note above records
-    -- for the same class — a narrow twin that drifts from the real schema is worse than none.
-    CREATE TABLE IF NOT EXISTS deliveries (
-      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, channel TEXT,
-      created_at INTEGER, turn_number INTEGER, message_id TEXT, receipt_id TEXT,
-      recipient_id TEXT, recipient_display TEXT, conversation_id TEXT, detail TEXT
-    );
-    CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT);
-    -- PHASE-2 T10F: the task_runs fixture DDL is GONE with the table. A run is an
-    -- occurrence work row now, and createWorkTable above already declares it, including
-    -- ux_work_occurrence, so this suite's runs are subject to the same exactly-once
-    -- constraint production is.
-    -- PHASE-2 T10G: the task_log fixture DDL is GONE with the table, exactly as T10F's
-    -- task_runs DDL went. The audit trail is a work_events row of kind 'audit' now, and
-    -- createWorkTable above already declares work_events, so this suite asserts against the
-    -- real spine table rather than a hand-rolled twin that could drift from it.
-    -- (No backticks in here: this comment lives inside a JS template literal.)
-    -- PHASE-1 T4 (2026-07-27): widened to the migration-127 spine.
-    --
-    -- This fixture hand-rolled a 5-column messages table and never wrote to it, which is
-    -- exactly why a write-only grep missed it and T0 flagged it in advance ("T3/T4 must
-    -- use the CREATE-or-WRITE union, not the write list, or two suites break"). The
-    -- scheduler's owner heads-up now goes through the single writer, whose INSERT names
-    -- the whole spine, so a narrow fixture throws "no column named conversation_id"
-    -- inside the writer's own non-fatal try/catch -- the row silently never lands and the
-    -- test reads undefined. Widening the fixture is the honest fix: the alternative was
-    -- to leave one production site unconverted so a test fixture could stay small.
-    CREATE TABLE messages (
-      -- PHASE-2 T3: this fixture declared seq as a plain INTEGER with id as the primary
-      -- key, which has not matched the real table since migration 133 promoted seq to the
-      -- INTEGER PRIMARY KEY. seq was therefore NULL on every inserted row here, so the
-      -- writer's own read-back by seq found nothing and threw AFTER the row was already
-      -- committed - invisible, because the caller's try/catch swallowed it. Making the
-      -- insert atomic turned that swallowed throw into a rolled-back row, which surfaced it.
-      seq INTEGER PRIMARY KEY,
-      id TEXT NOT NULL UNIQUE,
-      agent_id TEXT NOT NULL,
-      conversation_id TEXT,
-      lane TEXT NOT NULL DEFAULT 'owner' CHECK (lane IN ('owner','a2a','events')),
-      origin_intent TEXT,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      mood TEXT,
-      display_kind TEXT NOT NULL DEFAULT 'unclassified',
-      display_tier TEXT NOT NULL DEFAULT 'agent-only',
-      turn_number INTEGER, group_id TEXT,
-      channel TEXT, sender_id TEXT,
-      authorized INTEGER NOT NULL DEFAULT 0,
-      source_agent_id TEXT, a2a_thread_id TEXT, a2a_intent TEXT,
-      a2a_requires_response INTEGER,
-      token_count INTEGER NOT NULL DEFAULT 0,
-      model_id TEXT, cost REAL, latency_ms INTEGER, reasoning_content TEXT,
-      inbound_meta TEXT, attachments TEXT,
-      external_message_id TEXT, speaker TEXT, voice_session_id TEXT,
-      task_id TEXT, run_id TEXT, root_kind TEXT, root_id TEXT,
-      served_by_turn INTEGER, answer_message_id TEXT,
-      swept_at TEXT, delivery_attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT,
-      retired_at TEXT,
-      origin_kind TEXT DEFAULT NULL, source TEXT DEFAULT NULL, conv_key TEXT DEFAULT NULL,
-      provenance TEXT NOT NULL DEFAULT 'live',
-      sent_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-}
 
 function seedLiveRecurring(db: Database.Database, overrides: Record<string, unknown> = {}): string {
   const id = `task-${Math.random().toString(36).slice(2, 10)}`;
@@ -171,7 +97,7 @@ function seedRun(db: Database.Database, taskId: string, _status: string, runNumb
 beforeEach(() => {
   notices.length = 0;
   mockDb.current = new Database(':memory:');
-  applySchema(mockDb.current);
+  runMigrations();
 });
 
 describe('terminateLiveScheduleOnFallen (RC-17.5)', () => {

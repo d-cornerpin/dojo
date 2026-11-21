@@ -33,7 +33,7 @@ export function onHandedIn(workId: string, handInEventId: number, wordsFollow?: 
   const advanced = h.scope !== 'run' ? Promise.resolve() : import('../../scheduler/runner.js')
     .then(({ onTaskRunComplete }) => onTaskRunComplete(workId, h.outcome === 'finished' ? 'complete' : 'failed', h.note))
     .catch((err: unknown) => logger.warn('run hand-in: the schedule did not advance', { workId, error: String(err) }));
-  if (!wordsFollow) void handInHeard(workId, h);
+  if (!wordsFollow) void handInHeard(workId, h).catch((err: unknown) => logger.warn('hand-in: last words failed', { workId, error: String(err) }));
   retireQueuedPrompts(workerOf(workId), workId);
   void advanced.then(() => decideOrReview(workId, h));
 }
