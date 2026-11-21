@@ -18,8 +18,8 @@ export const ASK = 'ask:m-ask';
 export const CONV = 'conv-text';
 export const THREAD = 'thread-relay-0001';
 
-/** A person asked by iMessage (`meta` adds to the request's inbound record); the agent delegated it on `threads`
- *  and its turn ended, holding the request on the delegation. */
+/** A person asked by iMessage (`meta` adds to the request's inbound record); the agent asked the helper on `threads`,
+ *  delegated it there and its turn ended, holding the request on the delegation. */
 export function delegatedTextRequest(meta: Record<string, unknown> = {}, threads: string[] = [THREAD]): void {
   // The sender's own timer never fires and the clock stands still: each test drives the sender itself.
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
@@ -33,6 +33,11 @@ export function delegatedTextRequest(meta: Record<string, unknown> = {}, threads
   });
   claimAsk(ASK, AGENT);
   stampClaimingTurn(ASK, 1);
+  // The agent's request on each thread reaches the helper first, as the transport writes it; the join is opened from it.
+  for (const t of threads) {
+    insertMessage({ id: `req-${t}`, agentId: HELPER, role: 'user', lane: 'a2a', sourceAgentId: AGENT, a2aThreadId: t, a2aIntent: 'QUESTION',
+      a2aRequiresResponse: true, content: `[A2A:QUESTION thread:${t.slice(0, 8)} from:Agent] When is the venue free?` } as never);
+  }
   openDelegationJoin({
     parentWorkId: ASK, agentId: AGENT, replyConversationId: CONV, ttlAt: Date.now() + 3_600_000,
     threads: threads.map((threadId) => ({ threadId, assigneeAgent: HELPER, intent: 'QUESTION', hopCount: 0 })),
@@ -90,4 +95,11 @@ export const agentLines = (): number => (testDb().prepare("SELECT COUNT(*) AS n 
 export async function passesRun(): Promise<void> {
   await vi.dynamicImportSettled();
   for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+}
+
+/** The helper's turn `n` took its request on `thread` (every thread when none) and ended as `exit` (null: still running). */
+export function served(exit: string | null = 'answered', n = 1, thread: string | null = null): void {
+  testDb().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason)
+    VALUES (?, ?, datetime('now', '-60 seconds'), CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, 0, ?)`).run(HELPER, n, exit, exit);
+  testDb().prepare("UPDATE messages SET served_by_turn = ? WHERE agent_id = ? AND a2a_intent = 'QUESTION' AND (? IS NULL OR a2a_thread_id = ?)").run(n, HELPER, thread, thread);
 }

@@ -15,11 +15,13 @@ import { findJoinChildByThread, settlePieceWithoutResult } from '../../work/stor
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import { clearPlatformConfigCache } from '../../config/platform.js';
-import { agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, relayRows, requestState, textsSent, ASK, HELPER, THREAD } from './helpers/text-relay.js';
+import { agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, relayRows, requestState, served, textsSent, ASK, HELPER, THREAD } from './helpers/text-relay.js';
 
 const pieceState = (): string => (testDb().prepare('SELECT state FROM work WHERE parent_id = ?').get(ASK) as { state: string }).state;
 
-async function theRequestFailsForTime(): Promise<void> {
+/** The helper took the request and its turn ended with no answer: the next look fails it. */
+async function theRequestFailsUnanswered(): Promise<void> {
+  served();
   vi.setSystemTime(Date.now() + 3_700_000);
   await sweepExpiredJoins();
   await deliverDueReplies(Date.now());
@@ -31,7 +33,7 @@ const pieceStates = (): string[] => (testDb().prepare('SELECT state FROM work WH
 
 describe('a late answer reaches the person once with its own text', () => {
   it('a reaper pass and a restart before it is passed on send no second notice; the Dojo relays the late text once', async () => {
-    await theRequestFailsForTime();
+    await theRequestFailsUnanswered();
     await helperAnswers('Confirmed after all: the 14th, all day.');
     expect([requestState(), pieceState()]).toEqual(['open', 'done']);
     vi.setSystemTime(Date.now() + 10 * 60_000);
@@ -48,7 +50,7 @@ describe('a late answer reaches the person once with its own text', () => {
 
   it('two helpers both late: the second late answer lands too, and the relay carries both texts', async () => {
     delegatedTextRequest({}, [THREAD, 'thread-relay-0002']);
-    await theRequestFailsForTime();
+    await theRequestFailsUnanswered();
     await helperAnswers('First: the 14th.');
     await helperAnswers('Second: parking is free.', 'thread-relay-0002');
     expect([requestState(), pieceStates()]).toEqual(['open', ['done', 'done']]);
@@ -64,7 +66,7 @@ describe('a late answer reaches the person once with its own text', () => {
     delegatedTextRequest({}, [THREAD, 'thread-relay-0002']);
     testDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?)").run(AGENT);
     clearPlatformConfigCache();
-    await theRequestFailsForTime();
+    await theRequestFailsUnanswered();
     await helperAnswers('First: the 14th.');
     expect(testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE content LIKE '%returned a deliverable%'").get()).toEqual({ n: 0 });
     await agentStaysSilent();
@@ -73,7 +75,7 @@ describe('a late answer reaches the person once with its own text', () => {
   });
 
   it('an empty late reply changes nothing and goes nowhere', async () => {
-    await theRequestFailsForTime();
+    await theRequestFailsUnanswered();
     await helperAnswers('   ');
     expect([requestState(), pieceState()]).toEqual(['failed', 'abandoned']);
     expect(relayRows()).toHaveLength(1);

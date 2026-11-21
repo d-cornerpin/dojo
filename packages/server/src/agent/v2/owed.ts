@@ -59,7 +59,7 @@ export interface AgentRequest {
 }
 
 /** Requests from other agents with no final reply (on `thread` when given), oldest first, with when each may be served. One its
- *  asker waits on is owed until served, and again once that turn was cut or something new reached its thread; any other, for a day,
+ *  asker waits on is owed until served, and again once that turn was cut or anything new was said on its thread; any other, for a day,
  *  and for its serving window. Once served, an open task on its thread owns it (parked: its job; owner-held: nobody; else the ladder). */
 export function agentRequests(agentId: string, now = Date.now(), thread: string | null = null): AgentRequest[] {
   const rows = getDb().prepare(`
@@ -73,7 +73,8 @@ export function agentRequests(agentId: string, now = Date.now(), thread: string 
        AND m.created_at >= (unixepoch(COALESCE(a.session_started_at, '1970-01-01')) * 1000) AND (@thread IS NULL OR m.a2a_thread_id = @thread)
        AND (CASE WHEN m.served_by_turn IS NULL THEN ${openPieceOnSql('m.a2a_thread_id')} OR m.created_at >= @now - 86400000
                  WHEN ${openPieceOnSql('m.a2a_thread_id')} THEN EXISTS (SELECT 1 FROM turns t WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn AND (t.exit_reason IS NULL
-                   OR t.exit_reason IN ('preempt', 'abort', 'terminated', 'provider_error', 'stream_idle') OR EXISTS (SELECT 1 FROM messages n WHERE n.agent_id = m.agent_id AND n.a2a_thread_id = m.a2a_thread_id AND n.role = 'user' AND n.id <> m.id AND n.created_at >= unixepoch(t.started_at) * 1000)))
+                   OR t.exit_reason IN ('preempt', 'abort', 'terminated', 'provider_error', 'stream_idle', 'unknown') OR EXISTS (SELECT 1 FROM messages n WHERE n.a2a_thread_id = m.a2a_thread_id
+                     AND n.agent_id IN (m.agent_id, m.source_agent_id) AND n.role = 'user' AND n.id <> m.id AND n.created_at >= unixepoch(t.started_at) * 1000)))
                  ELSE MAX(COALESCE((SELECT unixepoch(t.started_at) * 1000 FROM turns t
                                      WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn), m.created_at),
                           COALESCE(m.next_attempt_at, 0)) >= @now - @servedWindow END)

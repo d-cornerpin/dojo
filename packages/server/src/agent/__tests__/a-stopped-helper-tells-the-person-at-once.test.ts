@@ -23,7 +23,7 @@ import { decide } from '../../work/done/decide.js';
 import { deleteTrackerRow } from '../../work/tracker-store.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import {
-  agentLines, agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, helperTask, passesRun, requestState, relayRows, textsSent, ASK, HELPER, THREAD,
+  agentLines, agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, helperTask, passesRun, requestState, relayRows, served, textsSent, ASK, HELPER, THREAD,
 } from './helpers/text-relay.js';
 
 /** The request, the person's notices and the agent's lines, once the passes an event started and the sends ran. */
@@ -53,6 +53,7 @@ describe('a stopped helper tells the person at once', () => {
   });
 
   it('its task deleted', async () => {
+    served();
     deleteTrackerRow(helperTask());
     expect(await told()).toEqual(['failed', 1, 1]);
   });
@@ -61,6 +62,7 @@ describe('a stopped helper tells the person at once', () => {
     testDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
       VALUES ('proj-1', 'project', ?, 'agent', 'tracker', 'proj-1', 'open', 'project', 0, 0, 'Venue', ?, ?)`).run(HELPER, Date.now(), Date.now());
     helperTask('proj-1');
+    served();
     deleteTrackerRow('proj-1');
     expect(await told()).toEqual(['failed', 1, 1]);
   });
@@ -85,10 +87,10 @@ describe('a stopped helper tells the person at once', () => {
 });
 
 const HOUR = 3_600_000;
-/** The main agent's question reaches the helper on `thread`; returns its message id. */
-async function asked(thread = THREAD): Promise<string> {
-  const r = await deliverA2AMessage({ intent: 'QUESTION', threadId: thread, requiresResponse: true, payload: 'When is the venue free?', toAgent: HELPER, fromAgent: AGENT } as never);
-  return (testDb().prepare('SELECT id FROM messages WHERE agent_id = ? AND a2a_thread_id = ? ORDER BY seq DESC').get(HELPER, r.threadId ?? thread) as { id: string }).id;
+/** The main agent's question reaches the helper on `thread` (the seed already sent it on its own threads). */
+async function asked(thread = THREAD): Promise<void> {
+  const sent = testDb().prepare('SELECT 1 FROM messages WHERE agent_id = ? AND a2a_thread_id = ?').get(HELPER, thread);
+  if (!sent) await deliverA2AMessage({ intent: 'QUESTION', threadId: thread, requiresResponse: true, payload: 'When is the venue free?', toAgent: HELPER, fromAgent: AGENT } as never);
 }
 /** A sweep `hours` later. */
 async function looked(hours: number): Promise<[string, number, number]> {
@@ -97,12 +99,6 @@ async function looked(hours: number): Promise<[string, number, number]> {
   return told();
 }
 const owes = (): boolean => agentRequests(HELPER).some((r) => r.threadId === THREAD);
-/** The helper's turn `n` took the question and ended as `exit` (null: still running) with no final reply. */
-const served = (exit: string | null = 'answered', n = 1): void => {
-  testDb().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason)
-    VALUES (?, ?, datetime('now', '-60 seconds'), CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, 0, ?)`).run(HELPER, n, exit, exit);
-  testDb().prepare("UPDATE messages SET served_by_turn = ? WHERE agent_id = ? AND a2a_thread_id = ? AND a2a_intent = 'QUESTION'").run(n, HELPER, THREAD);
-};
 const says = (intent: string): Promise<unknown> => deliverA2AMessage({ intent, threadId: THREAD, requiresResponse: intent === 'QUESTION', payload: 'Still on it: the hall or the garden?', toAgent: AGENT, fromAgent: HELPER } as never);
 
 describe('a plain question waits for its helper', () => {
@@ -146,6 +142,11 @@ describe('a plain question waits for its helper', () => {
     expect(await told()).toEqual(['blocked', 0, 0]);
   });
 
+  it('a serving turn that crashed unclassified is served again, not settled', async () => {
+    served('unknown');
+    expect([await looked(1), owes()]).toEqual([['blocked', 0, 0], true]);
+  });
+
   it('twenty earlier requests to the helper do not push this one out', async () => {
     for (let i = 0; i < 20; i++) await asked(`thread-other-${i}`);
     await asked();
@@ -154,7 +155,7 @@ describe('a plain question waits for its helper', () => {
 
   it('two pieces to the same helper: the one it owes is kept when the other ends', async () => {
     delegatedTextRequest({}, [THREAD, 'thread-relay-0002']);
-    await asked('thread-relay-0002');
+    served('answered', 1, THREAD);
     await resolveJoinsAtBoot();
     expect((testDb().prepare('SELECT state FROM work WHERE parent_id = ? ORDER BY root_id').all(ASK) as Array<{ state: string }>).map((r) => r.state)).toEqual(['abandoned', 'open']);
   });
