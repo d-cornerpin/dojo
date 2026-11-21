@@ -82,6 +82,7 @@ export async function writeWhole(a: WholeArgs): Promise<SummaryResult> {
     a.warn('SUMMARY_REFUSED the summary came out longer than it may be kept, and no rewrite could be had; the span is left whole', { depth: a.depth, inputTokens, firstTokens, why });
     return tooLong();
   };
+  if (merge && firstDropped.length === 0) return keepFirst('a merge that is only too long is not rewritten');
 
   const note = rewriteNote(firstTokens, allowed, inputTokens, a.targetTokens, firstDropped);
   if (!a.fits(note)) return keepFirst('the rewrite note does not fit the writer\'s window');

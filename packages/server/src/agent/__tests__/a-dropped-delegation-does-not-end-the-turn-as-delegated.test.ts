@@ -1,6 +1,6 @@
 // A turn ends as delegated only when a delegating send went out this turn, whichever tool made it, and a
 // follow-up on a thread whose piece belongs to an earlier request opens no second piece. After the one status-line
-// steer, the turn's next tool step ends it.
+// steer, a lookup tool step does not end the turn: the model sees its result and writes its line.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
@@ -65,17 +65,18 @@ describe('a turn ends as delegated only on a delegating send that went out', () 
     expect(step(second, 'send_to_agent', TURN + 1).directive).toBe('proceed');   // nothing of the second request is out
     expect(pieces(second)).toEqual([]);
   });
-  it('a delegating turn with no text is steered once for a status line, and its next tool step ends it', async () => {
+  it('a delegating turn with no text is steered once for a status line, and a lookup after it does not end the turn', async () => {
     const ask = ownerAsk();
     await assignSent('thread-job');
-    const ctx = {
+    const ctx = (tool: string) => ({
       agentId: ASKER, turnNumber: TURN, db: testDb(), counterparty: { kind: 'user' }, turnCtx: { address: null },
-      result: { toolCalls: [{ id: randomUUID(), name: 'file_read', arguments: {} }] },
+      result: { toolCalls: [{ id: randomUUID(), name: tool, arguments: {} }] },
       triggerRow: { rowid: 1 }, triggerWorkId: ask, triggerConversationId: null, persistedContent: '', deferredDeliveredByAck: false,
-    } as never;
-    const first = runDelegationTurnEnd(initState({ agentId: ASKER, turnNumber: TURN } as never), ctx);
+    } as never);
+    const first = runDelegationTurnEnd(initState({ agentId: ASKER, turnNumber: TURN } as never), ctx('send_to_agent'));
     expect(first.directive).toBe('continue');
-    expect(runDelegationTurnEnd(first.state, ctx).directive).toBe('exit');
+    expect(runDelegationTurnEnd(first.state, ctx('list_techniques')).directive).toBe('proceed');
+    expect(pieces(ask)).toEqual([`piece:${ask}:thread-job`]);
   });
   it('a second send in the same turn keeps the first piece in the countdown', async () => {
     const ask = ownerAsk();

@@ -217,7 +217,7 @@ describe('t144 — a condensed note never crosses conversations', () => {
     for (const conv of [DASH, MAIL]) {
       const mine = rows.filter((r) => r.c === conv);
       for (const half of [mine.slice(0, mine.length / 2), mine.slice(mine.length / 2)]) {
-        createLeafSummary(AGENT, `Leaf of ${conv}: seals logged.`, 600, half.map((r) => r.id), new Date(half[0].at).toISOString(), new Date(half[half.length - 1].at).toISOString());
+        createLeafSummary(AGENT, `Leaf of ${conv}: seals logged, manifests filed. `.repeat(8), 600, half.map((r) => r.id), new Date(half[0].at).toISOString(), new Date(half[half.length - 1].at).toISOString());
       }
     }
     await mergeUntriedNotes(AGENT, WRITER);

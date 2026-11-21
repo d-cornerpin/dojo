@@ -216,10 +216,12 @@ export const ENGINE_EVENT_EXPIRY_HOURS = 6;
 export const ENGINE_EVENT_BACKOFF_MINUTES = [1, 5, 15, 30, 60];
 
 // Deliverable engine events only: a RIDER never delivers, so it never expires loudly
-// (see `engine-riders.ts`); `served_by_turn IS NULL` is the real serve edge.
+// (see `engine-riders.ts`); `served_by_turn IS NULL` is the real serve edge. A Stop ends every queued
+// self-wake made before it; one rooted in a person's request or a run they scheduled still stands.
 const DELIVERABLE_ENGINE_EVENT_WHERE =
   `role = 'user' AND lane = 'events' AND served_by_turn IS NULL
    AND swept_at IS NULL
+   AND (root_kind IN ('ask', 'occurrence') OR created_at >= COALESCE((SELECT (MAX(unixepoch(t.ended_at)) + 1) * 1000 FROM turns t WHERE t.agent_id = messages.agent_id AND t.exit_reason = 'stop'), 0))
    AND (origin_intent IS NULL OR origin_intent NOT IN ${ENGINE_RIDER_INTENTS_SQL})`;
 
 // Engine events have ONE home (`messages`, `lane='events'`): every lifecycle mutation hits it.

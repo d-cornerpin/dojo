@@ -2,7 +2,8 @@
 // question is tied to the hand-in when it is sent; while one is open the hand-in is in no review and no review
 // counts against it; the turn an answer starts shows the hand-in's file with the question, and once every question
 // is answered the review shows the whole exchange and the PM decides it. A question no one answers releases it 30
-// minutes after it was asked, and then the ordinary rule applies.
+// minutes after it was asked, and then the ordinary rule applies. A card opened for a request its requester still
+// owes waits, for the review and the ladder alike, until that answer is delivered or the request is stood down.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -13,11 +14,15 @@ vi.mock('../../../tracker/pm-agent.js', async (orig) => ({ ...(await orig<object
 vi.setConfig({ testTimeout: 240_000, hookTimeout: 240_000 });
 
 import { whoDecides, QUEUED_TURN_BOUND_MS } from '../who-decides.js';
+import { runLadder } from '../ladder.js';
+import { recordDelivery } from '../../../agent/v2/deliveries.js';
+import { openTurnContext, endTurnContext } from '../../../agent/turn-context.js';
+import { askIdForMessage, claimAsk, stampClaimingTurn } from '../../store.js';
 import { assembleContext } from '../../../memory/assembler.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { freshBoard, handedIn, call, deliveredToOwner, stateOf, PM, MAIN, WORKER, OTHER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
-import { pmCanRun, turn, entries, resetLadderWorld, pmTurn, answerCounterparty, review as reviewBy } from './helpers/ladder-world.js';
+import { pmCanRun, turn, entries, resetLadderWorld, pmTurn, answerCounterparty, review as reviewBy, MIN } from './helpers/ladder-world.js';
 
 const review = (act?: () => Promise<void>): Promise<string> => reviewBy(PM, act);
 
@@ -36,6 +41,22 @@ async function unrelatedHandIn(i: number): Promise<string> {
   const r = await call(OTHER, 'work_update', { action: 'hand_in', task_id: id, outcome: 'finished', proof: [{ kind: 'delivery', ref: deliveredToOwner(OTHER) }], note: 'Sent' });
   if (r.isError) throw new Error(r.content);
   return id;
+}
+
+const ASK = askIdForMessage('m-ask');
+const askIs = (state: string, compilePending = 0): void => { doneDb().prepare('UPDATE work SET state = ?, compile_pending = ? WHERE id = ?').run(state, compilePending, ASK); };
+
+/** The owner's request to the main agent, claimed, and the hand-in of the card it opened for it. */
+async function cardForOwedRequest(): Promise<void> {
+  doneDb().prepare("INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-dash', ?, 'dashboard', 'owner')").run(MAIN);
+  insertMessage({
+    id: 'm-ask', agentId: MAIN, role: 'user', content: 'Make me a beach packing list', lane: 'owner', channel: 'dashboard',
+    senderId: 'owner', authorized: true, conversationId: 'conv-dash', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+  } as Parameters<typeof insertMessage>[0]);
+  claimAsk(ASK, MAIN);
+  stampClaimingTurn(ASK, 7);
+  await handedIn();
+  doneDb().prepare("UPDATE work SET requester = 'agent', requester_id = ?, source_message_id = 'm-ask' WHERE id = ?").run(MAIN, TASK);
 }
 
 beforeEach(() => { resetLadderWorld(); freshBoard(); pmCanRun(PM); });
@@ -88,6 +109,7 @@ describe('a hand-in waits while the PM asks', () => {
       expect(r.isError, r.content).toBe(false);
     });
     expect(report, 'every answer is in: the hand-in is the PM\'s again').toContain(TASK);
+    expect(report, 'a card with no request of its requester behind it').not.toContain('The request this was opened for');
     for (const words of ['were the March rows included?', 'the export failed', 'Did the March export finish', 'I stopped it', 'Did the owner ask for March', 'The owner wants March included.']) {
       expect(report, 'the review shows the whole exchange').toContain(words);
     }
@@ -136,5 +158,27 @@ describe('a hand-in waits while the PM asks', () => {
     await review(askAgain);
     expect(whoDecides(TASK), 'two reviews that only asked again: the main agent decides').toEqual({ kind: 'agent', agentId: MAIN });
   });
-});
 
+  it('a card opened for a request its requester still owes waits for the review and the ladder until the answer is delivered', async () => {
+    await cardForOwedRequest();
+    expect(await review(), 'no review while the owner has not been answered').toBe('');
+    await runLadder(Date.now() + 6 * MIN);
+    expect(entries(TASK, 'ladder_pm'), 'the ladder waits on the same hold').toBe(0);
+    askIs('blocked', 1);
+    expect(await review(), 'held on its helper\'s compile, the answer is still coming').toBe('');
+    askIs('claimed');
+    Object.assign(openTurnContext(MAIN), { turnNumber: 7, root: { kind: 'ask', id: ASK, sourceMessageId: 'm-ask', conversationId: 'conv-dash' } });
+    const sent = recordDelivery({ agentId: MAIN, tool: 'dashboard', channel: 'dashboard', outcome: 'delivered', conversationId: 'conv-dash', messageId: 'm-reply', recipientDisplay: 'the owner' });
+    endTurnContext(MAIN);
+    expect(sent.kind).toBe('applied');
+    expect(await review()).toMatch(/The request this was opened for: answered to the owner at .+ UTC \(delivery .+\)/);
+  });
+
+  it('a request stood down unanswered releases its card to the PM', async () => {
+    await cardForOwedRequest();
+    askIs('blocked');
+    const report = await review();
+    expect(report).toContain(`[${TASK}]`);
+    expect(report).toContain('The request this was opened for: not answered');
+  });
+});

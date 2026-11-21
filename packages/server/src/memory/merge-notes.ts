@@ -1,7 +1,7 @@
 // Merges an agent's top-level notes, each note once at its depth: notes of one depth (a conversation's own first,
 // `subjectBatches`) become one parent at depth + 1, until no depth holds two notes the writer has not refused. A
-// pair refused for its own sake (too long for the keep rule, or failed its check) rests its OLDER note for that writer
-// (`writer.ts`), so a note is offered at most twice at a depth. A note left alone stays whole, shown or named.
+// pair refused for its own sake (too long for the keep rule, or failed its check) rests BOTH its notes for that writer
+// (`writer.ts`), so a note is offered once at a depth. A note left alone stays whole, shown or named.
 // Merges go to the pass's own writer only.
 
 import { createLogger } from '../logger.js';
@@ -42,7 +42,7 @@ function nextBatch(agentId: string, writer: string, tried: ReadonlySet<string>):
   return null;
 }
 
-/** Merge until no depth holds two untried notes. A verdict on a pair rests its older note and the run goes on; a
+/** Merge until no depth holds two untried notes. A verdict on a pair rests both its notes and the run goes on; a
  *  refusal about the writer ends the run with no note marked, as do the owner's Stop and an abort. */
 export async function mergeUntriedNotes(agentId: string, writer: string, abortSignal?: AbortSignal): Promise<MergeOutcome> {
   const out: MergeOutcome = { created: 0, tokensReclaimed: 0, stage: null, detail: null, rested: 0 };
@@ -57,7 +57,7 @@ export async function mergeUntriedNotes(agentId: string, writer: string, abortSi
     try {
       summary = await generateSummary({
         content, depth, agentId, modelId: writer, abortSignal, spanIds: batch.map((s) => `summary:${s.id}`),
-        targetTokens: mergeTargetTokens(content, batch.length, modelCharsPerToken(writer)),
+        targetTokens: mergeTargetTokens(batch.map((s) => s.content).join('\n\n'), batch.length, modelCharsPerToken(writer)),
       });
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
@@ -73,9 +73,8 @@ export async function mergeUntriedNotes(agentId: string, writer: string, abortSi
     } else if (summary.stopped) {
       return out;
     } else if ((summary.tooBig && !summary.noRoom && !summary.forNow) || summary.checkFailed) {
-      tried.add(batch[0].id);   // a verdict on the pair: its older note rests; the newer gets one more partner
-      markWaiting(agentId, writer, spanKeyOf([batch[0]]), 'cannot-hold');
-      out.rested += 1;
+      for (const s of batch) { tried.add(s.id); markWaiting(agentId, writer, spanKeyOf([s]), 'cannot-hold'); }   // a verdict on the pair
+      out.rested += batch.length;
     } else {   // about the writer and the moment (no memory free, not answering, an empty answer): no note is marked
       logger.warn('SUMMARY_REFUSED a merge was left unmerged', { depth, parentCount: batch.length, reason: summary.reason }, agentId);
       refusal = summary.reason;

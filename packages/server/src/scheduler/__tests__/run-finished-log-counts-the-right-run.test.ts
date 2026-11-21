@@ -46,53 +46,8 @@ vi.mock('../../tracker/task-log.js', async (importOriginal) => ({
 }));
 
 import { onTaskRunComplete } from '../runner.js';
-import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
-
-function applySchema(db: Database.Database): void {
-  createWorkTable(db);
-  db.exec(`
-    -- Copied from fallen-terminates.test.ts: the close-out resolves the run's
-    -- delivery, so this suite reaches deliveryForAgentSince, and the owner
-    -- heads-up path runs through the single writer whose INSERT names the whole
-    -- messages spine. A narrow fixture makes those paths silently skip.
-    CREATE TABLE IF NOT EXISTS deliveries (
-      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, channel TEXT,
-      created_at INTEGER, turn_number INTEGER, message_id TEXT, receipt_id TEXT,
-      recipient_id TEXT, recipient_display TEXT, conversation_id TEXT, detail TEXT
-    );
-    CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT);
-    CREATE TABLE messages (
-      seq INTEGER PRIMARY KEY,
-      id TEXT NOT NULL UNIQUE,
-      agent_id TEXT NOT NULL,
-      conversation_id TEXT,
-      lane TEXT NOT NULL DEFAULT 'owner' CHECK (lane IN ('owner','a2a','events')),
-      origin_intent TEXT,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      mood TEXT,
-      display_kind TEXT NOT NULL DEFAULT 'unclassified',
-      display_tier TEXT NOT NULL DEFAULT 'agent-only',
-      turn_number INTEGER, group_id TEXT,
-      channel TEXT, sender_id TEXT,
-      authorized INTEGER NOT NULL DEFAULT 0,
-      source_agent_id TEXT, a2a_thread_id TEXT, a2a_intent TEXT,
-      a2a_requires_response INTEGER,
-      token_count INTEGER NOT NULL DEFAULT 0,
-      model_id TEXT, cost REAL, latency_ms INTEGER, reasoning_content TEXT,
-      inbound_meta TEXT, attachments TEXT,
-      external_message_id TEXT, speaker TEXT, voice_session_id TEXT,
-      task_id TEXT, run_id TEXT, root_kind TEXT, root_id TEXT,
-      served_by_turn INTEGER, answer_message_id TEXT,
-      swept_at TEXT, delivery_attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT,
-      retired_at TEXT,
-      origin_kind TEXT DEFAULT NULL, source TEXT DEFAULT NULL, conv_key TEXT DEFAULT NULL,
-      provenance TEXT NOT NULL DEFAULT 'live',
-      sent_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-}
+import { runMigrations } from '../../db/migrations.js';
+import { seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
 
 /** A live scheduled row. Defaults to a recurring one (fires again); pass
  *  repeat_interval/repeat_unit/next_run_at nulls for a one-shot. */
@@ -143,7 +98,7 @@ function seedRun(db: Database.Database, taskId: string, runNumber: number): stri
 beforeEach(() => {
   actionsTaken.length = 0;
   mockDb.current = new Database(':memory:');
-  applySchema(mockDb.current);
+  runMigrations();
 });
 
 describe('onTaskRunComplete finished-run log line', () => {

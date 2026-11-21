@@ -2,11 +2,9 @@
 // the cross-turn near-duplicate hold, and the sub-agent exit latch.
 
 import { openBoardTitlesBefore } from '../../open-work-names.js';
-import { broadcast } from '../../../../gateway/ws.js';
 import { createLogger } from '../../../../logger.js';
 import { advance, type AgentTurnState } from '../../state.js';
 import { steerFired, steerPriority, type SteerFloorId } from '../../steer-queue.js';
-import { persistEngineSteer } from '../../engine-steer.js';
 import { channelLabel, findRecentDeliveriesKeyed, relativeTimeAgo } from '../../outbound-ledger.js';
 import { isNearDuplicateText } from '../../classifiers/loop.js';
 import { detectDeliveryDenial } from '../../classifiers/grounding.js';
@@ -16,7 +14,7 @@ import { decideUncommittedPromise, openedBoardWorkSince, uncommittedPromiseSteer
 import { askReplyClaims, replyClaim } from '../../reply-claims.js';
 import { tsToMs } from '../../../../work/tracker-view.js';
 import { isBareNoReplySentinel } from '@dojo/shared';
-import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
+import { proceed, type StepOutcome } from '../step-outcome.js';
 import { holdAndSteer } from './closeout-floors.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -197,16 +195,10 @@ export async function runReplyFloors(
       if (!guard.gate(state, ctx, reply)) continue;
       const verdict = guard.decide(state, ctx, reply);
       if (!verdict) continue;
-      // Through the steer door so the model sees it; a bare system row is stripped by the assembler.
-      state = persistEngineSteer(
-        state,
-        {
-          agentId, content: verdict.content, turnNumber,
-          floor: guard.floor, atLoop: state.loopCount, key: verdict.key,
-        },
-        { broadcast },
-      );
-      return continueLoop(state); // re-enter so the agent corrects it or does the thing
+      // Held like any reply check: its streamed bubble becomes a working note, and the agent corrects it or does the thing.
+      const held = holdAndSteer(state, { agentId, messageId: ctx.messageId, turnNumber, sc, db },
+        { floor: guard.floor, text: reply, steer: verdict.content, key: verdict.key });
+      if (held) return held;
     }
   }
 

@@ -23,6 +23,7 @@ import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
+import { workerBusy } from '../tracker/liveness.js';
 import type { PermissionManifest, Agent } from '@dojo/shared';
 
 const logger = createLogger('spawner');
@@ -404,8 +405,9 @@ export function terminateAgent(agentId: string, reason?: string): void {
 
   writeAgentStatus(agentId, 'terminated');
 
-  // Its Working tasks are held paused (never closed), then go back to the agent that made it.
+  // The steps it held go back to the agent that made it; its other Working tasks stay with it, held paused (never closed).
   try {
+    returnHeldSteps(agentId, 'helper ended (terminated)');
     const danglers = db.prepare(`
       SELECT w.id AS id FROM work w
       WHERE ${taskScope('w')} AND w.agent_id = ? AND ${workingExpr('w')} AND NOT ${heldExpr('w')}
@@ -416,7 +418,6 @@ export function terminateAgent(agentId: string, reason?: string): void {
       if (!r.ok) logger.warn('terminateAgent: auto-pause refused', { taskId: dt.id, why: r.why });
     }
     if (danglers.length > 0) logger.info('terminateAgent: auto-paused in_progress tasks', { agentId, count: danglers.length }, agentId);
-    returnHeldSteps(agentId, 'helper ended (terminated)');
   } catch (autopauseErr) {
     logger.warn('terminateAgent: task auto-pause failed (non-fatal)', {
       agentId, error: autopauseErr instanceof Error ? autopauseErr.message : String(autopauseErr),
@@ -712,7 +713,7 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
 
   const chosenPhrase = chosenMinutes ? `${chosenMinutes}-minute ` : '';
   const elapsedPhrase = elapsedMinutes ? ` after about ${elapsedMinutes} min` : '';
-  const brief = `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) reached its ${chosenPhrase}timeout${elapsedPhrase} and is still running; ${taskLine}. You created it, so the call is yours: spawn_timeout_decision(agent_id="${agentId}", action="extend", extend_minutes=<n>) to give it more time, or action="terminate" to let it stop. It keeps running until you decide.`;
+  const brief = `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) reached its ${chosenPhrase}timeout${elapsedPhrase} and ${workerBusy(agentId, {}) ? 'is still working' : 'is idle'}; ${taskLine}. You created it, so the call is yours: spawn_timeout_decision(agent_id="${agentId}", action="extend", extend_minutes=<n>) to give it more time, or action="terminate" to let it stop. It stays until you decide.`;
 
   postAgentNotice({
     toAgentId: recipientId,
@@ -758,7 +759,7 @@ export function fireSpawnTimeoutUndecided(agentId: string): void {
     fromName: 'Spawn control',
     selfIntro: false,
     intent: 'spawn_timeout_undecided',
-    brief: `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) passed its timeout about 15 minutes ago and its creator still hasn't decided whether to extend or stop it. It's still running. Resolve it with spawn_timeout_decision, or the owner can dismiss it from the dashboard.`,
+    brief: `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) passed its timeout about 15 minutes ago and its creator still hasn't decided whether to extend or stop it. It ${workerBusy(agentId, {}) ? 'is still working' : 'is idle'}. Resolve it with spawn_timeout_decision, or the owner can dismiss it from the dashboard.`,
   });
   try {
     getAgentRuntime().handleMessage(primaryId, '[spawn: timeout still undecided]').catch(() => { /* stored, read next turn */ });

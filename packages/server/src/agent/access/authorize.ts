@@ -274,7 +274,7 @@ const refusal = (excesses: string[]): string =>
 // THE SPAWN DOOR. No grants named: the most restrictive default, clamped to the
 // granter. Grants named: validated, bounded by no-escalation, merged OVER that
 // base, so an omitted field falls to the floor and never to the granter's own
-// holdings. `defaults` exists because the dashboard create route passes its own
+// holdings; an agent's named tool groups add to the floor, the owner's replace it. `defaults` exists because the dashboard create route passes its own
 // base; `granter` null is the OWNER, capped by no agent. `toolsPolicy` is
 // `spawn_agent`'s legacy tools argument, folded in verbatim and NOT judged by
 // no-escalation: it must keep working, and judging it would invent a refusal.
@@ -293,6 +293,8 @@ export function resolveSpawnGrants(
     const excesses = granter ? grantExcesses(validated.patch, granter, granterIsPrimary) : [];
     if (excesses.length > 0) return { ok: false, reason: refusal(excesses) };
     resolved = mergeGrants(base, validated.patch);
+    const [floor, named] = [base.tools.categories, resolved.tools.categories];
+    if (granter && floor !== '*' && named !== '*') resolved.tools.categories = [...new Set([...floor, ...named])];
   }
   if (toolsPolicy) {
     resolved = cloneGrants(resolved);

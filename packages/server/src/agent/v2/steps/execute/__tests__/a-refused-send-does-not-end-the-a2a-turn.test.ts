@@ -101,9 +101,20 @@ describe('fix #7: only an executed send ends the A2A turn', () => {
     expect(out.directive).not.toBe('exit');
   });
 
+  it('a send the tool itself refused is not recorded as sent and does not end the turn', async () => {
+    executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => ({
+      toolCallId: tc.id, name: tc.name, content: 'Permission denied: send_to_agent is not in your grants', isError: true,
+    }));
+    const out = await runExecute(stateWith(), ctxFor([send()]));
+    expect(sendsExecuted()).toBe(1);
+    expect(out.directive).not.toBe('exit');
+    expect(out.state.sentToAgentThisTurn).toBe(false);
+  });
+
   it('RUNAWAY GUARD KEPT: a send that executed ends the turn at once', async () => {
     const out = await runExecute(stateWith(), ctxFor([send()]));
     expect(sendsExecuted()).toBe(1);
+    expect(out.state.sentToAgentThisTurn).toBe(true);
     expect(out.directive).toBe('exit');
     if (out.directive !== 'exit') throw new Error('unreachable');
     expect(out.reason).toBe('a2a-reply-sent');

@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { insertEngineEventIfAbsent } from '../../../../memory/message-store.js';
 import { taskScope, tsToMs } from '../../../../work/tracker-view.js';
+import { peerOriginSql } from '../../../../work/peer-origin.js';
 import { handedInSinceExpr, handInNoteExpr, handInDeliveriesExpr } from '../../../../work/done/record.js';
 // The declared non-answering delivery sets, owned by `work/ask-settlement.ts`: imported, never retyped.
 import { NON_ANSWERING_DELIVERY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../../../../work/ask-settlement.js';
@@ -37,18 +38,19 @@ export async function scheduleCompletionReport(ctx: FinalizeContext): Promise<vo
   const { agentId, turnNumber, db, isA2ATurn, turnStartedAt } = ctx;
 
   // A2A only (a user turn already reports); the engine-triggered report turn cannot re-trigger; work
-  // handed in since turn start, so reported once; one-shot only (recurring runs stay silent); unreported.
+  // handed in since turn start, so reported once; one-shot only; a peer row only as its own card from a person; unreported.
   if (isA2ATurn) {
     try {
       const justCompleted = db.prepare(`
         SELECT w.id AS id, w.title AS title, ${handInNoteExpr('w')} AS result FROM work w
         WHERE ${taskScope('w')} AND w.agent_id = ?
           AND ${handedInSinceExpr('w')}
-          AND w.repeat_interval IS NULL
+          AND w.repeat_interval IS NULL AND NOT (${peerOriginSql('w')} AND NOT (w.requester_id IS ?
+            AND EXISTS (SELECT 1 FROM messages s WHERE s.id = w.source_message_id AND s.a2a_thread_id IS NULL)))
           AND NOT ${ownerEvidencedClose('w')}
         ORDER BY w.updated_at ASC
         LIMIT 5
-      `).all(agentId, tsToMs(turnStartedAt) ?? 0) as Array<{ id: string; title: string; result: string | null }>;
+      `).all(agentId, tsToMs(turnStartedAt) ?? 0, agentId) as Array<{ id: string; title: string; result: string | null }>;
       if (justCompleted.length > 0) {
         const taskLines = justCompleted
           .map(t => `  - "${t.title}"${t.result ? `, ${t.result.replace(/\s+/g, ' ').slice(0, 160)}` : ''}`)

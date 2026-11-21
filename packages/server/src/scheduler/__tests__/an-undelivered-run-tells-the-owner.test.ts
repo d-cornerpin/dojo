@@ -48,47 +48,14 @@ vi.mock('../../config/platform.js', () => ({
 }));
 
 import { onTaskRunComplete } from '../runner.js';
-import { createWorkTable, seedTrackerTask } from '../../work/__tests__/work-fixture.js';
+import { runMigrations } from '../../db/migrations.js';
+import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { declareDeliverableOnSchedule } from '../../work/deliverable-declaration.js';
 import { RUN_STATUS_UNDELIVERED } from '../../work/occurrences.js';
 import { OCCURRENCE_EVENT } from '../../work/occurrences.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 
 const AGENT = 'primary';
-
-function applySchema(db: Database.Database): void {
-  createWorkTable(db);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS deliveries (
-      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, channel TEXT,
-      created_at INTEGER, turn_number INTEGER, message_id TEXT, receipt_id TEXT,
-      recipient_id TEXT, recipient_display TEXT, conversation_id TEXT, detail TEXT, root_kind TEXT, root_id TEXT
-    );
-    CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT);
-    CREATE TABLE messages (
-      seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, agent_id TEXT NOT NULL,
-      conversation_id TEXT,
-      lane TEXT NOT NULL DEFAULT 'owner' CHECK (lane IN ('owner','a2a','events')),
-      origin_intent TEXT, role TEXT NOT NULL, content TEXT NOT NULL, mood TEXT,
-      display_kind TEXT NOT NULL DEFAULT 'unclassified',
-      display_tier TEXT NOT NULL DEFAULT 'agent-only',
-      turn_number INTEGER, group_id TEXT, channel TEXT, sender_id TEXT,
-      authorized INTEGER NOT NULL DEFAULT 0,
-      source_agent_id TEXT, a2a_thread_id TEXT, a2a_intent TEXT, a2a_requires_response INTEGER,
-      token_count INTEGER NOT NULL DEFAULT 0,
-      model_id TEXT, cost REAL, latency_ms INTEGER, reasoning_content TEXT,
-      inbound_meta TEXT, attachments TEXT, external_message_id TEXT, speaker TEXT,
-      voice_session_id TEXT, task_id TEXT, run_id TEXT, root_kind TEXT, root_id TEXT,
-      subject_kind TEXT,  -- t141 (migration 188): the single writer stamps it on every INSERT
-      served_by_turn INTEGER, answer_message_id TEXT, swept_at TEXT,
-      delivery_attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, retired_at TEXT,
-      origin_kind TEXT DEFAULT NULL, source TEXT DEFAULT NULL, conv_key TEXT DEFAULT NULL,
-      provenance TEXT NOT NULL DEFAULT 'live',
-      sent_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-}
 
 /** A one-shot reminder schedule, mid-run: `schedule_status='running'`, no further occurrence. */
 function seedReminder(taskKind: string | null): string {
@@ -133,7 +100,8 @@ const ownerNotes = (): string[] => (mockDb.current!.prepare(
 beforeEach(() => {
   frames.length = 0;
   mockDb.current = new Database(':memory:');
-  applySchema(mockDb.current);
+  runMigrations();
+  mockDb.current.prepare("INSERT INTO agents (id, name, status) VALUES (?, 'Agent', 'idle')").run(AGENT);
 });
 
 describe('the 30-minute idle reaper stops closing an undelivered reminder in silence', () => {

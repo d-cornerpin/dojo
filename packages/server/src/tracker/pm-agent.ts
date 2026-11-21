@@ -4,7 +4,7 @@ import { primaryReady } from '../agent/primary-ready.js';
 import { proofLines } from '../work/done/proof.js';
 import { latestHandIn, workerOf } from '../work/done/record.js';
 import {
-  decidedBy, holdingQuestions, questionsHoldUntil, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS,
+  decidedBy, holdingQuestions, questionsHoldUntil, requestOf, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS,
 } from '../work/done/who-decides.js';
 import { LADDER_ENTRY, pmCanRun } from '../work/done/ladder.js';
 import { appendAuditEntry } from '../work/audit-trail.js';
@@ -198,11 +198,12 @@ function handInBlock(id: string, n: number, roomTokens: number): string {
   const w = getDb().prepare('SELECT title, goal FROM work WHERE id = ?').get(id) as { title: string | null; goal: string | null };
   const h = latestHandIn(id);
   const items = h?.items ?? [];
-  const backs = sendBacks(id);
+  const backs = sendBacks(id), asked = requestOf(id);
   return `${n}. HANDED IN: "${w.title ?? id}" [${id}] by ${h?.filedBy ?? workerOf(id)}, as ${h?.outcome === 'cant_be_done' ? "can't be done" : 'finished'}`
     + `${h?.scope === 'run' ? ' (one run of a recurring task; the schedule goes on whatever you decide)' : ''}.\n  Goal: ${w.goal ?? '(none recorded)'}\n  Note: ${h?.note ?? '(none)'}\n`
     + (items.length > 0 ? `  Proof (open each item before approving):\n${proofLines(items).map((l, i) => `    ${i}. ${l}`).join('\n')}` : '  Proof: none.')
     + `\n  Sent back so far: ${backs.length === 0 ? 'never' : backs.map((b) => `"${b.reason}"`).join('; ')}`
+    + (asked ? `\n  The request this was opened for: ${asked.id ? `answered to ${asked.who ?? 'its sender'} at ${asked.at} UTC (delivery ${asked.id})` : 'not answered'}` : '')
     + `${validationMeasureLines(id, roomTokens)}${heldDeliveryLine(id)}${ownerWordsLines(id)}${taskLines(id)}`;
 }
 

@@ -1,5 +1,6 @@
 // The owner's Stop ends the request being served for good: it is called off, its parked job is held with no due,
-// and nothing serves it again, not after the turn ends and not after a restart.
+// and nothing serves it again, not after the turn ends and not after a restart. The engine self-wakes queued before
+// a stopped turn are not served either; one tied to a person's request or scheduled run is, as is any queued after.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('./helpers/agent-requests.js')).connectionMock());
@@ -9,6 +10,9 @@ vi.mock('../v2/loop.js', () => ({ runV2Turn: async () => {} }));
 import { runMigrations } from '../../db/migrations.js';
 import { stopByOwner } from '../runtime.js';
 import { nextOwed, dueOf } from '../v2/owed.js';
+import { insertEngineEvent } from '../../memory/message-store.js';
+import { startTurn, finalizeTurn } from '../v2/turn-record.js';
+import { getPendingEngineEvent } from '../v2/counterparty.js';
 import { stoppedAgents } from '../shared-state.js';
 import { reconcileOrphanedClaims } from '../../work/orphaned-claims.js';
 import { healStuckClaims } from '../../work/ask-remediation.js';
@@ -22,6 +26,13 @@ beforeEach(() => { freshAgentsDb(runMigrations); stoppedAgents.clear(); });
 const nothingComesBack = (): void => {
   expect(nextOwed(HELPER)).toEqual([]);
   expect(dueOf(HELPER).now).toBe(false);
+};
+
+const queue = (content: string, rootKind: string | null = null) => insertEngineEvent({
+  agentId: HELPER, content, originIntent: 'completion_report', work: rootKind ? { taskId: null, runId: null, rootKind, rootId: 'm-1' } : null,
+});
+const stoppedTurn = (): void => {
+  finalizeTurn(HELPER, startTurn({ agentId: HELPER, kind: 'engine', subjectKind: null, subjectId: null, rootKind: null, rootId: null, sourceMessageId: null, convKey: null }), 'stop', false, null);
 };
 
 describe('stop ends the request and nothing serves it again', () => {
@@ -94,5 +105,28 @@ describe('stop ends the request and nothing serves it again', () => {
     expect(stopByOwner(HELPER).nothingRunning).toBeUndefined();
     expect(rowOf('own-task')).toMatchObject({ due: null, hold: 'paused' });
     nothingComesBack();
+  });
+
+  it('a self-wake queued before a stopped turn is neither owed nor served', () => {
+    queue('report the finished task to the owner');
+    expect(dueOf(HELPER).now).toBe(true);
+    stoppedTurn();
+    expect(getPendingEngineEvent(HELPER)).toBeNull();
+    nothingComesBack();
+  });
+
+  it.each(['ask', 'occurrence'])("a wake tied to a person's request or schedule (%s) still stands after the Stop", (rootKind) => {
+    const tied = queue('the delegated piece never came back', rootKind);
+    stoppedTurn();
+    expect(getPendingEngineEvent(HELPER)?.id).toBe(tied.id);
+  });
+
+  it('a self-wake queued after the Stop is served', () => {
+    const before = queue('report the finished task to the owner');
+    stoppedTurn();
+    testDb().prepare('UPDATE messages SET created_at = created_at - 10000 WHERE id = ?').run(before.id);
+    testDb().prepare("UPDATE turns SET ended_at = datetime('now', '-5 seconds') WHERE agent_id = ?").run(HELPER);
+    const later = queue('report the next finished task');
+    expect(getPendingEngineEvent(HELPER)?.id).toBe(later.id);
   });
 });

@@ -7,7 +7,7 @@
 //   3. A hand-in the PM did not decide after two reviews, or a task sent back three times: the main agent
 //      is woken to decide another agent's task.
 //   4. The owner's card, never a text: the main agent's own task, a decision it let sit, or a stall a finished PM
-//      review listed and left (first retask: one more round). Not within 15 minutes or the upgrade hour; once a day.
+//      review listed and left (a retask: its directive turn is the last round). Not within 15 minutes or the upgrade hour; once a day.
 // Bounds on the wakes: none to an agent a person is waiting on (`selfWakeStandDown`), one per
 // agent per sweep naming all its due rows, and at most 3 box-wide per 10 minutes; the rest wait for a later sweep.
 // Each wake marks one of its entries; the PM is not armed again until a PM turn finishes after its last arm.
@@ -114,12 +114,12 @@ function ladderStep(workId: string, now: number): LadderStep {
   const refusals = evs.filter((e) => e.kind === 'hand_in_refused' && e.at >= lastTurnIn);
   if (refusals.length >= REFUSALS_BEFORE_PM && !newest(evs, isEntry(LADDER_ENTRY.pm), refusals[REFUSALS_BEFORE_PM - 1].at)) return { reached: 1, due: 'pm' };
   if (workerBusy(workerOf(workId), { taskId: workId, threadId: row.thread })) return { reached: 0, due: null };
-  const since = row.since, from = Math.max(since, row.retask ?? 0);
+  const since = row.since;
   const bound = patienceBoundMs(workerOf(workId));
-  const hint = newest(evs, isEntry(LADDER_ENTRY.hint), from);
-  const pm = evs.find((e) => e.entry === LADDER_ENTRY.pm && e.at >= from);
+  const hint = newest(evs, isEntry(LADDER_ENTRY.hint), since);
+  const pm = evs.find((e) => e.entry === LADDER_ENTRY.pm && e.at >= since);
   const floor = now - since >= OWNER_FLOOR_MS;
-  if (row.carded) return { reached: 4, due: null };
+  if (row.carded || row.retask) return { reached: 4, thread: row.thread, due: row.carded ? null : owner(floor) };
   if (pm) return { reached: 2, thread: row.thread, due: !pmCanRun() || pmReviewed(pm.at, workId) ? owner(floor) : workerBusy(getPMAgentId(), {}) ? null : 'pm' };
   if (hint) return { reached: 1, thread: row.thread, due: !pmCanRun() ? owner(floor) : now - hint.at >= bound ? 'pm' : null };
   return { reached: 0, due: now - since >= bound ? 'hint' : null };

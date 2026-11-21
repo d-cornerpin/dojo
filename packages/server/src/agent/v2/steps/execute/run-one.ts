@@ -114,11 +114,11 @@ export async function runOneToolCall(tc: ToolCall, ctx: ExecuteContext, sc: Exec
         }
       }
     } else {
-      // Count executed sends: the A2A turn ends on an executed send only (`index.ts`).
-      if (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') sc.a2aSendsExecuted += 1;
       const raced = await runUnlessStopped(agentId, tc, () => executeTool(agentId, tc));
       if (raced.stopped) return done(raced.result); // the owner's Stop cut it (`stop-race.ts`)
       toolResult = toolResultOf(raced.outcome);
+      // Count sends that succeeded: only those end an A2A turn and mark the turn as sent (`index.ts`).
+      if ((tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group') && toolResult.isError !== true) sc.a2aSendsExecuted += 1;
     }
     // Once-guard, post-result half: a successful non-idempotent call registers its signature.
     if ((FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) || SEND_TO_PEOPLE_SET.has(tc.name)) && toolResult.isError !== true) {

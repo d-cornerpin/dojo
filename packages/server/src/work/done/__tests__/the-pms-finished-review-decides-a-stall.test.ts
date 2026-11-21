@@ -1,6 +1,6 @@
 // A stall is decided by the PM's finished review, never by time: the owner's card, and with it the end of the
 // request kept on the task, comes only after a PM review that began after the stall was marked has ended with the
-// worker still idle. A retask keeps the work once: the climb starts again and the PM decides that round. A review that
+// worker still idle. A retask's directive turn is the worker's last round: unmoved after it, the card follows. A review that
 // did not list the row, or a mark written while a review runs, does not change what counts. A PM that cannot run is
 // skipped. A helper whose run the Dojo flagged SILENT is looked at, but its request never ends while the run is in flight.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -55,38 +55,18 @@ describe("the PM's finished review decides a stall", () => {
     expect(stallCards()).toBe(0);
   });
 
-  it('a retask keeps the work: the climb starts again, and the next review that lets it go brings the card', async () => {
+  it("a retask's directive turn is the last round: unmoved when it ends, the card follows, with no new reminder or PM ask", async () => {
     await stalledToThePM();
     await runPMReview();
     expect((await call(PM, 'work_validate', { action: 'retask', task_id: TASK, directive: RETASK })).content).not.toMatch(/^(Error|Refused)/);
     pmReviewEnded(PM);
+    await runLadder(Date.now() + 30 * MIN);
+    expect(stallCards(), 'the directive turn has not run yet').toBe(0);
     turnTaken(WORKER);
     await runLadder(Date.now() + 30 * MIN);
-    expect([stallCards(), ...(await keptState(ask))]).toEqual([0, 'claimed', 'open']);
-    turnTaken(WORKER);
     await runLadder(Date.now() + 40 * MIN);
-    await runPMReview();
-    pmReviewEnded(PM);
-    await runLadder(Date.now() + 50 * MIN);
-    expect([stallCards(), ...(await keptState(ask))]).toEqual([1, 'failed', 'abandoned']);
-  });
-
-  it('a second retask on the same stall buys no new round: the card and the notice follow, once', async () => {
-    await stalledToThePM();
-    const retask = async (): Promise<void> => {
-      await runPMReview();
-      expect((await call(PM, 'work_validate', { action: 'retask', task_id: TASK, directive: RETASK })).content).not.toMatch(/^(Error|Refused)/);
-      pmReviewEnded(PM);
-      turnTaken(WORKER);
-    };
-    await retask();
-    await runLadder(Date.now() + 30 * MIN);
-    turnTaken(WORKER);
-    await runLadder(Date.now() + 40 * MIN);
-    await retask();
-    await runLadder(Date.now() + 50 * MIN);
-    await runLadder(Date.now() + 60 * MIN);
-    expect([stallCards(), ...(await keptState(ask)), agentLines()]).toEqual([1, 'failed', 'abandoned', 1]);
+    expect([stallCards(), entries(TASK, LADDER_ENTRY.hint), entries(TASK, LADDER_ENTRY.pm), ...(await keptState(ask)), agentLines()])
+      .toEqual([1, 1, 1, 'failed', 'abandoned', 1]);
   });
 
   it('a review still running when a new mark is written counts; a review that did not list the row does not', async () => {

@@ -76,8 +76,14 @@ export function holdingQuestions(workId: string): PMQuestion[] {
   return pmQuestions(workId).filter((q) => q.at >= handAt && q.at < handAt + QUEUED_TURN_BOUND_MS);
 }
 
-/** Until when the PM's questions hold this hand-in (0 when none does); it holds while this is in the future. */
+/** The request a card was opened for, of the card's requester (`owed`: an answer is coming, it was not stood down), and its answer. */
+export const requestOf = (id: string) => getDb().prepare(`SELECT a.state IN ('open', 'claimed') OR (a.state = 'blocked' AND (a.remaining_children > 0
+  OR a.compile_pending = 1)) AS owed, d.id, d.recipient_display AS who, d.created_at AS at FROM work w JOIN work a ON a.kind = 'ask' AND a.root_id = w.source_message_id
+  AND a.agent_id = w.requester_id LEFT JOIN deliveries d ON d.id = a.result_delivery_id WHERE w.id = ?`)
+  .get(id) as { owed: number; id: string | null; who: string | null; at: string | null } | undefined;
+/** Until when this hand-in is held (0 when nothing holds it): the PM's questions, or for good while its request is owed. */
 export function questionsHoldUntil(workId: string): number {
+  if (requestOf(workId)?.owed) return Infinity;
   return Math.max(0, ...holdingQuestions(workId).map((q) => q.until));
 }
 

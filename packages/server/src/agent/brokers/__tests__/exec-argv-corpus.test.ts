@@ -94,6 +94,7 @@ const agentRows: Record<string, { id: string; permissions: string; spawn_depth: 
   'agent-scoped': { id: 'agent-scoped', permissions: scopedManifest, spawn_depth: 1, created_by: 'agent-parent' },
   'agent-locked': { id: 'agent-locked', permissions: lockedManifest, spawn_depth: 1, created_by: 'agent-parent' },
   'agent-noshell': { id: 'agent-noshell', permissions: noShellManifest, spawn_depth: 1, created_by: 'agent-parent' },
+  'agent-primary': { id: 'agent-primary', permissions: wildcardManifest, spawn_depth: 0, created_by: 'owner' },
 };
 
 vi.mock('../../../db/connection.js', () => ({
@@ -182,7 +183,7 @@ describe('§A — the argv resolver is the only mint, and it refuses every shape
 
 // ══════════════════════════════════════════════════════════════════════════
 describe('§B — THE CANARY CORPUS at the argv door, every canary REFUSED', () => {
-  it('refuses INLINE SHELL SCRIPT (`-c`) — the escape hatch is routed, not opened', () => {
+  it('refuses another agent\'s INLINE SHELL SCRIPT (`-c`), routed, not opened; the main agent\'s runs', () => {
     for (const sh of ['sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', '/bin/sh', '/bin/zsh']) {
       const v = authorizeArgv(wildcard(), mustArgv([sh, '-c', 'echo hi']));
       expect(v.allowed, `expected refusal for inline script: ${sh} -c`).toBe(false);
@@ -191,6 +192,8 @@ describe('§B — THE CANARY CORPUS at the argv door, every canary REFUSED', () 
     }
     // and through an `env` re-point, which happens AFTER the allowlist looked
     expect(authorizeArgv(wildcard(), mustArgv(['env', 'FOO=1', 'sh', '-c', 'echo hi'])).allowed).toBe(false);
+    // The main agent is not restricted: its inline script runs at this door.
+    expect(authorizeArgv(grantOf('agent-primary'), mustArgv(['sh', '-c', 'printf abc | wc -c'])).allowed).toBe(true);
   });
 
   it('⚠ but RUNNING A SCRIPT FILE still works — refusing it would delete a workflow', () => {
