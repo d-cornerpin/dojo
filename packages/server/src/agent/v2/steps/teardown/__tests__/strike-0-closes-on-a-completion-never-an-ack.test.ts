@@ -191,7 +191,7 @@ describe('(c) what the engine can count is handed in for its worker, never set d
     const file = path.join(process.env.DOJO_HOME ?? '/tmp', 'confirmation.txt');
     fs.writeFileSync(file, 'Confirmation 4471: a table for four on Friday at 7pm.');
     db().prepare(
-      `INSERT INTO audit_log (id, agent_id, action_type, target, result) VALUES ('a-file', ?, 'file_write', ?, 'success')`,
+      `INSERT INTO audit_log (id, agent_id, action_type, target, result, root_kind, root_id) VALUES ('a-file', ?, 'file_write', ?, 'success', 'ask', 'msg-ask')`,
     ).run(AGENT, file);
     db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)`)
       .run(tasks[0], `file:${file}`, Date.now(), Date.now());

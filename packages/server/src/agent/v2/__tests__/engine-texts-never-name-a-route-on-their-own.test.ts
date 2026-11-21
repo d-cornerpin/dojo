@@ -16,7 +16,7 @@ const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation:
 const FORBIDDEN = /dashboard chat|the owner is watching|reply to the owner|as your chat reply|owner's channel|in this conversation \(do NOT|send Owner Example a note, a promise/i;
 
 describe('a contact\'s turn never gets owner-route text, on any outbound path the engine writes', () => {
-  const addr = computeTurnAddress({ autoRoutes: true, counterparty: contact, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'imessage', inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+  const addr = computeTurnAddress({ autoRoutes: true, counterparty: contact, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'imessage', inboundContext: null });
 
   it('the turn block, the start-ack steer, the compile steer, the send-tool results and the failure words', () => {
     endTurnContext('primary');
@@ -31,7 +31,7 @@ describe('a contact\'s turn never gets owner-route text, on any outbound path th
       'turn block (header, tag, hints)': block,
       'header alone': renderCounterpartyHeader(contact, { address: addr }),
       'start-ack steer': startAckSteerText({ address: addr } as never),
-      'compile steer (asker = this contact)': compileSteerText({ total: 2, pieces: ['x'], attempt: 1, bound: 3, asker: { name: contact.name, channel: 'iMessage' } }),
+      'compile steer (asker = this contact)': compileSteerText({ kind: 'late', asker: { name: contact.name, channel: 'iMessage' }, helper: 'Helper', request: 'x', files: [], pieces: ['x'] }),
       'no-recipient refusal': refuseSendWithNoRecipient('primary', 'imessage_send', { message: 'x' }, 'c')!.content,
       'send note (someone else)': recipientNoteFor('primary', 'sms_send', { to: '+15550123', body: 'x' }),
       'failure words': routedReplyWords('primary')?.where ?? '',

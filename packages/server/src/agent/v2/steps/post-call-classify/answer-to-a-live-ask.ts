@@ -30,8 +30,7 @@ export interface LiveAskPromotionResult {
 
 /** Delivers the text in place as the turn's answer, with no origin stamp (an `engine-ack` settles nothing).
  *  The id is minted here, since reusing `messageId` would make this pass's `tool_use` INSERT a no-op, and
- *  `noteTerminalAnswer` is required for an ended turn to keep the bubble.
- *  Never sets `compileGateSatisfied`: only an owed compile discharges that duty. */
+ *  `noteTerminalAnswer` is required for an ended turn to keep the bubble. */
 export async function deliverAsAnswerToLiveAsk(
   state: AgentTurnState,
   p: LiveAskPromotionInputs & {

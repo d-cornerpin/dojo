@@ -9,6 +9,8 @@ import { executeTool } from '../../../../agent/tools/index.js';
 import { toolResultOf } from '../../../../agent/tool-outcome.js';
 import { FXID } from '../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 import { freshDoneDb, doneDb } from './done-db.js';
+import { appendWorkEvent } from '../../../store.js';
+import { openTurnContext, endTurnContext } from '../../../../agent/turn-context.js';
 
 export const PM = FXID.n1;
 export const MAIN = FXID.n2;
@@ -69,3 +71,32 @@ export async function handedIn(worker = WORKER): Promise<string> {
 export const stateOf = (id = TASK): string => (doneDb().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
 export const eventCount = (kind: string, id = TASK): number =>
   (doneDb().prepare('SELECT COUNT(*) AS c FROM work_events WHERE work_id = ? AND kind = ?').get(id, kind) as { c: number }).c;
+
+const OWNER_ROW = { agent: MAIN, lane: 'owner', role: 'user', channel: 'dashboard', source_agent_id: null as string | null,
+  inbound_meta: JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' }) as string | null, at: 1000 };
+export type OwnerRow = Partial<typeof OWNER_ROW>;
+
+/** A message from the owner to `over.agent` (the main agent by default), `over.at` ms from now. Returns its id. */
+export function ownerSays(content: string, over: OwnerRow = {}): string {
+  const r = { ...OWNER_ROW, ...over };
+  const at = Date.now() + r.at;
+  const id = `m-${++n}`;
+  doneDb().prepare(
+    `INSERT INTO messages (id, agent_id, conversation_id, lane, role, content, channel, source_agent_id, authorized, inbound_meta, sent_at, created_at)
+     VALUES (?, ?, 'conv-owner', ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+  ).run(id, r.agent, r.lane, r.role, content, r.channel, r.source_agent_id, r.inbound_meta, at, at);
+  return id;
+}
+
+/** The owner is asked about the task's newest hand-in: his card. */
+export const ownerAsked = (id = TASK): void => { appendWorkEvent(id, 'validation_escalated', 'scheduler', { thread_id: null }); };
+
+/** `agent` relays `verdict` with `quote`, in a turn answering the message `answering`. */
+export async function relayAnswering(answering: string, quote: string, verdict = 'approve', agent = MAIN): Promise<{ content: string; isError: boolean }> {
+  openTurnContext(agent).root = { kind: 'ask', id: answering, sourceMessageId: answering };
+  try {
+    return await call(agent, 'work_validate', { action: 'decide', task_id: TASK, verdict, reason: 'The owner decided', user_quote: quote });
+  } finally {
+    endTurnContext(agent);
+  }
+}

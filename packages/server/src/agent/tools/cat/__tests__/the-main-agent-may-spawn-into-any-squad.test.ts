@@ -72,7 +72,7 @@ beforeEach(() => {
 const spawnAs = async (caller: string) => toolResultOf(await executeTool(caller, {
   id: `tc-${Math.random()}`,
   name: 'spawn_agent',
-  arguments: { name: 'Helper', system_prompt: 'Help with the task.', timeout_minutes: 10, group_id: 'g-theirs' },
+  arguments: { name: 'Helper', system_prompt: 'Help with the task.', timeout_minutes: 10, group_id: 'g-theirs', auto_start: false },
 }));
 
 describe('spawning into a squad the caller did not create', () => {

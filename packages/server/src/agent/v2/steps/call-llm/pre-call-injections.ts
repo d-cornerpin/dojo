@@ -22,6 +22,7 @@ import {
 } from '../../answered-edge.js';
 import { pushEngineMessage } from '../../engine-message.js';
 import { markSteerAttempted, markSteerDelivered } from '../../steer-queue.js';
+import { recordPiecesShown } from '../../../../work/ask-settlement.js';
 import { writeContextReceipt } from '../../receipt.js';
 import { appendOnlyTurn } from './append-only-turn.js';
 import { dialedPolicy, estimateAssembledArrayTokens } from './reassemble-for-fit.js';
@@ -189,11 +190,14 @@ export async function injectAndRecord(
     recordVaultUse(ctx.recalledVaultIds ?? []);
   }
   if (steerAwaitingConfirm) {
+    const delivered = laneIdsForThisCall.includes('msg.pending-nudge');
     state = advance(state, {
-      steerQueue: laneIdsForThisCall.includes('msg.pending-nudge')
+      steerQueue: delivered
         ? markSteerDelivered(state.steerQueue, steerAwaitingConfirm)
         : markSteerAttempted(state.steerQueue, steerAwaitingConfirm),
     });
+    const shown = delivered ? steerAwaitingConfirm.shown : undefined;
+    if (shown) recordPiecesShown(shown.askId, agentId, turnNumber, shown.putBackId);
   }
   writeContextReceipt({
     agentId,

@@ -1,4 +1,4 @@
-// Resolves who the turn addresses and the owner-channel affinity, allocates the turn's identity in the
+// Resolves who the turn addresses and where its reply goes, allocates the turn's identity in the
 // `turns` table, stamps the serve edges, and creates the state with `initState`. The state goes on the
 // bag (`turnCtx.state`) rather than being returned, because closures read it live.
 
@@ -14,8 +14,7 @@ import { initState } from '../../state.js';
 import type { ChannelInboundContext } from '../../state.js';
 import type { InboundChannel } from '../../inbound-channel.js';
 import { resolveTurnCounterparty, type TurnCounterparty, type WaitingConversation } from '../../counterparty.js';
-import { computeTurnAddressLive } from '../../turn-address.js';
-import { resolveOwnerAffinityChannel, affinityPromotionAllowed } from '../../owner-affinity.js';
+import { computeTurnAddress } from '../../turn-address.js';
 import { resetProactiveSendStreak } from '../../proactive-budget.js';
 import { isPrimaryAgent } from '../../../../config/platform.js';
 import { startTurn } from '../../turn-record.js';
@@ -92,35 +91,9 @@ export async function runCounterpartyAndRecord(
     resetProactiveSendStreak(agentId);
   }
 
-  // Owner-channel affinity, resolved once so the same value drives the counterparty header and the reply
-  // routing: an owner turn bound for the dashboard is promoted to iMessage when affinity and the rate limit
-  // allow. The cooldown is keyed by the owner's dashboard conversation row; both values cross into finalize.
-  {
-    const destinationWouldBeDashboard =
-      counterparty.channel !== 'imessage' && counterparty.channel !== 'teams' &&
-      counterparty.channel !== 'email' && counterparty.channel !== 'sms' &&
-      counterparty.channel !== 'phone' && counterparty.channel !== 'voice';
-    if (counterparty.kind === 'user' && counterparty.relation === 'owner' && destinationWouldBeDashboard) {
-      try {
-        const { isImessageConfigured } = await import('../../../../services/presence.js');
-        const bridgeConfigured = isImessageConfigured();
-        const affinity = resolveOwnerAffinityChannel(agentId, { imessageBridgeConfigured: bridgeConfigured });
-        if (affinity === 'imessage') {
-          const { resolveOrCreateConversation } = await import('../../../../memory/conversations.js');
-          turnCtx.ownerAffinityConversationId = resolveOrCreateConversation(agentId, {
-            channel: 'dashboard', provider: null, counterpartyId: 'owner', threadRoot: null,
-          });
-          if (affinityPromotionAllowed(agentId, turnCtx.ownerAffinityConversationId)) {
-            turnCtx.ownerAffinityDestination = 'imessage';
-          }
-        }
-      } catch { /* best effort; a resolution failure just leaves the reply on the dashboard */ }
-    }
-  }
-
-  turnCtx.address = await computeTurnAddressLive({
+  turnCtx.address = computeTurnAddress({
     counterparty, isEngineTurn, isNotificationTurn: input.isNotificationTurn ?? false,
-    inboundChannel, inboundContext, ownerAffinityChannel: turnCtx.ownerAffinityDestination, autoRoutes: isPrimaryAgent(agentId),
+    inboundChannel, inboundContext, autoRoutes: isPrimaryAgent(agentId),
     settledContextWakeTurn: input.settledContextWakeTurn,
   });
 
@@ -137,7 +110,7 @@ export async function runCounterpartyAndRecord(
       : 'none' as const;
     const subjectId = isEngineTurn ? (pendingEngineEvent?.id ?? null)
       : terminalWakeA2A ? terminalWakeA2A.threadId
-      : isA2ATurn ? (turnCtx.root?.kind === 'a2a' ? turnCtx.root.id : null)   // a job's continuation names its thread; a reply-needed turn has no root
+      : isA2ATurn ? (turnCtx.root?.kind === 'a2a' ? turnCtx.root.id : null)   // a request's turn and a job's continuation name their thread
       : chosenConvKey;
     turnCtx.modelRequestId = `req_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
     return startTurn({

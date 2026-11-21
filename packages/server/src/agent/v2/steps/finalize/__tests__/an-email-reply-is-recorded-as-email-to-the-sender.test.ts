@@ -52,7 +52,7 @@ describe('an email turn\'s written reply is recorded as email, to the sender', (
     expect(r.inboundChannel).toBe('email');
     const state = { lastAssistantTextForIM: 'received', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundContext: r.inboundContext, inboundChannel: 'email' } as never;
     const address = { kind: 'person', isOwner: true, boundChannel: 'email', autoRoutes: true };
-    const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, ownerAffinityDestination: null, root: null, replyFiles: [] }, counterparty: { kind: 'user', channel: 'email', senderId: OWNER_MAILBOX, relation: 'owner' }, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false, persistRoutingMarker: () => {} } as never;
+    const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, root: null, replyFiles: [] }, counterparty: { kind: 'user', channel: 'email', senderId: OWNER_MAILBOX, relation: 'owner' }, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false, persistRoutingMarker: () => {} } as never;
     await routeTerminalReply(state, ctx);
     await deliverDueReplies(Date.now());
 

@@ -1,6 +1,6 @@
 // The sanctioned way to make another agent (usually the primary) AWARE: one brief first-person line.
 // Stored role='user' (a 'system' row is invisible to the model), origin_kind='engine', so it lands
-// in the EVENTS lane: model-visible, out of the user's chat, never compacted. Detail stays on the bus.
+// in the EVENTS lane: model-visible, out of the user's chat, never compacted.
 
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
@@ -13,7 +13,7 @@ const logger = createLogger('agent-notice');
 export interface AgentNoticeOpts {
   toAgentId: string;
   fromName: string;
-  /** ONE short first-person sentence; a full report belongs on the bus, not here. */
+  /** ONE short first-person sentence. */
   brief: string;
   intent?: string;
   selfIntro?: boolean;
@@ -69,7 +69,7 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
 
 /** A re-drive that WAKES an agent and owes nobody a reply: as an A2A QUESTION the one reply bit
  *  would make it a request owed its own turns until a reply lands, then given up.
- *  It rides as an events-lane engine event plus the runtime wake. Best-effort, never throws. */
+ *  It rides as an events-lane engine event, which the one clock serves. Best-effort, never throws. */
 export async function redriveWithoutReply(opts: {
   toAgentId: string; fromAgentId: string | null; content: string; taskId: string | null;
 }): Promise<boolean> {
@@ -79,11 +79,7 @@ export async function redriveWithoutReply(opts: {
       originIntent: 'tracker',
       work: opts.taskId ? { taskId: opts.taskId, runId: inFlightOccurrence(opts.taskId)?.id ?? null, rootKind: 'task', rootId: opts.taskId } : null,
     });
-    const { getAgentRuntime } = await import('./runtime.js');
-    getAgentRuntime().handleMessage(opts.toAgentId, opts.content).catch((err: unknown) => {
-      logger.warn('re-drive wake failed; the notice row stands for the next drain', {
-        toAgentId: opts.toAgentId, error: err instanceof Error ? err.message : String(err) });
-    });
+    (await import('./v2/owed.js')).armOwedClock();
     return true;
   } catch (err) {
     logger.warn('re-drive could not be delivered', { toAgentId: opts.toAgentId, error: err instanceof Error ? err.message : String(err) });

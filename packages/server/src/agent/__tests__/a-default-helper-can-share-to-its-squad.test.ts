@@ -31,7 +31,7 @@ const call = async (agentId: string, name: string, args: Record<string, unknown>
 
 describe('a default helper can share to its squad', () => {
   it('the helper shares and the main agent recalls it by the squad id', async () => {
-    const { agentId } = await spawnAgent({ parentId: 'main', name: 'Scout', systemPrompt: 'Scout.', groupId: 'crew', autoStart: false });
+    const { agentId } = await spawnAgent({ parentId: 'main', name: 'Scout', systemPrompt: 'Scout.', groupId: 'crew' });
     const shared = await call(agentId, 'squad_share', { content: 'The supplier closes at 5pm on Fridays.' });
     expect(shared.isError, shared.content).toBeFalsy();
     const recalled = await call('main', 'squad_recall', { query: 'supplier', group_id: 'crew' });
@@ -39,7 +39,7 @@ describe('a default helper can share to its squad', () => {
   });
 
   it('a helper cannot read a squad it neither belongs to nor created', async () => {
-    const { agentId } = await spawnAgent({ parentId: 'main', name: 'Scout', systemPrompt: 'Scout.', groupId: 'crew', autoStart: false });
+    const { agentId } = await spawnAgent({ parentId: 'main', name: 'Scout', systemPrompt: 'Scout.', groupId: 'crew' });
     const r = await call(agentId, 'squad_recall', { query: '', group_id: 'other' });
     expect(r.isError).toBe(true);
   });

@@ -160,6 +160,11 @@ describe('§1 a delivered peer hand-off writes its own receipt', () => {
     expect(row.recipient_display).toBe(FX.n5);
   });
 
+  it('a hand-off declared on a STATUS is not applied, and the sender is told so', async () => {
+    const content = await sendToAgent({ intent: 'STATUS', thread_id: THREAD, hands_off_thread: 'thread-fictional-2' });
+    expect(content).toContain('[Engine: hands_off_thread was not applied. A hand-off counts only on an ANSWER, DELIVERABLE, COMPLETE or FAIL reply; this message was sent as STATUS.]');
+  });
+
   it('the receipt and the ledger row are ONE send said twice, not two sends', async () => {
     await sendToAgent();
     // The tool receipt was always written; the ledger row is the half that was missing. Both
@@ -205,14 +210,14 @@ describe('§2 a hand-off that did NOT happen is recorded honestly', () => {
   });
 
   it('every GENUINE policy drop records `suppressed`, not one of them', async () => {
-    // The three refusals the transport still makes on purpose.
-    for (const reason of ['SEMANTIC_DUPLICATE', 'HOP_LIMIT_EXCEEDED', 'AWAITING_REPLY']) {
+    // The two refusals the transport still makes on purpose.
+    for (const reason of ['SEMANTIC_DUPLICATE', 'HOP_LIMIT_EXCEEDED']) {
       deliverSpy.mockResolvedValue(refused(reason));
       await sendToAgent();
     }
     const rows = deliveries('send_to_agent');
-    expect(rows.length).toBe(3);
-    expect(rows.map((r) => r.outcome)).toEqual(['suppressed', 'suppressed', 'suppressed']);
+    expect(rows.length).toBe(2);
+    expect(rows.map((r) => r.outcome)).toEqual(['suppressed', 'suppressed']);
   });
 
   it('an unknown target is `failed` — a real send that could not be made', async () => {
@@ -254,10 +259,9 @@ describe('§2 a hand-off that did NOT happen is recorded honestly', () => {
   // list I write here, which is the only shape that closes that gap — and the clause after it
   // fails if the union grows a member this table has not ruled on.
   const HONEST_WORD: Record<string, 'suppressed' | 'failed'> = {
-    // Policy: a live refusal the transport makes ON PURPOSE. Two the sender already holds the
-    // explanation for, one that is the protocol's own bound. These three are the whole of it.
+    // Policy: a live refusal the transport makes ON PURPOSE. One the sender already holds the
+    // explanation for, one that is the protocol's own bound. These two are the whole of it.
     SEMANTIC_DUPLICATE: 'suppressed',
-    AWAITING_REPLY: 'suppressed',
     HOP_LIMIT_EXCEEDED: 'suppressed',
     // Losses: a message that did not arrive and was not refused on purpose.
     AGENT_NOT_FOUND: 'failed',

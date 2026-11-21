@@ -619,11 +619,11 @@ describe('3d second arm: a deadline still expires when the parent ask has alread
     expect(outstanding[0].threadId).toBe(T2);
   });
 
-  it('NEGATIVE: the age cap applies to this arm too — a join older than the window is not '
+  it('NEGATIVE: the scan bound applies to this arm too — a join not looked at for longer than the window is not '
     + 'resurrected months later', () => {
     const parent = seedOrphanedJoin('m-ancient');
     const ancient = Date.now() - (JOIN_MAX_AGE_DAYS + 1) * 24 * 60 * 60 * 1000;
-    mockDb.current!.prepare('UPDATE work SET opened_at = ? WHERE id = ?').run(ancient, parent);
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(ancient, parent);
     expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(parent);
   });
 });

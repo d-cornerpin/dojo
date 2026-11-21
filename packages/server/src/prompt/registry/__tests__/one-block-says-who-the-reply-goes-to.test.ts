@@ -29,11 +29,10 @@ const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation:
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
 const peer: TurnCounterparty = { kind: 'agent', name: 'peer-agent', relation: 'agent', channel: 'a2a', senderId: null, threadId: 't1', senderIsAgent: false };
 
-function block(counterparty: TurnCounterparty, over: { isEngineTurn?: boolean; inbound?: 'imessage' | 'dashboard' | null; presence?: 'in_dojo' | 'away'; voice?: boolean } = {}): string {
+function block(counterparty: TurnCounterparty, over: { isEngineTurn?: boolean; inbound?: 'imessage' | 'dashboard' | null; voice?: boolean } = {}): string {
   const address = computeTurnAddress({ autoRoutes: true,
     counterparty, isEngineTurn: over.isEngineTurn ?? false, isNotificationTurn: false,
     inboundChannel: over.inbound === undefined ? 'imessage' : over.inbound, inboundContext: null,
-    presence: over.presence ?? 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null,
   });
   const ctx = buildAssemblyContext('primary', 'm', {
     counterparty, address, isEngineTurn: over.isEngineTurn ?? false, isNotificationTurn: false,
@@ -53,16 +52,15 @@ describe('one block: who sent this, and who the written reply goes to', () => {
     expect(t).not.toContain('dashboard chat, normal voice');
   });
 
-  // Owner ruling 2026-11-04 (field fix 3 test-2 round): a person's dashboard ask is answered on the
-  // dashboard whatever the presence; away forwards the owner turns no dashboard message started.
-  it('A4: an away owner on a turn no dashboard message started is told iMessage (the delivery the engine will make)', () => {
-    const t = block(owner, { inbound: null, presence: 'away' });
-    expect(t).toContain('by iMessage');
-    expect(t).toContain('Reply destination: iMessage to Owner Example');
+  // Owner ruling 2026-11-04: a person's dashboard ask is answered on the dashboard; presence moves no reply.
+  it('A4: an owner turn no dashboard message started is not told iMessage', () => {
+    const t = block(owner, { inbound: null });
+    expect(t).not.toContain('by iMessage');
+    expect(t).not.toContain('Reply destination: iMessage');
   });
 
-  it('A4b (owner ruling): an away owner who ASKED on the dashboard is told the dashboard', () => {
-    const t = block(owner, { inbound: 'dashboard', presence: 'away' });
+  it('A4b (owner ruling): an owner who ASKED on the dashboard is told the dashboard', () => {
+    const t = block(owner, { inbound: 'dashboard' });
     expect(t).not.toContain('by iMessage');
     expect(t).not.toContain('Reply destination: iMessage');
   });

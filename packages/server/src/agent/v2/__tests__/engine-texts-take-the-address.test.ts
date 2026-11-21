@@ -10,7 +10,7 @@ import { computeTurnAddress, deliveryLabel } from '../turn-address.js';
 
 const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
-const addrOf = (cp: TurnCounterparty, inbound: 'imessage' | 'dashboard') => computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+const addrOf = (cp: TurnCounterparty, inbound: 'imessage' | 'dashboard') => computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null });
 
 describe('the header\'s close-the-loop line says HOW to reach the owner', () => {
   it('on a contact turn the written reply goes to the contact, so the owner is reached by an explicit send that names them', () => {
@@ -22,16 +22,18 @@ describe('the header\'s close-the-loop line says HOW to reach the owner', () => 
 });
 
 describe('the compile steer names the person who asked', () => {
-  const base = { total: 2, pieces: ['Piece 1: "x"'], attempt: null, bound: 3 };
-  it('for the owner it is the original wording', () => {
+  const base = { kind: 'compile' as const, asker: null, helper: 'Helper', request: 'plan the trip', files: [], pieces: ['Piece 1: "x"', 'Piece 2: "y"'] };
+  it('for the owner it names the owner\'s request and quotes it whole', () => {
     const t = compileSteerText(base);
-    expect(t).toContain("delegated pieces for the owner's request are now back. The owner has NOT been answered yet.");
-    expect(t).toContain('Compose ONE reply to the owner now');
+    expect(t).toContain("All 2 delegated pieces for the owner's request are back.");
+    expect(t).toContain('They asked: "plan the trip"');
   });
-  it('for a contact it names them and their channel, inside the first 400 characters', () => {
-    const t = compileSteerText({ ...base, asker: { name: 'Pat Example', channel: 'iMessage' } });
-    expect(t.slice(0, 400)).toContain('Compose ONE reply to Pat Example (by iMessage) now');
-    expect(t).not.toContain('the owner');
+  it('for a contact it names them, and a late answer names them and their channel', () => {
+    const contactAsker = { name: 'Pat Example', channel: 'iMessage' };
+    expect(compileSteerText({ ...base, asker: contactAsker })).toContain("for Pat Example's request are back");
+    expect(compileSteerText({ ...base, kind: 'late', asker: contactAsker }))
+      .toContain('Pat Example (by iMessage) was told there was no answer yet, so start your reply with "Update:"');
+    expect(compileSteerText({ ...base, asker: contactAsker })).not.toContain('the owner');
   });
   it('the asker comes from the ask row\'s own stamp; the owner on the dashboard (or stamped owner) is null', () => {
     const name = (_c: string, h: string) => `Name for ${h}`;

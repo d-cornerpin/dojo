@@ -39,6 +39,7 @@ export interface RowFacts {
   /** The creator, when an agent created it. */
   creator: string | null;
   holderLive: boolean;
+  goal: string | null; measureJson: string | null;
 }
 
 /** A live agent: its row exists and it is not terminated (a parked `paused`/`error` agent is still live). */
@@ -54,19 +55,19 @@ export function isLiveAgent(agentId: string | null | undefined): boolean {
 
 export function rowFacts(id: string): RowFacts | null {
   const r = getDb().prepare(
-    `SELECT id, kind, title, state, agent_id, assignee_agent, assigned_to_group, requester, requester_id
+    `SELECT id, kind, title, state, agent_id, assignee_agent, assigned_to_group, requester, requester_id, goal, measure_json
        FROM work WHERE id = ? AND kind IN ('task', 'project')`,
   ).get(id) as {
     id: string; kind: string; title: string | null; state: WorkState; agent_id: string;
     assignee_agent: string | null; assigned_to_group: string | null;
-    requester: string | null; requester_id: string | null;
+    requester: string | null; requester_id: string | null; goal: string | null; measure_json: string | null;
   } | undefined;
   if (!r) return null;
   const holder = r.assignee_agent ?? r.agent_id;
   return {
     id: r.id, kind: r.kind, title: r.title ?? '(untitled)', state: r.state, holder,
     groupId: r.assigned_to_group, creator: r.requester === 'agent' ? r.requester_id : null,
-    holderLive: isLiveAgent(holder),
+    holderLive: isLiveAgent(holder), goal: r.goal, measureJson: r.measure_json,
   };
 }
 
@@ -106,9 +107,10 @@ const isEditor = (f: RowFacts, actorId: string): boolean =>
 
 // "The owner asked", for this turn: the turn serves an inbound message, and the cited `user_quote` is a whole
 // sentence the owner himself wrote in it or since (`tracker/owner-words.ts` decides whose words count).
+// `whole`: only his whole message counts, never a question; `after`: the message was written at or after then.
 export type OwnerAskProof = { ok: true } | { ok: false; why: string };
 
-export function ownerAskedInThisTurn(agentId: string, quote: unknown): OwnerAskProof {
+export function ownerAskedInThisTurn(agentId: string, quote: unknown, opts: { whole?: boolean; after?: number } = {}): OwnerAskProof {
   const q = typeof quote === 'string' ? normalizeQuote(quote) : '';
   if (!q) return { ok: false, why: 'no user_quote was given (the owner\'s exact words asking for this)' };
   const root = turnContext(agentId)?.root;
@@ -118,9 +120,12 @@ export function ownerAskedInThisTurn(agentId: string, quote: unknown): OwnerAskP
   const rootMsg = getDb().prepare('SELECT sent_at FROM messages WHERE id = ?').get(root.sourceMessageId) as
     { sent_at: number } | undefined;
   if (!rootMsg) return { ok: false, why: 'the message this turn is answering could not be found' };
-  return ownerSaidSince(rootMsg.sent_at, q, agentId, true)
+  if (opts.after !== undefined && rootMsg.sent_at < Math.floor(opts.after / 1000) * 1000) {
+    return { ok: false, why: 'the message this turn is answering was written before he was asked' };
+  }
+  return ownerSaidSince(rootMsg.sent_at, q, agentId, { whole: opts.whole })
     ? { ok: true }
-    : { ok: false, why: 'the quoted words are not a whole sentence the owner wrote in the message this turn is answering' };
+    : { ok: false, why: `the quoted words are not ${opts.whole ? 'the whole message, and not a question,' : 'a whole sentence'} the owner wrote in the message this turn is answering` };
 }
 
 const who = (id: string): string => `agent ${id}`;
@@ -149,6 +154,17 @@ export function taskWriteRefusal(actorId: string, workId: string, what: string):
   return `Error: you cannot ${what} ${f.kind} "${f.title}" (${f.id.slice(0, 8)}). It is held by ${who(f.holder)}, `
     + 'and only its holder, its creator, the PM and the main agent may change it. '
     + 'Tell its holder what you need with send_to_agent, or leave a note with work_note.';
+}
+
+/** The goal and the measure are the creator's: an agent working a row it did not create may not change them (the
+ *  same value sent back is no change). The main agent's change stands and is on the record. */
+export function standardEditRefusal(actorId: string, workId: string, next: { goal?: string; measure?: unknown }): string | null {
+  const f = rowFacts(workId);
+  if (!f || !isOwn(f, actorId) || actorId === f.creator || isPrimaryAgent(actorId)) return null;
+  if ((next.goal === undefined || next.goal.trim() === f.goal)
+    && (next.measure === undefined || JSON.stringify(next.measure) === f.measureJson)) return null;
+  return `Error: the goal and the measure of ${f.kind} "${f.title}" (${f.id.slice(0, 8)}) belong to whoever gave you the work, `
+    + 'so you cannot change them. If they are wrong, tell whoever gave you the work: an agent with send_to_agent, the owner in your reply.';
 }
 
 
@@ -310,6 +326,10 @@ export function planSpawnTask(actorId: string, taskId: string, handling: unknown
   const f = rowFacts(taskId);
   const cause: MoveCause = f && f.holder !== actorId && !f.holderLive ? 'assignee_gone' : 'coordination';
   if (handling === 'transfer') {
+    const thread = getDb().prepare('SELECT a2a_thread_id AS t FROM work WHERE id = ?').get(taskId) as { t: string | null } | undefined;
+    if (thread?.t) {
+      return { ok: false, text: 'spawn_agent cannot hand over this task: it already has its own thread, so a helper\'s reply could not hand it in. Keep it, and spawn the helper with task_handling="keep" or with no task_id; its work then gets its own task. No agent was created.' };
+    }
     const c = checkMove({ taskId, by: 'agent', actorId, cause });
     if (!c.ok) return { ok: false, text: `${c.text} No agent was created.` };
   } else {

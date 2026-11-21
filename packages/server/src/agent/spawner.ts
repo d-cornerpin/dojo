@@ -14,37 +14,18 @@ import { caseVariantClash, caseVariantClashMessage } from './tool-helpers.js';
 import { inheritedCreatorKind } from './created-by-kind.js';
 import { validateAlwaysLoadedTools } from './always-loaded-tools.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
-import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
 import { writeAgentStatus } from './agent-status.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { setHold, heldExpr, workingExpr } from '../work/done/hold.js';
 import { moveAssignee } from '../work/row-authority.js';
 import { memoryGrep } from '../memory/retrieval.js';
-import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
-import type { PermissionManifest, Agent, Message } from '@dojo/shared';
+import type { PermissionManifest, Agent } from '@dojo/shared';
 
 const logger = createLogger('spawner');
-
-function broadcastMessage(agentId: string, msg: { id: string; role: string; content: string }) {
-  broadcast({
-    type: 'chat:message',
-    agentId,
-    message: {
-      id: msg.id,
-      agentId,
-      role: msg.role as Message['role'],
-      content: msg.content,
-      tokenCount: null,
-      modelId: null,
-      cost: null,
-      latencyMs: null,
-      createdAt: new Date().toISOString(),
-    },
-  });
-}
 
 // Config (reads from the DB config table, falls back to defaults)
 
@@ -98,15 +79,10 @@ export interface SpawnParams {
   classification?: 'ronin' | 'apprentice' | 'sensei';
   shareUserProfile?: boolean;
   groupId?: string;
-  /** When set, replaces the ENTIRE initial task message, complete_task instructions included. */
-  initialMessage?: string;
   /** Technique IDs to equip on this agent (pre-loaded into context) */
   equippedTechniques?: string[];
   /** Custom always-loaded tools for this agent (overrides role defaults); the floor validates. */
   alwaysLoadedTools?: unknown;
-  /** If false the agent is created but stays idle until something real wakes it (a task
-   *  assignment, an A2A poke), so the parent can set up its state first. Default: true. */
-  autoStart?: boolean;
 }
 
 export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string; name: string; status: string; persist: boolean; warnings: string[] }> {
@@ -127,7 +103,6 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     groupId,
     equippedTechniques = [],
     alwaysLoadedTools,
-    autoStart = true,
   } = params;
 
   // Validate the contract up front so the failure names the field that was missed: the schema
@@ -369,65 +344,29 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     }
   }
 
-  const runtime = getAgentRuntime();
-  let taskMessage: string;
-
-  if (params.initialMessage) {
-    // Custom initial message provided, use it, but always remind about complete_task
-    taskMessage = params.initialMessage;
-    if (!params.initialMessage.toLowerCase().includes('complete_task')) {
-      taskMessage += '\n\nIMPORTANT: When you are finished, you MUST call complete_task with status="complete" and a summary. Do NOT just stop responding.';
-    }
-  } else if (systemPrompt.toLowerCase().includes('complete_task')) {
-    // System prompt already mentions complete_task, don't inject default instructions
-    taskMessage = `Your task: ${systemPrompt}\n\nBegin working immediately.`;
-  } else {
-    // Default: inject complete_task instructions
-    taskMessage = `Your task: ${systemPrompt}
-
-IMPORTANT INSTRUCTIONS:
-1. Begin working immediately.
-2. Use absolute file paths (e.g., /Users/<your-user>/Desktop/...), do NOT use ~ or relative paths, as they may resolve differently in your context.
-3. If you have been assigned a tracker task, hand it in with work_update(action="hand_in", task_id=YOUR_TASK_ID, outcome="finished", proof=[...], note="what you did") BEFORE calling complete_task.
-4. When you have completed the task, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.
-5. If you get stuck or cannot complete the task, call complete_task with status="blocked" or status="fallen" and explain why.
-6. Do not wait for further instructions unless you need clarification, just do the work and report back via complete_task.`;
-  }
-
-  // Append task ID context if this agent has an associated tracker task
-  if (taskId) {
-    taskMessage += `\n\nYour tracker task ID is: ${taskId}, update its status when you finish.`;
-  }
-
-  if (autoStart === false) {
-    // Spawned but not poked: skip the initial message and the runtime trigger. Something else
-    // (an A2A message, a task assignment, send_to_agent) will wake it.
-    logger.info('Spawned with auto_start=false, agent stays idle until externally poked', { agentId, name });
-    return { agentId, name, status: 'idle', persist, warnings };
-  }
-
-  // THE KICKOFF IS THE ENGINE, NOT THE OWNER: this text is the engine composing an instruction,
-  // never a person talking, so it is an engine event, not an owner-lane user row: an owner-lane
-  // row makes the worker chat AT the owner instead of reporting through its report tools. The
-  // kickoff still wakes the agent (handleMessage reads the persisted rows), with identical text.
-  const initMsgId = uuidv4();
-  insertEngineEventIfAbsent({
-    id: initMsgId, agentId, content: taskMessage,
-    sourceAgentId: null, originIntent: 'spawn_kickoff',
-    work: taskId ? { taskId, runId: null, rootKind: 'task', rootId: taskId } : null,
-  });
-  broadcastMessage(agentId, { id: initMsgId, role: 'user', content: taskMessage });
-
-  runtime.handleMessage(agentId, taskMessage).catch(err => {
-    logger.error('Spawned agent initial run failed', {
-      agentId,
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  });
-
   return { agentId, name, status: 'idle', persist, warnings };
 }
 
+
+/** The working rules a new helper's job carries in its ASSIGN: the caller's own first message, else the default. */
+export function jobBrief({ systemPrompt, initialMessage }: { systemPrompt: string; initialMessage?: string }): string {
+  if (initialMessage) {
+    // A custom first message is used as written, with a reminder of how to finish when it names none.
+    if (initialMessage.toLowerCase().includes('complete_task')) return initialMessage;
+    return `${initialMessage}\n\nIMPORTANT: When you are finished, reply on this thread with send_to_agent(intent="COMPLETE") carrying your full result (that hands your task in), then call complete_task with status="complete" and a summary. Do NOT just stop responding.`;
+  }
+  // A system prompt that already says how to finish gets no default instructions.
+  if (systemPrompt.toLowerCase().includes('complete_task')) return `Your task: ${systemPrompt}\n\nBegin working immediately.`;
+  const steps = [
+    'Begin working immediately.',
+    'Use absolute file paths (e.g., /Users/<your-user>/Desktop/...), do NOT use ~ or relative paths, as they may resolve differently in your context.',
+    'When the work is done, reply on this thread with send_to_agent(intent="COMPLETE", thread_id=<the thread_id named at the end of this message>, payload=<your full result>). That reply hands your task in. If it cannot be done, send intent="FAIL" with the reason instead.',
+    'After that reply, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.',
+    'If you get stuck or cannot complete the task, call complete_task with status="blocked" or status="fallen" and explain why.',
+    'Do not wait for further instructions unless you need clarification, just do the work and report back via complete_task.',
+  ];
+  return `Your task: ${systemPrompt}\n\nIMPORTANT INSTRUCTIONS:\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
+}
 
 export function terminateAgent(agentId: string, reason?: string): void {
   const db = getDb();
@@ -506,32 +445,22 @@ export function terminateAgent(agentId: string, reason?: string): void {
     closeSession(agentId).catch(() => {});
   }).catch(() => {});
 
-  // Cascade: terminate only apprentice children (sensei and ronin survive)
-  const children = db.prepare(`
-    SELECT id FROM agents WHERE parent_agent = ? AND status != 'terminated' AND classification = 'apprentice'
-  `).all(agentId) as Array<{ id: string }>;
-
-  for (const child of children) {
-    terminateAgent(child.id, `Parent ${agentId} terminated`);
-  }
+  endApprentices(agentId);
 }
 
-
-// SQLite writes created_at via datetime('now'): UTC wall-clock text with no zone, which bare
-// `new Date(text)` reads as LOCAL time. Read it as an instant, the timeout_at way; 0 when unparseable.
-export function runtimeSecondsSince(createdAt: string, nowMs: number = Date.now()): number {
-  const iso = createdAt.replace(' ', 'T');
-  const zoned = createdAt.includes('Z') || /[+-]\d{2}:?\d{2}$/.test(createdAt) ? iso : `${iso}Z`;
-  const ms = new Date(zoned).getTime();
-  if (Number.isNaN(ms)) return 0;
-  return Math.floor((nowMs - ms) / 1000);
+/** An ending agent ends its apprentice helpers; sensei and ronin survive. */
+function endApprentices(agentId: string): void {
+  const children = getDb().prepare(
+    "SELECT id FROM agents WHERE parent_agent = ? AND status != 'terminated' AND classification = 'apprentice'",
+  ).all(agentId) as Array<{ id: string }>;
+  for (const child of children) terminateAgent(child.id, `Parent ${agentId} terminated`);
 }
+
 
 export async function completeAgent(
   agentId: string,
   status: 'complete' | 'fallen' | 'blocked',
   summary: string,
-  results?: string,
 ): Promise<void> {
   const db = getDb();
 
@@ -541,7 +470,6 @@ export async function completeAgent(
     parent_agent: string | null;
     task_id: string | null;
     config: string;
-    created_at: string;
     classification: string | null;
     agent_type: string | null;
   } | undefined;
@@ -550,23 +478,6 @@ export async function completeAgent(
     logger.warn('Cannot complete: agent not found', { agentId });
     return;
   }
-
-  const messageStats = db.prepare(`
-    SELECT COUNT(*) as count, COALESCE(SUM(token_count), 0) as total_tokens
-    FROM messages WHERE agent_id = ?
-  `).get(agentId) as { count: number; total_tokens: number };
-
-  const costStats = db.prepare(`
-    SELECT COALESCE(SUM(cost), 0) as total_cost
-    FROM audit_log WHERE agent_id = ? AND action_type = 'model_call'
-  `).get(agentId) as { total_cost: number };
-
-  const toolStats = db.prepare(`
-    SELECT COUNT(*) as count FROM audit_log
-    WHERE agent_id = ? AND action_type IN ('tool_call', 'file_read', 'file_write', 'exec')
-  `).get(agentId) as { count: number };
-
-  const durationSeconds = runtimeSecondsSince(agent.created_at);
 
   // Sensei agents and anything marked `agent_type='persistent'` are persistent regardless of the
   // config JSON: completeAgent does its own raw status write, so the terminateAgent guard cannot help.
@@ -595,8 +506,9 @@ export async function completeAgent(
     writeAgentStatus(agentId, 'idle');
     logger.info('Persistent agent completed task, remaining idle', { agentId, name: agent.name });
   } else {
-    // Non-persistent: terminate immediately
+    // Non-persistent: terminate immediately, with its own helpers
     writeAgentStatus(agentId, 'terminated');
+    endApprentices(agentId);
 
     // Close browser session if open (same fire-and-forget as terminateAgent)
     import('./browser.js').then(({ closeSession }) => {
@@ -610,46 +522,6 @@ export async function completeAgent(
     timeoutTimers.delete(agentId);
   }
 
-  if (agent.parent_agent) {
-    const completionText = [
-      `Agent "${agent.name}" completed with status: ${status}`,
-      '',
-      `Summary: ${summary}`,
-      results ? `\nResults:\n${results}` : '',
-      '',
-      `Stats: ${messageStats.count} messages, ${messageStats.total_tokens} tokens, $${costStats.total_cost.toFixed(4)} cost, ${durationSeconds}s runtime, ${toolStats.count} tool calls`,
-    ].filter(Boolean).join('\n');
-
-    sendAgentMessage(agentId, agent.parent_agent, 'result', completionText, {
-      status,
-      summary,
-      results,
-      stats: {
-        tokensUsed: messageStats.total_tokens,
-        cost: costStats.total_cost,
-        durationSeconds,
-        toolCallsCount: toolStats.count,
-      },
-    });
-
-    // The parent learns of the completion as a BRIEF, self-attributed note in its awareness lane,
-    // never the full result in its conversation: an engine-tagged, platform-noise row compaction
-    // cannot fold into its context, so the parent never reads another agent's work out of its own
-    // history. The FULL result stays on the agent bus (above) for the parent to pull deliberately.
-    const firstSentence = (summary ?? '').split(/(?<=[.!?])\s/)[0] ?? '';
-    const brief = firstSentence.length > 180 ? `${firstSentence.slice(0, 177)}...` : firstSentence;
-    // The Dreamer is a per-batch agent: a notice per completion would drip N notices per nightly
-    // cycle, so it posts ONE consolidated notice at cycle end; every other agent gets its note.
-    const { isDreamerAgent: isDreamer } = await import('../config/platform.js');
-    if (!isDreamer(agentId)) {   // identity by agent id, never by display name
-      postAgentNotice({
-        toAgentId: agent.parent_agent,
-        fromName: agent.name ?? 'sub-agent',
-        brief: brief || `Finished my work (${status}).`,
-      });
-    }
-  }
-
   // The explicit agent.task_id link (set at spawn) is the identity. Without it, an assigned task
   // resolves ONLY when unambiguous (exactly one candidate): several must not guess the wrong task.
   const resolvedTaskId = resolveAgentTaskId(agentId, agent.task_id);   // `agent/agent-task.ts`
@@ -659,19 +531,6 @@ export async function completeAgent(
     if (status === 'blocked') {
       const held = setHold(resolvedTaskId, 'blocked', summary.split('\n')[0] || `apprentice "${agent.name}" is blocked`, agentId);
       if (!held.ok) logger.warn('completeAgent: block refused', { agentId, taskId: resolvedTaskId, why: held.why }, agentId);
-    }
-
-    // Fire onTaskComplete so the parent also gets a structured note carrying the original ask; the
-    // parent notification above still fires, this one only adds what it does not carry.
-    try {
-      const { onTaskComplete } = await import('./v2/hooks/task-complete.js');
-      await onTaskComplete(resolvedTaskId, agentId);
-    } catch (err) {
-      logger.warn('onTaskComplete hook threw, non-fatal, parent will only see the legacy notification', {
-        agentId,
-        taskId: resolvedTaskId,
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
   }
 
@@ -721,15 +580,6 @@ export async function completeAgent(
     name: agent.name,
     status,
     summary: summary.slice(0, 200),
-    // The queries above are unbounded (WHERE agent_id only), so these are LIFETIME totals: for a
-    // RESIDENT (hundreds of batches) they accumulate across months; label them as such.
-    lifetimeStats: {
-      messages: messageStats.count,
-      tokens: messageStats.total_tokens,
-      cost: costStats.total_cost,
-      duration: durationSeconds,
-      toolCalls: toolStats.count,
-    },
   }, agentId);
 
   // Broadcast the agent's new status
@@ -921,7 +771,7 @@ export function fireSpawnTimeoutUndecided(agentId: string): void {
 
 export interface SpawnTimeoutDecisionResult { ok: boolean; message: string }
 
-/** Apply the creator's decision (creator-only; the user path is the dashboard). extend: new
+/** Apply the creator's or the main agent's decision (the owner's path is the dashboard). extend: new
  *  timeout_at + re-armed decision timer. terminate: flows through terminateAgent. */
 export async function applySpawnTimeoutDecision(opts: {
   callerAgentId: string;
@@ -941,10 +791,10 @@ export async function applySpawnTimeoutDecision(opts: {
 
   if (!agent) return { ok: false, message: `No agent found for id ${agentId}.` };
 
-  // Creator-only. The user path is the dashboard, not this tool.
+  // Its creator or the main agent decides; the owner's path is the dashboard.
   const creatorId = agent.created_by ?? agent.parent_agent;
-  if (creatorId !== callerAgentId) {
-    return { ok: false, message: `Only the agent that created "${agent.name}" can decide its timeout, and you did not create it. If you are the owner, extend or dismiss it from the dashboard instead.` };
+  if (creatorId !== callerAgentId && !isPrimaryAgent(callerAgentId)) {
+    return { ok: false, message: `Only the agent that created "${agent.name}" or the main agent can decide its timeout, and you are neither. If you are the owner, extend or dismiss it from the dashboard instead.` };
   }
 
   if (agent.status === 'terminated') {

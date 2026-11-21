@@ -27,7 +27,7 @@ import { declareDeliverableOnSchedule, declaredDeliverableShape, findLiveRecurri
 import { calculateNextRun, scheduledTaskFromRow, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type WallClock } from '../scheduler/engine.js';
 import { broadcast } from '../gateway/ws.js';
 import { isPMAgent, isPrimaryAgent } from '../config/platform.js';
-import { taskWriteRefusal, escalationPointer } from '../work/row-authority.js';
+import { taskWriteRefusal, standardEditRefusal, escalationPointer } from '../work/row-authority.js';
 import { turnContext, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { formatTimeForAgent } from '../services/format-time.js';
@@ -385,7 +385,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
 
     // Give every inline task a goal (PM cannot validate a task with none): the caller's goal, else the
     // task's description, else its title. Only fills when empty, never overwrites a real goal.
-    const measureLines = result.taskIds.map((id, i) => { const m = opts.taskMeasures?.[i]; return m ? applyMeasureToTask(id, m) : null; });
+    const measureLines = result.taskIds.map((id, i) => { const m = opts.taskMeasures?.[i]; return m ? applyMeasureToTask(id, m, { setBy: agentId, atOpen: true }) : null; });
     for (let i = 0; i < result.taskIds.length; i++) {
       const id = result.taskIds[i];
       const t = getTask(id);
@@ -619,7 +619,7 @@ export async function trackerCreateTask(agentId: string, args: Record<string, un
       // broadcast.
       goal,
     });
-    const measureSet = opts.measure ? applyMeasureToTask(taskId, opts.measure) : null;
+    const measureSet = opts.measure ? applyMeasureToTask(taskId, opts.measure, { setBy: agentId, atOpen: true }) : null;
 
     // The view createTask put on the wire. Later writes (on_deck transition, fire time, group) change the
     // row after it, so the settle frame at the end compares against this one and corrects the wire if the
@@ -1103,6 +1103,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     // Goal edits are special: PM watches for goalpost-narrowing, so both old and new are logged with a
     // diff.
     if (goal !== undefined) {
+      const refused = standardEditRefusal(agentId, taskId, { goal });
+      if (refused) return refused;
       const goalTrimmed = goal.trim();
       if (!goalTrimmed) {
         return 'Error: goal cannot be empty. To edit other fields without changing goal, omit goal from the args.';
@@ -1187,6 +1189,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (!task) {
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
     }
+    writeTaskLog({ taskId, fromEntity: isPMAgent(agentId) ? 'pm' : `agent:${agentId}`, entryKind: 'evidence', actionTaken: 'edited', reason: 'the task was edited' });   // an edit is movement
 
     // Audit title/description content edits in task_log with a before/after trail, as goal edits get above.
     if (contentSnapshot) {
@@ -1909,7 +1912,7 @@ export async function trackerRetask(
     `SELECT w.id AS id, w.title AS title, w.state AS state, ${STATE_TO_STATUS_SQL('w.state')} AS status,
             w.agent_id AS assigned_to, w.goal AS goal
        FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-  ).get(taskId) as { id: string; title: string; state: string; status: string; assigned_to: string | null; goal: string | null } | undefined;
+  ).get(taskId) as { id: string; title: string; state: string; status: string; assigned_to: string; goal: string | null } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
   if (task.status === 'cancelled') {
@@ -1917,9 +1920,6 @@ export async function trackerRetask(
   }
   if (task.state === 'handed_in') {   // delivered work is decided, never regenerated over
     return `Error: task "${task.title}" (${taskId.slice(0, 8)}) is handed in and waits for a decision. Decide it instead: open its proof, then work_validate(action="decide", task_id="${taskId}", verdict="approve" or "send_back", reason).`;
-  }
-  if (!task.assigned_to) {
-    return `Error: task "${task.title}" (${taskId}) has no assigned agent, so there is nobody to retask. The PM does not move tasks (owner ruling): ${isPM ? 'tell the main agent so it can give the task a holder' : 'give the task a holder first'}.`;
   }
 
   const targetStatus = args.target_status ?? 'in_progress';
@@ -1935,6 +1935,7 @@ export async function trackerRetask(
   const sr = setTaskStatusResult(taskId, targetStatus as TrackerStatus, {
     by: isPM ? 'pm' : 'agent', actorId: pmAgentId,
     reason: `${sender} retask: ${directive.slice(0, 200)}`,
+    userQuote: typeof args.user_quote === 'string' ? args.user_quote : null,
   });
   if (!workSettled(sr.result)) return `Refused: the status of ${taskId} did not change (${sr.result.detail}).`;
   if (!sr.task) return `Error: task ${taskId} was deleted before retask could land.`;

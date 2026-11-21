@@ -11,10 +11,8 @@ vi.mock('../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engi
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
 
-import { activeRuns } from '../shared-state.js';
-import { releaseDeferredJoinRelays } from '../a2a-transport.js';
-import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, relayRows, THREAD } from './helpers/text-relay.js';
+import { relayPiecesWhole } from '../a2a-transport.js';
+import { delegatedTextRequest, helperAnswers, relayRows, ASK } from './helpers/text-relay.js';
 
 beforeEach(() => delegatedTextRequest());
 
@@ -22,15 +20,9 @@ describe('a relay carries the helper\'s file and is rooted in the request', () =
   it('the queued relay names the request as its root, has no turn, and carries the file the helper handed back', async () => {
     const file = path.join(process.env.DOJO_HOME!, 'floor-plan.pdf');
     fs.writeFileSync(file, 'plan');
-    // Held while the agent's turn runs, so the piece's record can name the helper's message, as the landing will.
-    activeRuns.add(AGENT);
+    // The piece lands after the helper's message and its files are saved, so its record names them.
     await helperAnswers('Free on the 14th; the floor plan is attached.', undefined, [file]);
-    activeRuns.delete(AGENT);
-    testDb().prepare(
-      `UPDATE deliveries SET message_id = (SELECT id FROM messages WHERE a2a_thread_id = ? AND attachments IS NOT NULL)
-        WHERE id = (SELECT result_delivery_id FROM work WHERE parent_id = 'ask:m-ask')`,
-    ).run(THREAD);
-    await releaseDeferredJoinRelays(AGENT);
+    await relayPiecesWhole(ASK, 'compile', null);
     const [relay] = relayRows();
     expect(relay).toMatchObject({ tool: 'a2a-join-relay', outcome: 'pending', root_kind: 'ask', root_id: 'm-ask', turn_number: null });
     const files = JSON.parse(relay.payload_json).files as string[];

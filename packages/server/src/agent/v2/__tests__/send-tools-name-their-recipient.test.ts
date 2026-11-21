@@ -31,7 +31,7 @@ const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation:
 function turnWith(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard', isEngineTurn = false): void {
   endTurnContext(AGENT);
   const t = openTurnContext(AGENT);
-  t.address = computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+  t.address = computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null });
 }
 
 beforeEach(() => {
@@ -89,12 +89,8 @@ describe('the refusal makes the next call obvious (#27: never block the main age
 describe('the owner is recognised by the one owner rule, never by a display name', () => {
   it('an owner turn texting the owner\'s address is "the person this turn is talking to" even when the record name differs', () => {
     ownerAddresses.add('+15550199');
-    presence.now = 'away';
-    endTurnContext(AGENT);
-    const t = openTurnContext(AGENT);
-    // An away owner's turn that no dashboard message started (owner ruling 2026-11-04 keeps a
-    // dashboard ask on the dashboard), so the reply really is texted to the owner.
-    t.address = computeTurnAddress({ autoRoutes: true, counterparty: owner, isEngineTurn: false, isNotificationTurn: false, inboundChannel: null, inboundContext: null, presence: 'away', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+    // The owner asked by text, so the reply really is texted to the owner.
+    turnWith(owner, 'imessage');
     const n = recipientNoteFor(AGENT, 'imessage_send', { recipient: '+15550199', message: 'x' });
     expect(n).toContain('This is the person this turn is talking to.');
     expect(recipientNoteFor(AGENT, 'imessage_send', { recipient: '+15550123', message: 'x' })).toContain('is not the person this turn is talking to');
@@ -159,7 +155,7 @@ describe('minors: the failure words, the iMessage recipient and the tool descrip
   it('an SMS-routed turn is told its written reply still reaches the person there', () => {
     endTurnContext(AGENT);
     const t = openTurnContext(AGENT);
-    t.address = computeTurnAddress({ autoRoutes: true, counterparty: { ...contact, channel: 'sms' }, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'sms', inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+    t.address = computeTurnAddress({ autoRoutes: true, counterparty: { ...contact, channel: 'sms' }, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'sms', inboundContext: null });
     expect(routedReplyWords(AGENT)!.where).toContain('goes to Pat Example by SMS, so tell them there');
   });
   it('the image path reads the iMessage recipient from the address, not a second field', async () => {

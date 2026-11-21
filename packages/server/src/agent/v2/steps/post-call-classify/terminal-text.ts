@@ -8,9 +8,8 @@ import { createLogger } from '../../../../logger.js';
 import { redactHandedCredentials } from '../../../../credentials/secret-fields.js';
 import { insertMessageIfAbsent, START_ACK_ORIGIN_INTENT } from '../../../../memory/message-store.js';
 import { isRowLabelOnly } from '../../../../memory/row-label-only.js';
-import { advance, type AgentTurnState } from '../../state.js';
+import type { AgentTurnState } from '../../state.js';
 import { isRoutedHumanCounterparty } from '../../counterparty.js';
-import { stillCompileOwed } from '../../compile-owed-gate.js';
 import { outputPersistenceClassifier } from '../../classifiers/output.js';
 import { stripLeadingTimeStamp } from '../../../../memory/message-stamp.js';
 import { answersALiveAsk, deliverAsAnswerToLiveAsk } from './answer-to-a-live-ask.js';
@@ -64,8 +63,6 @@ export async function runTerminalText(
   }
   // Text riding with tool calls is narration, not the reply; it is demoted unless an arm below delivers it.
   let deliveredAsStartLine = false;
-  // Separate from `deliveredAsStartLine`: a start line is not an answer, a promoted compile is.
-  let deliveredAsCompiledAnswer = false;
   let deliveredAsAnswerToLiveAsk = false;
   if (persistedContent && result.toolCalls.length > 0) {
     // A person may be waiting on this text: a waiting chat row, or a run declared deliverable-owing (the
@@ -73,39 +70,15 @@ export async function runTerminalText(
     const userDeliverableRunTurn =
       turnCtx.root?.kind === 'occurrence' &&
       DELIVERABLE_OWING_TASK_KINDS.includes(turnCtx.servedWork?.taskKind ?? '');
-    // An owed compile is a waiting person too: demoted, the answer leaves model context and is composed
-    // again. stillCompileOwed is the one predicate; startAckRepliedNow makes the promotion exactly-once.
-    const compileOwedNow =
-      !interAgentTurn && state.compileOwedAskIds.length > 0 && !startAckRepliedNow()
-        ? stillCompileOwed(state.compileOwedAskIds)
-        : [];
     const answersLiveAsk = answersALiveAsk({
       interAgentTurn, isHumanContinuation,
       surfacedReplyThisTurn: state.surfacedReplyThisTurn, startAckRepliedNow,
     });
-    if ((hasUnansweredUser || userDeliverableRunTurn || compileOwedNow.length > 0 || answersLiveAsk) && !interAgentTurn) {
+    if ((hasUnansweredUser || userDeliverableRunTurn || answersLiveAsk) && !interAgentTurn) {
       turnCtx.deferredUserReplyWithTools = persistedContent;
       turnCtx.deferredNoteId = null;   // set below if a note is written for THIS text
       // noteTerminalAnswer is required: once the turn ends, settlement refuses an agent-text bubble the
       // turn's answer key does not name. A fresh row id: `messageId` holds this iteration's tool_use row.
-      if (compileOwedNow.length > 0) {
-        const answer = turnCtx.deferredUserReplyWithTools.trim();
-        turnCtx.deferredUserReplyWithTools = null;
-        deliveredAsCompiledAnswer = true;
-        const answerId = uuidv4();
-        await deliverEngineUserAck(answer, null, answerId, 'agent-text');
-        noteTerminalAnswer(answerId, 'the owed compiled answer, delivered from the round it was composed in');
-        state = advance(state, {
-          lastAssistantTextForIM: stripMoodMarker(answer),
-          surfacedReplyThisTurn: true,
-          compileGateSatisfied: true,
-        });
-        logger.info('v2 T52: the owed compiled answer rode with a tool call; delivered as the answer now instead of demoted to a note the model itself could not see', {
-          agentId, turnNumber, owed: compileOwedNow.length,
-          asks: compileOwedNow.slice(0, 3).map((id) => id.slice(0, 12)),
-          answerId, chars: answer.length, preview: answer.slice(0, 60),
-        }, agentId);
-      } else
       // Start line: when a start ack is owed (steer armed, or threshold passed with nothing heard), the
       // model's own words riding a tool call are delivered as the visible ack, consumed so nothing double-sends.
       if (
@@ -139,7 +112,7 @@ export async function runTerminalText(
     }
     // Demote, don't discard: streamed narration becomes a model-invisible working note and the bubble converts
     // in place. The note is the owner's to read only when the turn serves a waiting person.
-    if (!interAgentTurn && !deliveredAsStartLine && !deliveredAsCompiledAnswer && !deliveredAsAnswerToLiveAsk && !isRowLabelOnly(persistedContent)) {
+    if (!interAgentTurn && !deliveredAsStartLine && !deliveredAsAnswerToLiveAsk && !isRowLabelOnly(persistedContent)) {
       try {
         const noteId = uuidv4();
         // A routed-channel note was never delivered there, so it is internal (hidden by default).

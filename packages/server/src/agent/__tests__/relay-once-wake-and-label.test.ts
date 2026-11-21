@@ -1,18 +1,13 @@
-// t196 (A1) - A RELAYED ANSWER IS NOT REPEATED.
-//
-// The engine relays a single-piece delegated answer to the person who asked. Two things used to make
-// the delegating agent tell it again on the next turn:
-//   (1) the woken agent-thread turn could not see the relay and its footer said "notify the user";
-//   (2) the relay row's label named the request it answered but never said it was SENT.
-// Both now state the fact the `deliveries` row already records. Driven through the REAL transport
-// door, the REAL runtime wake, the REAL relay writer; only the model loop is a no-op.
+// A helper's reply the join owns wakes nobody: the request it answers is the one wake. When the Dojo relays the
+// answer, the relay row's label says it was sent, to whom and where. Driven through the real transport door and
+// the real relay writer; only the model loop is a no-op.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { claimAsk, stampClaimingTurn, openDelegationJoin } from '../../work/store.js';
-import { deliverA2AMessage } from '../a2a-transport.js';
+import { deliverA2AMessage, relayPiecesWhole } from '../a2a-transport.js';
 import { getRecentMessages } from '../../memory/store.js';
 import { labelRows } from '../../memory/row-label.js';
 import * as shared from '../shared-state.js';
@@ -100,44 +95,19 @@ async function helperReplies(intent: string): Promise<void> {
   expect(r.delivered).toBe(true);
 }
 
-/** What the woken agent-thread turn reads: the inbound agent row, footer included. */
-const wakeText = (): string =>
-  (db().prepare(`SELECT content FROM messages WHERE agent_id = ? AND role = 'user' AND lane = 'a2a' AND a2a_thread_id = ?`)
-    .get(AGENT, THREAD) as { content: string }).content;
-
-describe('t196 (A1.2) - the wake footer says the answer was already sent', () => {
+describe('a reply the join owns wakes nobody; its request is the one wake', () => {
   for (const intent of ['COMPLETE', 'ANSWER', 'DELIVERABLE']) {
-    it(`${intent}: names the owner, the channel and the instant, and says not to tell him again`, async () => {
+    it(`${intent}: the helper's row carries no wake, and the request is back in the queue, due now`, async () => {
       await boot();
       await delegate();
       await helperReplies(intent);
-      const relay = db().prepare(`SELECT channel, created_at FROM deliveries WHERE agent_id = ? AND tool = 'a2a-join-relay' AND outcome = 'delivered'`)
-        .get(AGENT) as { channel: string; created_at: string } | undefined;
-      expect(relay, 'the engine relayed the answer').toBeDefined();
-      const text = wakeText();
-      expect(text).toMatch(/already sent to TestUser on dashboard at /);
-      expect(text).toMatch(/do not tell (him|them) again/i);
-      expect(text).toMatch(/update (your )?tracker only/i);
-      expect(text).not.toMatch(/notify the user/i);
-      expect(text).not.toMatch(/relay to user/i);
+      expect(db().prepare('SELECT a2a_requires_response AS w FROM messages WHERE agent_id = ? AND a2a_thread_id = ?').get(AGENT, THREAD)).toEqual({ w: 0 });
+      const ask = db().prepare('SELECT state, next_attempt_at AS due FROM work WHERE id = ?').get(ASK) as { state: string; due: number | null };
+      expect(ask.state).toBe('claimed');
+      expect(ask.due).not.toBeNull();
+      expect(db().prepare(`SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = ? AND tool = 'a2a-join-relay'`).get(AGENT)).toEqual({ n: 0 });
     });
   }
-
-  it('a relay held back until the delegating turn ends: the footer does not claim it is sent, and does not invite a second send', async () => {
-    await boot();
-    await delegate();
-    shared.activeRuns.add(AGENT);
-    try {
-      await helperReplies('COMPLETE');
-    } finally {
-      shared.activeRuns.delete(AGENT);
-    }
-    expect(db().prepare(`SELECT COUNT(*) AS n FROM deliveries WHERE agent_id = ? AND tool = 'a2a-join-relay'`).get(AGENT)).toEqual({ n: 0 });
-    const text = wakeText();
-    expect(text).not.toMatch(/already sent/i);
-    expect(text).not.toMatch(/notify the user/i);
-    expect(text).toMatch(/the engine (sends|delivers) this answer to TestUser itself/i);
-  });
 });
 
 describe('t196 (A1.1) - the relay row says it was sent', () => {
@@ -145,8 +115,9 @@ describe('t196 (A1.1) - the relay row says it was sent', () => {
     await boot();
     await delegate();
     await helperReplies('COMPLETE');
+    await relayPiecesWhole(ASK, 'compile', null);
     const rows = getRecentMessages(AGENT, 100);
-    const relay = rows.find((r) => r.role === 'assistant' && r.content.startsWith('Dojo: Heard back from'))!;
+    const relay = rows.find((r) => r.role === 'assistant' && r.content.startsWith('Dojo: The helper'))!;
     expect(relay).toBeDefined();
     const label = labelRows(AGENT, rows).get(relay.id)!;
     expect(label).toMatch(/sent to TestUser on dashboard at [^;]+ by the engine as the result of the request of /);

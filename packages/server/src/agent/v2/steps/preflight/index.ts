@@ -16,7 +16,6 @@ import { runTurnClassification } from './turn-classification.js';
 import { runCounterpartyAndRecord } from './counterparty-and-record.js';
 import { runTurnClosures } from './turn-closures.js';
 import { runStartAck } from './start-ack.js';
-import { runCompileGate } from './compile-gate.js';
 import { runRecallFlag } from './recall-flag.js';
 import { runStepContexts } from './step-contexts.js';
 import type { StepContextsOutputs } from './step-contexts.js';
@@ -167,9 +166,6 @@ export async function runPreflight(
     counterpartyIsAgentSender, startAckArmed, startAckArmedAtMs, startAckRepliedNow,
     fireStartAckIfOwed,
   } = runStartAck(turnCtx, ctx, { db, counterparty, triggerRow, turnNumber });
-
-  // Never arms on a turn serving a waiting human (`triggerRow` set); see `compile-gate.ts`.
-  runCompileGate(turnCtx, ctx, { triggerRow });
 
   runRecallFlag(turnCtx, ctx, { db });
 

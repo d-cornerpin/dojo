@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
-import { withUnit } from '../db/unit.js';
+import { afterCommit, withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { isPrimaryAgent } from '../config/platform.js';
 // `work/outcome.ts` declares the boundary's answer; re-exported here so callers keep one import path.
@@ -98,6 +98,7 @@ interface WorkRow {
   agent_id: string;
   title: string | null;
   source_message_id: string | null;
+  a2a_thread_id: string | null;
 }
 
 const now = (): number => Date.now();
@@ -135,7 +136,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
 
   // ── G1: the row must exist; a stale id is refused with something steerable. ──
   const row = db.prepare(
-    'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children, agent_id, title, source_message_id FROM work WHERE id = ?',
+    'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children, agent_id, title, source_message_id, a2a_thread_id FROM work WHERE id = ?',
   ).get(workId) as WorkRow | undefined;
   if (!row) {
     return { kind: 'refused', workId, reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
@@ -231,6 +232,21 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   const at = now();
 
   withUnit(() => {
+    // A request that ends ends its open pieces with it: called off, they are abandoned and their helpers told;
+    // failed, they fail, nobody is told, and a late answer takes the late road.
+    const ends = row.kind === 'ask' && (input.to === 'abandoned' || input.to === 'failed') && !isTerminal(from);
+    const pieces = ends ? db.prepare(`SELECT id, assignee_agent AS helper, root_id AS thread FROM work
+      WHERE parent_id = ? AND kind = 'task' AND state IN ${CHILD_OPEN_STATES}`).all(workId) as Array<{ id: string; helper: string | null; thread: string }> : [];
+    const ended = pieces.filter((p) => transition(p.id, {
+      to: input.to, by: input.by, actorId, evidenceRef: input.evidenceRef,
+      reason: input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',
+    }).kind === 'applied');
+    if (ended.length > 0 && input.to === 'abandoned') {
+      afterCommit(() => void import('../agent/a2a-transport.js')
+        .then((m) => m.tellHelpersTheRequestEnded(ended, input.by === 'owner'))
+        .catch((err: unknown) => logger.warn('the helpers of an ended request were not told', { workId, error: String(err) })));
+    }
+
     db.prepare(
       `UPDATE work SET
          state = ?,
@@ -308,8 +324,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     retireObligationMemory({ workId, agentId: row.agent_id, title: row.title, state: input.to });
   }
 
-  // A tracker task that ended or was handed in may unblock settling of the owner's request linked to it.
-  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id);
+  // A task ended or handed in may settle its owner's request; one ended undone also judges the request on its thread.
+  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal && input.to !== 'done' ? row.a2a_thread_id : null);
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
   return { kind: 'applied', value };
@@ -482,13 +498,12 @@ export function abandonUnservableAsks(agentId?: string): {
 
 export const JOIN_TTL_MINUTES = 60;
 
-/** Joins older than this are stale: nothing re-fires them and the owner is not told about them. */
+/** How far back since its last look the sweep and the boot pass scan a join. */
 export const JOIN_MAX_AGE_DAYS = 7;
 
-/** Hard ceiling on TTL extension (four TTLs): the reaper grants more time while a piece's assignee is
- *  provably working, and this bounds that so a wedged agent that looks busy is still reaped. Past it the
- *  join fails closed. */
-export const JOIN_LIVENESS_MAX_TOTAL_MS = 4 * JOIN_TTL_MINUTES * 60_000;
+/** SQL: an asker's piece is still open on the thread `thread` (a column or expression). */
+export const openPieceOnSql = (thread: string): string => `EXISTS (SELECT 1 FROM work c WHERE c.root_kind = 'a2a_thread'
+  AND c.root_id = ${thread} AND c.parent_id IS NOT NULL AND c.state IN ('open', 'claimed', 'blocked'))`;
 
 /** The A2A per-thread hop cap, keyed on `work.hop_count`. */
 export const THREAD_HOP_CAP = 8;
@@ -650,6 +665,7 @@ export function findJoinChildByThread(agentId: string, threadId: string): JoinCh
       FROM work
      WHERE agent_id = ? AND kind = 'task' AND root_kind = 'a2a_thread' AND root_id = ?
        AND parent_id IS NOT NULL AND state IN ${CHILD_OPEN_STATES}
+       AND NOT EXISTS (SELECT 1 FROM work p WHERE p.id = work.parent_id AND p.state = 'failed')
      ORDER BY opened_at DESC LIMIT 1
   `).get(agentId, threadId) as
     | { id: string; parent_id: string; agent_id: string; root_id: string; state: WorkState;
@@ -791,7 +807,7 @@ function loudOnPieceAbort<T>(childId: string, settle: () => T): T {
 
 /** A piece came back: the child settles `done` against its delivery, its text recorded in the same
  *  transaction, and the countdown moves. An empty reply is refused here: the piece stays outstanding so
- *  the real one can land (else the TTL fails the join closed). */
+ *  the real one can land (else it ends once its helper's work has stopped). */
 export function landPiece(
   childId: string,
   p: { deliveryId: string; content: string; messageId?: string | null; actorId?: string | null },
@@ -810,7 +826,7 @@ export function landPiece(
     to: 'done', by: 'agent', actorId: p.actorId ?? 'a2a',
     reason: 'the delegated piece came back',
     resultDeliveryId: p.deliveryId,
-    note: body.slice(0, 4000),
+    note: body,
   }));
   return { result, join: joinAfter(childId) };
 }
@@ -823,7 +839,7 @@ export function settlePieceWithoutResult(
 ): PieceSettleResult {
   const result = loudOnPieceAbort(childId, () => transition(childId, {
     to: p.to, by: 'agent', actorId: p.actorId ?? 'a2a', reason: p.reason,
-    note: p.content ? p.content.slice(0, 4000) : null,
+    note: p.content || null,
   }));
   return { result, join: joinAfter(childId) };
 }
@@ -932,7 +948,7 @@ export function dueJoins(nowMs: number, limit = 25): JoinState[] {
   const rows = getDb().prepare(`
     SELECT id FROM work
      WHERE remaining_children IS NOT NULL AND ttl_at IS NOT NULL
-       AND ttl_at <= ? AND opened_at >= ?
+       AND ttl_at <= ? AND updated_at >= ?
        AND state NOT IN ('done','failed','abandoned')
      ORDER BY opened_at ASC LIMIT ?
   `).all(nowMs, floor, limit) as Array<{ id: string }>;
@@ -949,19 +965,10 @@ export function dueJoinsUnderClosedParent(nowMs: number, limit = 25): JoinState[
   const rows = getDb().prepare(`
     SELECT id FROM work
      WHERE remaining_children > 0 AND ttl_at IS NOT NULL
-       AND ttl_at <= ? AND opened_at >= ?
+       AND ttl_at <= ? AND updated_at >= ?
        AND state = 'done'
      ORDER BY opened_at ASC LIMIT ?
   `).all(nowMs, floor, limit) as Array<{ id: string }>;
-  return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
-}
-
-export function compilePendingJoins(agentId: string, limit = 5): JoinState[] {
-  const rows = getDb().prepare(`
-    SELECT id FROM work
-     WHERE agent_id = ? AND compile_pending = 1 AND state NOT IN ('done','failed','abandoned')
-     ORDER BY opened_at ASC LIMIT ?
-  `).all(agentId, limit) as Array<{ id: string }>;
   return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
 }
 
@@ -977,25 +984,12 @@ export function failJoinClosed(
   });
 }
 
-/** Grant a waiting join more time because its assignee is provably working: a `ttl_at` write, not a
- *  `transition()`. Refuses (`extended: false`) once the join's total life passes
- *  `JOIN_LIVENESS_MAX_TOTAL_MS`, or when `opened_at` is null, so the caller can fail it closed. */
-export function extendJoinTtl(
-  parentWorkId: string, p: { grantMs: number; nowMs?: number },
-): { extended: boolean; ttlAt: number | null; reason?: 'no-join' | 'no-opened-at' | 'past-ceiling' } {
-  const nowMs = p.nowMs ?? now();
-  const state = joinState(parentWorkId);
-  if (!state) return { extended: false, ttlAt: null, reason: 'no-join' };
-  if (state.openedAt === null) return { extended: false, ttlAt: state.ttlAt, reason: 'no-opened-at' };
-  if (nowMs - state.openedAt >= JOIN_LIVENESS_MAX_TOTAL_MS) {
-    return { extended: false, ttlAt: state.ttlAt, reason: 'past-ceiling' };
-  }
-  // Granted from NOW, never from the expired deadline: a reaper that ran late must not hand out
-  // a grant that is already spent.
-  const ttlAt = nowMs + p.grantMs;
+/** Give a waiting join one more deadline (`JOIN_TTL_MINUTES`) from now, never from the expired one: a `ttl_at`
+ *  write, not a `transition()`. */
+export function extendJoinTtl(parentWorkId: string): void {
+  const nowMs = now();
   getDb().prepare('UPDATE work SET ttl_at = ?, updated_at = ? WHERE id = ?')
-    .run(ttlAt, nowMs, parentWorkId);
-  return { extended: true, ttlAt };
+    .run(nowMs + JOIN_TTL_MINUTES * 60_000, nowMs, parentWorkId);
 }
 
 // The join-delivered settle is `settleAskOnJoin` in `work/ask-settlement.ts`;
@@ -1016,7 +1010,7 @@ export function openJoins(limit = 50): JoinState[] {
   const floor = now() - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
   const rows = getDb().prepare(`
     SELECT id FROM work
-     WHERE remaining_children IS NOT NULL AND opened_at >= ?
+     WHERE remaining_children IS NOT NULL AND updated_at >= ?
        AND state NOT IN ('done','failed','abandoned')
      ORDER BY opened_at DESC LIMIT ?
   `).all(floor, limit) as Array<{ id: string }>;
@@ -1045,20 +1039,22 @@ export function findFailedJoinForThread(
     SELECT c.id AS child_id, c.parent_id AS parent_id
       FROM work c JOIN work p ON p.id = c.parent_id
      WHERE c.agent_id = ? AND c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.root_id = ?
-       AND p.state = 'failed'
+       AND (p.state = 'failed' OR (c.state <> 'done' AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = p.id AND e.kind = 'compile_resolved' AND json_extract(e.payload, '$.kind') = 'late')))
      ORDER BY c.opened_at DESC LIMIT 1
   `).get(agentId, threadId) as { child_id: string; parent_id: string } | undefined;
   return r ? { childId: r.child_id, parentId: r.parent_id } : null;
 }
 
-/** The compile answered the owner through a path that records no delivery (dashboard replies): the join
- *  stops waiting to be compiled but does not become `done`, which needs a real delivery to point at. */
-export function clearJoinCompilePending(parentWorkId: string, reason: string): number {
+/** The join stops waiting to be compiled; with `putBack` the event is the record that its answer went back to the
+ *  agent (`kind` and `evidence`, read by `newestPutBack`). Returns 1 only for the pass that cleared the flag. */
+export function clearJoinCompilePending(
+  parentWorkId: string, reason: string, putBack?: { kind: string; evidence: string | null },
+): number {
   return withUnit((): number => {
     const changed = getDb().prepare(
       'UPDATE work SET compile_pending = 0, updated_at = ? WHERE id = ? AND compile_pending = 1',
     ).run(now(), parentWorkId).changes;
-    if (changed === 1) appendEvent(parentWorkId, 'compile_resolved', 'engine', { reason });
+    if (changed === 1) appendEvent(parentWorkId, 'compile_resolved', 'engine', { reason, ...putBack });
     return changed;
   });
 }

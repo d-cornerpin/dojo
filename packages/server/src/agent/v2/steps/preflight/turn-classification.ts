@@ -9,7 +9,7 @@ import { isRowUnserved, sweepByRowid } from '../../../../memory/message-store.js
 import { messageIdAtSeq } from '../../../../memory/served-ask.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { parseA2ATrigger } from '../../classifiers/a2a.js';
-import type { WaitingConversation } from '../../counterparty.js';
+import { ENGINE_EVENT_BACKOFF_MINUTES, type WaitingConversation } from '../../counterparty.js';
 import { nextOwed, type AgentRequest, type OwedItem } from '../../owed.js';
 import { spendServe } from '../../serve-later.js';
 import { a2aRetryBudgetFor } from '../../../a2a-patience.js';
@@ -52,11 +52,12 @@ export interface TurnClassificationOutputs {
   readonly unrepliedAssign: AgentRequest | null;
 }
 
-/** Another agent's request spends a serve when a turn picks it up. Served its first time and its budget of retries,
- *  the next pickup gives it up and settles the asker's join piece, so the asker is told; true then. */
+/** Another agent's request spends a serve when a turn picks it up; served its budget, the next pickup gives it up and settles
+ *  the asker's piece, true then. One its asker still waits on is only spaced out, never given up: its piece is judged by state. */
 function givenUp(agentId: string, item: OwedItem | undefined): boolean {
   const r = item?.kind === 'agentRequest' ? item.request : undefined;
-  if (!r || !spendServe(agentId, r.rowid, a2aRetryBudgetFor(agentId).turns + 2)) return false;
+  const spaced = r?.kept ? { minutes: ENGINE_EVENT_BACKOFF_MINUTES, retryAt: null } : undefined;
+  if (!r || !spendServe(agentId, r.rowid, a2aRetryBudgetFor(agentId).turns + 2, spaced) || spaced) return false;
   sweepByRowid({ rowid: r.rowid, agentId });
   logger.warn('v2: another agent\'s request went unanswered for its budget of turns; given up', { agentId, from: r.fromName, thread: r.threadShort }, agentId);
   void import('../../../a2a-transport.js').then((m) => m.failJoinPieceForAbandonedAsk(r.messageId, r.threadShort, agentId))
@@ -123,11 +124,12 @@ export async function runTurnClassification(
   // Both A2A shapes scope the live tail to the A2A thread so the agent sees the message.
   const a2aWakeTurn = !hasUnansweredUser && (unrepliedAssign !== null || terminalWakeA2A !== null);
   if (a2aWakeTurn) turnCtx.servedRequest = unrepliedAssign;
+  // An A2A turn's root is its thread, so what the turn makes is tied to the task that thread carries.
+  if (a2aWakeTurn && unrepliedAssign) turnCtx.root = { kind: 'a2a', id: unrepliedAssign.threadId, sourceMessageId: null };
   const terminalWakeDrivesTurn = a2aWakeTurn && terminalWakeA2A !== null;
   // The driving wake is claimed by its serve edge (`served_by_turn`, stamped in counterparty-and-record),
   // so it drives exactly one turn and is never re-relayed.
   if (terminalWakeDrivesTurn && terminalWakeA2A) {
-    // An A2A wake turn's root is its thread.
     if (terminalWakeA2A.threadId) turnCtx.root = { kind: 'a2a', id: terminalWakeA2A.threadId, sourceMessageId: null };
     turnCtx.triggerMessageId = messageIdAtSeq(db, agentId, terminalWakeA2A.rowid);
   }

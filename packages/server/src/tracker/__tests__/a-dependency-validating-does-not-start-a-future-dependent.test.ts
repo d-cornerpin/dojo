@@ -1,5 +1,6 @@
 // A dependency validating only makes a dependent eligible. A dependent with a scheduled start still in
-// the future waits for it (the scheduler fires it then); one with no start, or a past one, starts now.
+// the future waits for it (the scheduler fires it then); one with no start, or a past one, starts now and
+// only that one wakes its holder.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
@@ -41,12 +42,6 @@ vi.mock('../../agent/a2a-transport.js', () => ({
   makeThreadId: (seed: string) => `thread-${seed}`,
 }));
 
-const { sent } = vi.hoisted(() => ({ sent: [] as string[] }));
-vi.mock('../../agent/agent-bus.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../agent/agent-bus.js')>()),
-  sendAgentMessage: (_from: string, _to: string, _kind: string, text: string) => { sent.push(text); },
-}));
-
 import { runMigrations } from '../../db/migrations.js';
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 import { checkDependencies } from '../../work/done/effects.js';
@@ -69,7 +64,6 @@ beforeEach(() => {
   d.prepare(`INSERT INTO models (id, provider_id, name, api_model_id) VALUES ('m-a', 'prov-a', 'M', 'm')`).run();
   d.prepare(`INSERT INTO agents (id, name, status, model_id, classification) VALUES
     ('helper', 'Helper', 'idle', 'm-a', 'apprentice'), ('pm', 'PM', 'idle', 'm-a', 'sensei')`).run();
-  sent.length = 0;
   seedTrackerTask(d, { id: 'dep-1', agentId: 'helper', status: 'in_progress', title: 'the first step' } as never);
   d.prepare(`INSERT INTO deliveries (id, agent_id, conversation_id, tool, channel, outcome, created_at)
              VALUES ('d-1', 'helper', 'conv-1', 'chat', 'dashboard', 'delivered', 1700000000000)`).run();
@@ -103,5 +97,17 @@ describe('a dependency validating makes the dependent eligible; it starts at its
     dependent('d-past', Date.now() - 2 * HOUR);
     checkDependencies('dep-1');
     expect(status('d-past')).toBe('in_progress');
+  });
+
+  it('only the dependent that starts now wakes its holder', async () => {
+    const woken = (id: string): number => (db().prepare(
+      "SELECT COUNT(*) AS c FROM messages WHERE agent_id = 'helper' AND lane = 'events' AND task_id = ? AND content LIKE '%is now unblocked%'",
+    ).get(id) as { c: number }).c;
+    dependent('d-future', Date.now() + 5 * HOUR);
+    dependent('d-none', null);
+    checkDependencies('dep-1');
+    await vi.dynamicImportSettled();
+    expect(woken('d-none')).toBe(1);
+    expect(woken('d-future')).toBe(0);
   });
 });

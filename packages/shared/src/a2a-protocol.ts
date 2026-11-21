@@ -25,6 +25,9 @@ export interface A2AEnvelope {
 
 /** Intents that put the receiver on the hook for a reply; they also reopen a closed thread. */
 export const REPLY_NEEDED_INTENTS: ReadonlySet<string> = new Set(['QUESTION', 'ASSIGN', 'BLOCK']);
+/** The final replies: each answers a request and ends the sender's part in it. `FINAL_REPLY_SQL` is the list for `IN (...)`. */
+export const FINAL_REPLY_INTENTS: ReadonlySet<string> = new Set(['ANSWER', 'DELIVERABLE', 'COMPLETE', 'FAIL']);
+export const FINAL_REPLY_SQL = [...FINAL_REPLY_INTENTS].map((i) => `'${i}'`).join(', ');
 
 export type A2ADropReason =
   | 'SEMANTIC_DUPLICATE'

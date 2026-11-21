@@ -69,6 +69,41 @@ export const anchorBack = (ms: number): void => {
   doneDb().prepare("UPDATE _migrations SET applied_at = datetime(applied_at, ?) WHERE name LIKE '901%'").run(`-${Math.round(ms / 1000)} seconds`);
 };
 
+/** The agent's turn took every engine notice sent to it (a hint, a send-back) and ended: none is still a turn coming. */
+export const turnTaken = (agentId: string): void => {
+  doneDb().prepare("UPDATE messages SET served_by_turn = 1 WHERE agent_id = ? AND lane = 'events' AND served_by_turn IS NULL").run(agentId);
+};
+
+let reviewTurn = 1000;
+/** The PM's turn took its newest report and ended: the review ran. */
+export function pmReviewEnded(pmId: string): void {
+  const n = ++reviewTurn;
+  doneDb().prepare("INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason) VALUES (?, ?, datetime('now'), datetime('now'), 1, 'answered')").run(pmId, n);
+  doneDb().prepare("UPDATE messages SET served_by_turn = ? WHERE agent_id = ? AND origin_intent = 'pm_review' AND served_by_turn IS NULL").run(n, pmId);
+}
+
+/** A person's request the main agent delegated to `worker` on the thread of `task`: the request kept on that task. */
+export async function keptRequest(worker: string, task: string, main: string): Promise<string> {
+  const { openAsk, claimAsk, openDelegationJoin } = await import('../../../store.js');
+  const at = Date.now() - 60_000;
+  doneDb().prepare("UPDATE work SET a2a_thread_id = 'thread-kept' WHERE id = ?").run(task);
+  doneDb().prepare("INSERT OR IGNORE INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-kept', ?, 'dashboard', 'owner')").run(main);
+  doneDb().prepare("INSERT INTO messages (id, agent_id, role, content, lane, channel, conversation_id, created_at) VALUES ('m-kept', ?, 'user', 'Get me the report', 'owner', 'dashboard', 'conv-kept', ?)").run(main, at);
+  const ask = openAsk({ agentId: main, messageId: 'm-kept', conversationId: 'conv-kept', requesterId: 'owner', openedAt: at, title: 'report' });
+  claimAsk(ask, main);
+  openDelegationJoin({ parentWorkId: ask, agentId: main, replyConversationId: 'conv-kept', ttlAt: Date.now() + 3_600_000,
+    threads: [{ threadId: 'thread-kept', assigneeAgent: worker, intent: 'ASSIGN', hopCount: 0 }] });
+  return ask;
+}
+
+/** The request and its piece, once every engine pass the last step started has run. */
+export async function keptState(ask: string): Promise<[string, string]> {
+  await vi.dynamicImportSettled();
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+  const state = (id: string, col = 'id'): string => (doneDb().prepare(`SELECT state FROM work WHERE ${col} = ?`).get(id) as { state: string }).state;
+  return [state(ask), state(ask, 'parent_id')];
+}
+
 /** Reset what the stand-ins recorded. */
 export function resetLadderWorld(): void {
   cards.length = 0;
@@ -91,7 +126,7 @@ export async function pmTurn(pmId: string, act: () => Promise<void>, thread: str
   if (thread) {
     ctx.address = (await import('../../../../agent/v2/turn-address.js')).computeTurnAddress({
       counterparty: await answerCounterparty(thread, from), isEngineTurn: false, isNotificationTurn: false, inboundChannel: null,
-      inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: false, ownerAffinityChannel: null, autoRoutes: false,
+      inboundContext: null, autoRoutes: false,
     });
   }
   try { await act(); } finally { endTurnContext(pmId); }

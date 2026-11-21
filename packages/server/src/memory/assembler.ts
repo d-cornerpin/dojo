@@ -32,6 +32,7 @@ import {
   POST_BUDGET_LANES,
   reserveLadderFor,
   LANE_TRUNCATION_MARKER,
+  LOOP_TAIL_EXTRA_STEP_TOKENS,
   type AllocationReport,
   type Lane,
   type LaneCandidate,
@@ -49,7 +50,8 @@ import { otherThreadsReserveExtra } from './other-threads-lane.js';
 import { otherThreadsRoomTokens } from './other-threads-room.js';
 import { buildIntegrationStatusLane } from './integration-status-lane.js';
 import { todaysBriefing } from './briefing.js';
-import { COMPILE_ORDER_PIECES_MARKER } from '../work/join-drive.js';
+import { joinOrderFor } from '../agent/a2a-transport.js';
+import { askIdForMessage } from '../work/store.js';
 import { pinnedContextSection } from '../vault/retrieval.js';
 import { keepsNoSummaries, pmViewParts } from './pm-view.js';
 import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
@@ -59,7 +61,7 @@ import { turnBoundary } from '../agent/turn-state.js';
 // This one is the turn's own ambient facts.
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import type { Summary } from './dag.js';
-import type { Message, MessageOrigin } from '@dojo/shared';
+import type { Message } from '@dojo/shared';
 import { parseTechniqueFreshRead, parseWorkingNote } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
@@ -279,9 +281,6 @@ export interface AssembledContext {
   scratchpadLane?: string | null;
   eventsLane?: string | null;
   integrationStatusLane?: string | null;
-  /** Whether the fan-out compile order arrived whole: null when none, false when not intact in
-   *  `messages`. */
-  compileOrderIntact?: boolean | null;
   view?: ContextView;
 }
 
@@ -336,13 +335,6 @@ function buildAwarenessGist(inboundMetaRaw: string | null | undefined, rawConten
   if (subject) parts.push(`subject: "${subject}"`);
   if (preview) parts.push(preview.slice(0, 160));
   return parts.join(' | ');
-}
-
-/** The fan-out compile-order exemption, named once so the seams that honour it agree: `fanout_join` is
- *  the one engine intent carrying content the agent cannot get elsewhere; other engine rows are ambient
- *  and stay a gist. */
-export function isFanoutJoinImperative(m: { origin?: MessageOrigin | null }): boolean {
-  return m.origin?.kind === 'engine' && m.origin?.intent === 'fanout_join';
 }
 
 // The message context, built from the lane table (`memory/lanes.ts`): the fit's decisions, rejections
@@ -763,7 +755,8 @@ async function assembleMessageContext(
 
   // Reservations taken off the top: the generated ack (slot 1000) and the post-budget lanes. A flat sum would
   // clamp a small window's content budget to zero, so `reserveLadderFor` holds the bound and floor.
-  const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null, otherThreadsRoomTokens(maxTokens, systemPrompt));
+  const loopTailExtra = otherThreadsReserveExtra(agentId, liveTurnContext(agentId)?.conversationId ?? null, otherThreadsRoomTokens(maxTokens, systemPrompt))
+    + joinOrderTokens(agentId);
   const ladder = reserveLadderFor(maxTokens - systemTokens, loopTailExtra);
   const offTheTop = ladder.offTheTop;
   // The PM's view is fitted to this too: the loop's appends need room.
@@ -819,16 +812,11 @@ async function assembleMessageContext(
         ? freshTailRows.filter((m) => (m.rowid ?? 0) >= horizon.keepFromSeq)
         : freshTailRows);
       // One tail for every turn kind: every conversation's rows are in view, each labelled with the one it belongs to.
-      // EVENTS lane: engine notices and unauthorized human inbound, gisted at 400. A fan-out compile order
-      // (`isFanoutJoinImperative`) is not one: every order, older ones too, stays whole in the fresh tail as
-      // a pure append (a gist cuts off the pieces it promises; gisting an older one when a redrive lands
-      // would move an emitted row ahead of the tail, a mid-session prefix rewrite), as
-      // `__tests__/a-compile-order-the-model-can-see` checks. This turn's own trigger row stays whole too.
+      // EVENTS lane: engine notices and unauthorized human inbound, gisted at 400. This turn's own trigger row stays whole.
       const keepFullId = turnContext?.engineEventKeepFullId ?? null;
       const awarenessEvents = freshTailRaw.filter((m) =>
         m.role === 'user' &&
         (keepFullId ? m.id !== keepFullId : true) &&
-        !isFanoutJoinImperative(m) &&
         (m.origin?.kind === 'engine' || (m.origin?.kind === 'user' && m.origin?.authorized === false)),
       );
       const awarenessIds = new Set(awarenessEvents.map((m) => m.id));
@@ -1127,14 +1115,8 @@ async function assembleMessageContext(
   }
   report.grants.sort((a, b) => a.slot - b.slot);
 
-  // A downstream gate may not guess this: `steps/execute/refusal-gates.ts` claims the pieces are in the steer,
-  // and only this function knows, off the array returned. The gate enforces only on `true`
-  // (`compile-owed-gate.ts`).
-  const compileOrderIntact = compileOrderReachedTheModel(laneCtx.tail().freshTail, merged);
-
   logger.info('Context assembled', {
     systemPromptTokens: systemTokens,
-    compileOrderIntact,
     contentBudget,
     reservedOffTheTop: offTheTop,
     spentTokens: report.spentTokens,
@@ -1166,33 +1148,17 @@ async function assembleMessageContext(
     scratchpadLane,
     eventsLane,
     integrationStatusLane,
-    compileOrderIntact,
   };
 }
 
 
-/**
- * Did the fan-out compile order, all of it, reach the emitted messages? `null`: none in this turn's tail;
- * `false`: its bytes are not intact in what the model is handed; `true`: one arrived whole. Arrival is the
- * row's stored content being a substring of the emitted text; compile-order rows (`intent === 'fanout_join'`)
- * are narrowed by `COMPILE_ORDER_PIECES_MARKER`. It reads `freshTail` on purpose: an order moved to a
- * truncating lane is absent there, answers false, and the gate stands down instead of misinforming.
- * Exported for `__tests__/a-compile-order-the-model-can-see`.
- */
-export function compileOrderReachedTheModel(
-  freshTail: Message[],
-  emitted: Array<{ content: string | Anthropic.ContentBlockParam[] }>,
-): boolean | null {
-  const orders = freshTail.filter(
-    (m) => isFanoutJoinImperative(m)
-      && typeof m.content === 'string'
-      && m.content.includes(COMPILE_ORDER_PIECES_MARKER),
-  );
-  if (orders.length === 0) return null;
-  const text = emitted
-    .map((m) => (typeof m.content === 'string' ? m.content : ''))
-    .join('\n');
-  return orders.some((m) => text.includes(m.content as string));
+/** The room the turn serving a delegated request needs for its order (the steer quoting every piece), in
+ *  the loop-tail reserve's steps; 0 on every other turn. */
+function joinOrderTokens(agentId: string): number {
+  const root = liveTurnContext(agentId)?.root;
+  const order = root?.kind === 'ask' && root.id ? joinOrderFor(askIdForMessage(root.id)) : null;
+  const tokens = order ? renderTokens([{ role: 'user', content: order.text }]) : 0;
+  return Math.ceil(tokens / LOOP_TAIL_EXTRA_STEP_TOKENS) * LOOP_TAIL_EXTRA_STEP_TOKENS;
 }
 
 

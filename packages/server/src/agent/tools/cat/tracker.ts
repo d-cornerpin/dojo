@@ -490,7 +490,7 @@ const tableOfHandlers: ToolHandlerMap = {
       // Only the person's own words call a request off: the owner's, or those of whoever sent it.
       const asked = getDb().prepare('SELECT sent_at, sender_id FROM messages WHERE id = (SELECT root_id FROM work WHERE id = ?)')
         .get(crRow.id) as { sent_at: number; sender_id: string | null } | undefined;
-      if (!asked || !ownerSaidSince(asked.sent_at, normalizeQuote(crNote), agentId, true, asked.sender_id)) {
+      if (!asked || !ownerSaidSince(asked.sent_at, normalizeQuote(crNote), agentId, { sender: asked.sender_id })) {
         content = 'Not dropped: quote what they said when they called it off, word for word, as the note.';
         isError = true;
         return { content, isError };

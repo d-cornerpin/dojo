@@ -124,9 +124,7 @@ describe('THE 3:32 AM CLASS — the property `no-outreach-without-inbound` pins'
   });
 
   it('and channel AFFINITY is not among the roots — affinity is not consent', () => {
-    // There is deliberately no `owner_affinity` kind. The refusal of the affinity-only
-    // promotion happens upstream, at the destination computation, and this rule must not
-    // quietly re-admit it by giving it a name.
+    // There is deliberately no `owner_affinity` kind: where he last wrote is not consent to a push.
     const kinds = new Set<string>();
     for (const i of everyCombination()) for (const k of outboundRoot(i).roots) kinds.add(k);
     expect([...kinds]).not.toContain('owner_affinity');

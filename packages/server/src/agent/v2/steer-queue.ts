@@ -32,6 +32,8 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
 
   { id: 'forced-reply',          priority: 20, why: 'the turn is ending with nothing said to the person waiting; the reply is required' },
   { id: 'delegation-exit',       priority: 23, why: 'work handed off, the turn about to end silently' },
+  // Before the start-ack: a turn shown the request's answer only after it replied would have that reply refused.
+  { id: 'handed-back-ask',       priority: 24, why: 'a person waits on a request whose helpers answered, or a dead run handed back: what came back and what was done come before acting' },
 
   { id: 'start-ack',             priority: 25, why: 'the user has been waiting with no word this turn' },
   { id: 'start-ack-reminder',    priority: 26, why: 'the first start-ack steer was ignored' },
@@ -40,7 +42,6 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
 
   { id: 'a2a-missed-reply',      priority: 30, why: 'a peer asked and got prose instead of a reply' },
   { id: 'going-idle-in-progress', priority: 31, why: 'silent stop with in_progress work dangling' },
-  { id: 'handed-back-ask',       priority: 32, why: 'a person waits on a message a dead run handed back: what it already did and may have sent come before acting' },
 
   // Above empty-response: a call that burned its whole output budget must not be diagnosed as an empty one.
   { id: 'output-grind',          priority: 39, why: 'the model spent its whole output budget reasoning, with no tool call and no answer' },
@@ -81,7 +82,11 @@ export interface SteerEntry {
   /** `state.loopCount` at enqueue. The start-ack reminder's gate reads it off the entry. */
   readonly atLoop: number;
   readonly attempts: number;
+  readonly shown?: SteerShown;
 }
+
+/** The request and put-back event a steer hands a turn, recorded as shown once the steer is delivered. */
+export interface SteerShown { readonly askId: string; readonly putBackId: number }
 
 export interface SteerQueue {
   /** Waiting to be delivered, unordered here; `nextSteer` applies the table. */
@@ -117,6 +122,7 @@ export interface SteerRequest {
   readonly content: string;
   readonly key?: string;
   readonly atLoop: number;
+  readonly shown?: SteerShown;
 }
 
 /** Enqueue a steer unless this floor (same key) already fired this turn; pending peers survive. */
@@ -127,7 +133,7 @@ export function enqueueSteer(q: SteerQueue, req: SteerRequest): SteerQueue {
   if (!spec) return q; // unreachable: the id union is the table's own keys
   const entry: SteerEntry = {
     floor: req.floor, content: withAuthorHead(req.content), key,
-    priority: spec.priority, seq: q.seq + 1, atLoop: req.atLoop, attempts: 0,
+    priority: spec.priority, seq: q.seq + 1, atLoop: req.atLoop, attempts: 0, shown: req.shown,
   };
   return {
     ...q,

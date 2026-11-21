@@ -97,10 +97,11 @@ async function seedFanOut(): Promise<string> {
   return ask;
 }
 
+/** How often the join's answer went back to the agent: once, when the last piece is in. */
 const compileSteers = (): number =>
   (db().prepare(
-    `SELECT count(*) c FROM messages WHERE agent_id = ? AND lane = 'events' AND origin_intent = 'fanout_join'`,
-  ).get(MAIN) as { c: number }).c;
+    `SELECT count(*) c FROM work_events WHERE kind = 'compile_resolved' AND json_extract(payload, '$.kind') IS NOT NULL`,
+  ).get() as { c: number }).c;
 
 /** A piece's state by its thread (read off the ask's pieces, which also lists settled ones). */
 const pieceState = (threadId: string): string => {

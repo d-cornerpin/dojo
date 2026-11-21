@@ -2,7 +2,7 @@
 // to" header keeps the model from conflating the user, another agent and an engine event.
 import type { TurnAddress } from './turn-address.js';
 import { relationWords } from './turn-address.js';
-import { deriveOrigin, legacyOriginInputs, type Channel, type Relation, type InboundMeta } from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs, FINAL_REPLY_SQL, type Channel, type Relation, type InboundMeta } from '@dojo/shared';
 import { getOwnerName } from '../../config/platform.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
@@ -406,7 +406,7 @@ export function findUnservedTerminalWake(agentId: string): { rowid: number } | n
      WHERE m.agent_id = @agentId AND role = 'user'
        AND lane <> 'events'
        AND a2a_thread_id IS NOT NULL
-       AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
+       AND a2a_intent IN (${FINAL_REPLY_SQL})
        AND a2a_requires_response = 1
        AND served_by_turn IS NULL AND swept_at IS NULL
        AND created_at >= (unixepoch('now') * 1000 - ${TERMINAL_WAKE_WINDOW_MS}) AND NOT ${RESULT_FOR_ENDED_REQUEST('m')}

@@ -78,8 +78,13 @@ function computeAgentToolFingerprint(agentId: string): string {
     row.group_id ?? '',
     row.classification ?? '',
     row.task_id ?? '',
+    holdsAJobThread(agentId) ? 'job' : '',
   ].join('\x00');
 }
+
+/** The agent holds a task given it on an agent's thread (every ASSIGN opens or stamps one). */
+const holdsAJobThread = (agentId: string): boolean =>
+  getDb().prepare("SELECT 1 FROM work WHERE agent_id = ? AND kind = 'task' AND a2a_thread_id IS NOT NULL LIMIT 1").get(agentId) !== undefined;
 
 export function getFilteredTools(agentId: string): ToolDefinition[] {
   const generation = getToolConfigGeneration();
@@ -159,9 +164,10 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
       if (def) filtered.push(def);
     }
   }
-  // The pointer reader names the agent's OWN results, and the repeat rule's lift its own stopped calls;
-  // every agent holds both, deny still wins.
-  for (const name of [RESULT_READ_TOOL, LIFT_TOOL]) {
+  // The pointer reader names the agent's OWN results and the repeat rule's lift its own stopped calls: every agent
+  // holds both. A helper given a job by ASSIGN also holds send_to_agent, since its reply on that thread finishes it.
+  // Deny still wins.
+  for (const name of [RESULT_READ_TOOL, LIFT_TOOL, ...(holdsAJobThread(agentId) ? ['send_to_agent'] : [])]) {
     const def = toolDefinitions.find((t) => t.name === name);
     if (def && !filtered.includes(def) && !toolsPolicy.deny.includes(name)) filtered.push(def);
   }

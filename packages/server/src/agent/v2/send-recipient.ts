@@ -6,13 +6,12 @@
 
 import type { ChannelKind, ToolResult } from '@dojo/shared';
 import { outboundChannelForTool, outboundRecipientForTool } from './outbound.js';
-import { describeAddressee, deliveryLabel, type TurnAddress } from './turn-address.js';
+import { describeAddressee, deliveryLabel, currentAddress, type TurnAddress } from './turn-address.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
 import { addressesMatch } from '../../services/safe-senders.js';
 import { isOwnerOn } from '../../services/owner-on.js';
 import { getSafeSenders } from '../../services/imessage-bridge.js';
 import { getSmsReachability, describeSmsRecipients } from '../../services/capability-registry.js';
-import { currentLiveAddress } from './turn-address-live.js';
 
 /** The send tools whose recipient is a plain argument, with the argument names that carry it. */
 const RECIPIENT_ARGS: Readonly<Record<string, readonly string[]>> = {
@@ -45,7 +44,7 @@ export function refuseSendWithNoRecipient(
 ): ToolResult | null {
   const base = baseName(toolName);
   if (!(base in RECIPIENT_ARGS) || namedRecipient(base, args)) return null;
-  const addr = currentLiveAddress(agentId);
+  const addr = currentAddress(agentId);
   const talkingTo = describeAddressee(addr) + (addr?.kind === 'person' && addr.senderId ? ` (address ${addr.senderId})` : '');
   const list = reachablePeople(base);
   const content =
@@ -90,7 +89,7 @@ export function recipientNoteFor(
   if (channel === null) return '';
   const raw = outboundRecipientForTool(toolName, args);
   if (!raw) return '';
-  const addr = currentLiveAddress(agentId);
+  const addr = currentAddress(agentId);
   let shown = raw;
   try { shown = resolveRecipientDisplay(channel as ChannelKind, raw); } catch { /* the raw handle is the honest fallback */ }
   const who = shown === raw ? raw : `${shown} (${raw})`;
@@ -104,7 +103,7 @@ export function recipientNoteFor(
 // Where the agent's written words go on a failure result, from the turn's address. Null
 // when the reply stays in the dashboard, where the dashboard wording is already true.
 export function routedReplyWords(agentId: string): { name: string; where: string; down: string; failed: string } | null {
-  const addr = currentLiveAddress(agentId);
+  const addr = currentAddress(agentId);
   if (addr?.kind !== 'person' || !addr.routed) return null;
   const name = addr.name;
   // When this turn's own reply goes by iMessage, a down bridge (or a failed send) stops that reply too.

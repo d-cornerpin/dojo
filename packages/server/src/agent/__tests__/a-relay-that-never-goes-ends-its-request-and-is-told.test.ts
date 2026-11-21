@@ -9,19 +9,19 @@ vi.mock('../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engi
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
 
-import { resolveCompilePendingJoins } from '../a2a-transport.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { servedOwnerNotices } from '../../healer/owner-notice-kinds.js';
 import { imessage, testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, relayRows, requestState, ASK } from './helpers/text-relay.js';
+import { agentStaysSilent, delegatedTextRequest, helperAnswers, relayRows, requestState, ASK } from './helpers/text-relay.js';
 
 const MIN = 60_000;
 
 beforeEach(() => delegatedTextRequest());
 
 describe('a relay that never goes ends its request and is told', () => {
-  it('five failed tries: the request is failed, one card, one notice, no stuck notice and no ghost line', async () => {
+  it('five failed tries: the request is failed, one card, one notice, and no stood-down card', async () => {
     await helperAnswers('The venue is free on the 14th.');
+    await agentStaysSilent();
     imessage.send.mockResolvedValue(false);
     let now = Date.now();
     for (const wait of [30_000, 2 * MIN, 10 * MIN, 30 * MIN, MIN]) {
@@ -35,7 +35,6 @@ describe('a relay that never goes ends its request and is told', () => {
     expect(reason.r).toMatch(/could not be sent/);
     expect(servedOwnerNotices().filter((c) => c.cardKey === `undelivered:${AGENT}`)).toHaveLength(1);
     expect(testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE content LIKE '[SOURCE: AGENT NOTICE%' AND content LIKE '%did NOT reach them%'").get()).toEqual({ n: 1 });
-    expect(await resolveCompilePendingJoins(AGENT)).toEqual({ drives: 0, wakeWanted: false });
-    expect(testDb().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND json_extract(payload, '$.entry_kind') IS NOT NULL").get(ASK)).toEqual({ n: 0 });
+    expect(testDb().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'floor_ghosted'").get(ASK)).toEqual({ n: 0 });
   });
 });

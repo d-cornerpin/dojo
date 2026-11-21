@@ -26,9 +26,9 @@ beforeEach(() => {
 
 describe('a helper spawned without limits cannot spawn', () => {
   it('its own spawn is refused with the grant to ask for, and it cannot assign permissions', async () => {
-    const { agentId } = await spawnAgent({ parentId: 'main', name: 'Helper', systemPrompt: 'Sort files.', autoStart: false });
+    const { agentId } = await spawnAgent({ parentId: 'main', name: 'Helper', systemPrompt: 'Sort files.' });
     expect(getAgentPermissions(agentId).can_assign_permissions).toBe(false);
-    await expect(spawnAgent({ parentId: agentId, name: 'Grandchild', systemPrompt: 'Help.', autoStart: false }))
+    await expect(spawnAgent({ parentId: agentId, name: 'Grandchild', systemPrompt: 'Help.' }))
       .rejects.toThrow(/can_spawn_agents/);
   });
 });

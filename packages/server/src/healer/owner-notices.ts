@@ -71,7 +71,7 @@ export const toldWords = (key: string): string =>
 function stallWords(workId: string): string {
   const db = getDb();
   const w = db.prepare(`SELECT title, state, ${holdWordsSql('w')} AS hold, COALESCE((SELECT MAX(h.created_at) FROM work_events h WHERE h.work_id = w.id AND h.kind = 'handed_in' AND w.state = 'handed_in'), ${taskMovedAtSql('w')}) AS since
-    FROM work w WHERE w.id = ? AND (${workingExpr('w')} OR w.state = 'handed_in')`).get(workId) as { title: string | null; state: string; hold: string; since: number } | undefined;
+    FROM work w WHERE w.id = ? AND (${workingExpr('w', true)} OR w.state = 'handed_in')`).get(workId) as { title: string | null; state: string; hold: string; since: number } | undefined;
   if (!w) return '';
   const tried = db.prepare(`SELECT json_extract(payload, '$.entry_kind') AS k, COUNT(*) AS n FROM work_events WHERE work_id = ? AND kind = 'audit' AND created_at >= ?
     AND json_extract(payload, '$.entry_kind') IN (${Object.keys(STALL_TRIED).map((k) => `'${k}'`).join(', ')}) GROUP BY k`).all(workId, w.since) as Array<{ k: string; n: number }>;

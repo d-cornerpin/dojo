@@ -54,6 +54,7 @@ vi.mock('../runtime.js', () => ({
 beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
+    CREATE TABLE work (id TEXT, agent_id TEXT, kind TEXT, a2a_thread_id TEXT);
     CREATE TABLE agents (
       id TEXT PRIMARY KEY,
       name TEXT,

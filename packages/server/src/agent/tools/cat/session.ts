@@ -93,8 +93,8 @@ export const sessionHandlers: ToolHandlerMap = {
       const previous = getPresence();
       setPresence(status);
       content = status === 'away'
-        ? `Done. User marked as away. Messages will be forwarded via iMessage. (Was: ${previous})`
-        : `Done. User marked as in the dojo. Messages will go to the dashboard. (Was: ${previous})`;
+        ? `Done. User marked as away. (Was: ${previous})`
+        : `Done. User marked as in the dojo. (Was: ${previous})`;
     } catch (err) {
       content = `Error setting presence: ${err instanceof Error ? err.message : String(err)}`;
       isError = true;

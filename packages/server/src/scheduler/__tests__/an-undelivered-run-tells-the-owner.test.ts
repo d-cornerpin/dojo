@@ -36,7 +36,6 @@ vi.mock('../../gateway/ws.js', () => ({
   broadcast: (e: Record<string, unknown>) => { frames.push(e); },
 }));
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => { /* no-op */ } }) }));
-vi.mock('../../agent/agent-bus.js', () => ({ sendAgentMessage: () => { /* no-op */ } }));
 vi.mock('../../agent/agent-notice.js', () => ({ postAgentNotice: () => 'notice-id' }));
 vi.mock('../../memory/message-store.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../memory/message-store.js')>()),
@@ -63,7 +62,7 @@ function applySchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS deliveries (
       id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, channel TEXT,
       created_at INTEGER, turn_number INTEGER, message_id TEXT, receipt_id TEXT,
-      recipient_id TEXT, recipient_display TEXT, conversation_id TEXT, detail TEXT
+      recipient_id TEXT, recipient_display TEXT, conversation_id TEXT, detail TEXT, root_kind TEXT, root_id TEXT
     );
     CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT);
     CREATE TABLE messages (
@@ -175,9 +174,9 @@ describe('the 30-minute idle reaper stops closing an undelivered reminder in sil
        VALUES ('m-1', ?, 'assistant', 'Time to stretch.', 'agent-text', 'user-visible')`,
     ).run(AGENT);
     mockDb.current!.prepare(
-      `INSERT INTO deliveries (id, agent_id, outcome, tool, channel, created_at, turn_number, message_id)
-       VALUES ('d-1', ?, 'delivered', 'dashboard', 'dashboard', ?, 4621, 'm-1')`,
-    ).run(AGENT, new Date().toISOString().slice(0, 19).replace('T', ' '));
+      `INSERT INTO deliveries (id, agent_id, outcome, tool, channel, created_at, turn_number, message_id, root_kind, root_id)
+       VALUES ('d-1', ?, 'delivered', 'dashboard', 'dashboard', ?, 4621, 'm-1', 'occurrence', ?)`,
+    ).run(AGENT, new Date().toISOString().slice(0, 19).replace('T', ' '), runId);
 
     await onTaskRunComplete(taskId, 'complete', 'delivered');
 

@@ -33,10 +33,6 @@ vi.mock('../../../../../gateway/ws.js', () => ({
   stampPersistedRow: (e: unknown) => e,
 }));
 vi.mock('../../../../../services/imessage-bridge.js', () => ({ stripSystemTags: (s: string) => s }));
-vi.mock('../../../compile-owed-gate.js', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  stillCompileOwed: () => [],
-}));
 vi.mock('../../../../../prompt/registry/assembler.js', () => ({ injectRegistryMessage: () => true }));
 
 import { runMigrations } from '../../../../../db/migrations.js';

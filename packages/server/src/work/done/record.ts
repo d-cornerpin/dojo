@@ -6,6 +6,8 @@ import type { WorkOutcome, WorkState } from '../store.js';
 import type { HandInOutcome, ResolvedItem } from './proof-kinds.js';
 
 export const OWNER_ID = 'user';
+/** The engine as a decider: it decides a counted run on its own fresh count (`decide.ts`). */
+export const ENGINE_ID = 'engine';
 
 /** `run`: one run of a live schedule, which goes on; `schedule`: the scheduled work as a whole. */
 export type HandInScope = 'run' | 'schedule';
@@ -56,7 +58,8 @@ export function workersOf(workId: string): Set<string> {
   const rows = getDb().prepare(
     `SELECT actor AS a FROM work_events WHERE work_id = ? AND kind = 'handed_in' AND actor <> 'engine'
      UNION SELECT json_extract(payload, '$.from_agent') FROM work_events
-      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = ?`,
+      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = ?
+        AND NOT (actor = json_extract(payload, '$.from_agent') AND json_extract(payload, '$.reason') LIKE 'cause=coordination%')`,
   ).all(workId, workId, PATIENCE_ENTRY.reassigned) as Array<{ a: string | null }>;
   const out = new Set(rows.map((r) => r.a).filter((a): a is string => !!a));
   const now = workerOf(workId);

@@ -118,7 +118,7 @@ describe('PHASE-2 T10H — an engine RIDER never drives its own turn', () => {
   // Without this clause a predicate of `AND 0` would make every clause above green while
   // silently killing every reminder, schedule fire and tracker assignment on the box.
   it('a genuine deliverable engine event is STILL pending — the exclusion is not a blanket', () => {
-    for (const intent of ['scheduler', 'tracker', 'reminder', 'healer', 'completion_report', 'a2a_request', 'spawn_kickoff', 'pm_review']) {
+    for (const intent of ['scheduler', 'tracker', 'reminder', 'healer', 'completion_report', 'a2a_request', 'pm_review']) {
       mockDb.current = seed();
       insertEventsRow(mockDb.current, `deliverable-${intent}`, intent, null);
       const pending = getPendingEngineEvent(AGENT);

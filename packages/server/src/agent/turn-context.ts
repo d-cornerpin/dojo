@@ -66,10 +66,6 @@ export interface TurnContext {
   jobParked: string | null;
   servedJob: string | null;
 
-
-  ownerAffinityConversationId: string | null;
-  ownerAffinityDestination: 'imessage' | null;
-
   deferredUserReplyWithTools: string | null;
 
   deferredNoteId: string | null;
@@ -142,8 +138,6 @@ export function openTurnContext(agentId: string): TurnContext {
     jobParked: null,
     servedJob: null,
     repeatGraceCalls: 2,
-    ownerAffinityConversationId: null,
-    ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,
     deferredNoteId: null,
     lastAssembledAtIso: null,

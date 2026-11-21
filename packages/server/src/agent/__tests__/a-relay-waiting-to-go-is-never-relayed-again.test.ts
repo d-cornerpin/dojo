@@ -9,25 +9,23 @@ vi.mock('../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engi
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
 
-import { deferJoinRelay } from '../deferred-join-relay.js';
-import { releaseDeferredJoinRelays, resolveCompilePendingJoins, sweepExpiredJoins } from '../a2a-transport.js';
+import { relayPiecesWhole, resolveJoinsAtBoot, sweepExpiredJoins } from '../a2a-transport.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
-import { AGENT } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, relayRows, requestState, textsSent, ASK } from './helpers/text-relay.js';
+import { agentStaysSilent, delegatedTextRequest, helperAnswers, relayed, relayRows, requestState, textsSent, ASK } from './helpers/text-relay.js';
 
 beforeEach(() => delegatedTextRequest());
 
 describe('a relay waiting to go is never relayed again', () => {
   it('one queued row whatever else runs, sent once, and the request settles when it goes', async () => {
     await helperAnswers('The venue is free on the 14th.');
-    deferJoinRelay(AGENT, ASK);
-    await releaseDeferredJoinRelays(AGENT);
-    await resolveCompilePendingJoins(AGENT);
+    await agentStaysSilent();
+    await relayPiecesWhole(ASK, 'compile', null);
     await sweepExpiredJoins();
+    await resolveJoinsAtBoot();
     expect(relayRows().map((r) => r.outcome)).toEqual(['pending']);
     await deliverDueReplies(Date.now());
     await deliverDueReplies(Date.now() + 3_600_000);
-    expect(textsSent()).toEqual(['Dojo: Heard back from Helper: The venue is free on the 14th.']);
+    expect(textsSent()).toEqual([relayed('The venue is free on the 14th.')]);
     expect(requestState()).toBe('done');
   });
 });

@@ -23,7 +23,7 @@ vi.mock('../../config/platform.js', async (orig) => ({
 import { runMigrations } from '../../db/migrations.js';
 import { spawnAgent } from '../spawner.js';
 
-const spawn = (modelId: string) => spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.', modelId, autoStart: false } as never);
+const spawn = (modelId: string) => spawnAgent({ parentId: 'parent', name: 'Helper', systemPrompt: 'Sort files.', modelId } as never);
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');

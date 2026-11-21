@@ -75,8 +75,6 @@ const THE_DRIVER_CARRIES = [
   'toolPhaseEndedByRepeats',
   'repeatGraceCalls',
   'mediaWordsStepOwed',   // proof-fix K: set by `execute` after a generator, read by `execute` and its tool door on the next iteration
-  'ownerAffinityConversationId',
-  'ownerAffinityDestination',
   'deferredUserReplyWithTools',
   // t202 (A2) — the id of the note the seam wrote for the text above; written in the post-call
   // seam, read once by finalize's recovery. Same crossing, same rule as its sibling.

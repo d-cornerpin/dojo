@@ -71,7 +71,7 @@ vi.mock('../../agent/runtime.js', () => ({
     }),
   }),
 }));
-vi.mock('../../agent/a2a-transport.js', () => ({ deliverA2AMessage: vi.fn(async () => ({ delivered: true })) }));
+vi.mock('../../agent/a2a-transport.js', () => ({ deliverA2AMessage: vi.fn(async () => ({ delivered: true })), judgeKeptRequests: async () => {} }));
 vi.mock('node:child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('node:child_process')>();
   const record = (...a: unknown[]): string => {

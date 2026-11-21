@@ -1,36 +1,79 @@
 // What happens at the two moments of board work, each a short ordered list of calls.
-//   At the hand-in (the work is delivered): a run's schedule advances, the asker who never got the work
-//   on its thread is relayed it, prompts queued for the work retire, and the decider is woken.
+//   At the hand-in (the work is delivered): a run's schedule advances, the agent that gave the job hears
+//   the helper's last words, prompts queued for the work retire, and the engine decides a run it can or the decider is woken.
 //   At the decision (the work is accepted, or not): dependents unblock, the project is derived from its
 //   tasks, a finished schedule stops, and a send-back reaches the worker of record.
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { retireEngineEventsForTask } from '../../agent/v2/counterparty.js';
-import { claimTrackerNoticeForTask, repliedOnThread } from '../../memory/message-store.js';
+import { retireEngineEventsForTask, resultForEndedRequest } from '../../agent/v2/counterparty.js';
+import { claimTrackerNoticeForTask } from '../../memory/message-store.js';
 import { taskScope, STATE_TO_STATUS_SQL, heldByOwnerSql, stateToStatus } from '../tracker-view.js';
 import { setTrackerStatus } from '../tracker-store.js';
-import { sendAgentMessage } from '../../agent/agent-bus.js';
-import { getPMAgentId, getPrimaryAgentId } from '../../config/platform.js';
+import { getPMAgentId, getPrimaryAgentId, isDreamerAgent } from '../../config/platform.js';
 import { workerOfRecord, rehome } from '../row-authority.js';
 import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
-import { latestHandIn, workerOf, OWNER_ID } from './record.js';
+import { latestHandIn, workerOf, OWNER_ID, ENGINE_ID, type HandInRecord } from './record.js';
+import { decide } from './decide.js';
+import { inFlightOccurrence, owedRunDelivery } from '../occurrences.js';
+import { occurrenceRunStatus } from '../occurrence-runs.js';
+import type { Question } from '../../agent/decide.js';
+import { judgment } from '../../agent/decision-hooks.js';
+import { remeasureTask } from '../../agent/tools/cat/measure-door.js';
 import { settleProject } from './project-state.js';
+import { FINAL_REPLY_SQL } from '@dojo/shared';
 
 const logger = createLogger('work-effects');
 /** The PM module, loaded once and shared, so a burst of hand-ins never races its own import. */
 let pmAgent: Promise<typeof import('../../tracker/pm-agent.js')> | null = null;
 
 /** The hand-in-time effects, in order. */
-export function onHandedIn(workId: string, handInEventId: number): void {
+export function onHandedIn(workId: string, handInEventId: number, wordsFollow?: true): void {
   const h = latestHandIn(workId, handInEventId);
   if (!h) return;
-  if (h.scope === 'run') {
-    void import('../../scheduler/runner.js')
-      .then(({ onTaskRunComplete }) => onTaskRunComplete(workId, h.outcome === 'finished' ? 'complete' : 'failed', h.note))
-      .catch((err: unknown) => logger.warn('run hand-in: the schedule did not advance', { workId, error: String(err) }));
-  }
-  relayAssignHandbackIfMissing(workId, h.note);
+  const advanced = h.scope !== 'run' ? Promise.resolve() : import('../../scheduler/runner.js')
+    .then(({ onTaskRunComplete }) => onTaskRunComplete(workId, h.outcome === 'finished' ? 'complete' : 'failed', h.note))
+    .catch((err: unknown) => logger.warn('run hand-in: the schedule did not advance', { workId, error: String(err) }));
+  if (!wordsFollow) void handInHeard(workId, h);
   retireQueuedPrompts(workerOf(workId), workId);
+  void advanced.then(() => decideOrReview(workId, h));
+}
+
+const OWES_IT: Question = { type: 'noul',
+  instructions: 'Does `message` itself give the person what `task` owes them: the reminder, report or notice, with its actual content? Answer no if `message` is empty or only punctuation, a status or delivery confirmation ("done", "sent"), an error, a question back, a promise to do it later, only part of what is owed with the rest to follow, or about something other than `task`. A short "nothing new today" answer counts when that is the answer `task` asks for. If in doubt, answer no.',
+  criteria: { true: 'Task: remind me to take my vitamins at 8. Message: Time to take your vitamins. / Task: tell me each morning if any bills are due. Message: No bills due this week.',
+              false: 'Task: send me the weather each morning. Message: Done, all set! / Sent. / I could not reach the weather service / Which city? / Part 1: sunny, more soon / (empty)' } };
+
+/** Does the small local model read the message this run, recorded complete, delivered as what its task owes? */
+async function deliveredWhatItOwes(workId: string): Promise<boolean> {
+  const run = inFlightOccurrence(workId, { anyState: true });
+  if (!run || occurrenceRunStatus(run.id) !== 'complete') return false;
+  const t = getDb().prepare(
+    `SELECT w.title, w.goal, w.task_kind AS kind, COALESCE(m.content, r.sent_text) AS message FROM work w
+       JOIN deliveries d ON d.id = ? LEFT JOIN messages m ON m.id = d.message_id LEFT JOIN tool_receipts r ON r.id = d.receipt_id
+      WHERE w.id = ?`,
+  ).get(owedRunDelivery(run.id), workId) as { title: string | null; goal: string | null; kind: string; message: string | null } | undefined;
+  if (!t) return false;
+  const said = await judgment('work_done/delivered_what_it_owes', {
+    agentId: workerOf(workId), state: { task: { title: t.title, goal: t.goal, kind: t.kind }, message: t.message ?? '' }, questions: { asked: OWES_IT },
+  });
+  return said?.asked === true;
+}
+
+/** A finished run is decided by the engine on its own fresh count, or on a delivered message the small local model
+ *  confirms, after its schedule advanced; anything the engine does not decide goes to its decider's review. */
+async function decideOrReview(workId: string, h: HandInRecord): Promise<void> {
+  try {
+    if (h.scope === 'run' && h.outcome === 'finished') {
+      await remeasureTask(ENGINE_ID, workId);
+      if (decide({ workId, deciderAgentId: ENGINE_ID, verdict: 'approve', reason: 'its own count reads 0 for this run' }).kind === 'decided') return;
+      if (await deliveredWhatItOwes(workId) && decide({
+        workId, deciderAgentId: ENGINE_ID, verdict: 'approve', engineBasis: 'delivered',
+        reason: 'the small local model read the delivered message as what this task owes',
+      }).kind === 'decided') return;
+    }
+  } catch (err) {
+    logger.warn('hand-in: the engine could not decide the run', { workId, error: String(err) });
+  }
   void (pmAgent ??= import('../../tracker/pm-agent.js')).then(({ armDebouncedReview }) => armDebouncedReview(workId, 'hand-in'))
     .catch((err: unknown) => logger.warn('hand-in: the decider could not be woken', { workId, error: String(err) }));
 }
@@ -63,37 +106,55 @@ export function onDecided(workId: string, decisionId: number): void {
     .catch((err: unknown) => logger.warn('decision: the schedule could not be stopped', { workId, error: String(err) }));
 }
 
-/** One hint to the worker of record, which works the row from here on: the owner's send-back as an engine hint in his
- *  name, an agent decider's as its own message. */
+/** One hint to the worker of record, which works the row from here on, in the decider's name (none for the owner). */
 function sendBackHint(workId: string, title: string | null, deciderId: string, reason: string): void {
   const worker = workerOf(workId);
   const to = workerOfRecord(worker);
   rehome(workId, worker, to, 'send-back');
   const hint = `[Engine hint: "${title ?? workId}" [${workId}] was sent back${deciderId === OWNER_ID ? ' by the owner' : ''}${to !== worker ? ` (its worker ${worker} has ended, so it is yours now)` : ''}: ${reason}. `
     + 'Delivered work stays as it is; do only what the reason asks, then hand it in again with proof.]';
-  if (deciderId !== OWNER_ID) sendAgentMessage(deciderId, to, 'status', hint, { taskId: workId, event: 'sent_back' });
-  else void import('../../agent/agent-notice.js').then(({ redriveWithoutReply }) => redriveWithoutReply({ toAgentId: to, fromAgentId: null, content: hint, taskId: workId }));
+  void import('../../agent/agent-notice.js').then(({ redriveWithoutReply }) => redriveWithoutReply(
+    { toAgentId: to, fromAgentId: deciderId === OWNER_ID ? null : deciderId, content: hint, taskId: workId }));
 }
 
-/** The asker of an assigned task hears the work on its thread when the worker never said anything there. */
-function relayAssignHandbackIfMissing(workId: string, note: string): void {
-  const row = getDb().prepare('SELECT requester_id, agent_id, a2a_thread_id, opened_at, title FROM work WHERE id = ?').get(workId) as
-    { requester_id: string | null; agent_id: string; a2a_thread_id: string | null; opened_at: number; title: string | null } | undefined;
-  if (!row?.a2a_thread_id || !row.requester_id || row.requester_id === row.agent_id) return;
-  const thread = row.a2a_thread_id, asker = row.requester_id;
-  const heard = (): boolean => repliedOnThread(row.agent_id, asker, thread, row.opened_at);
-  if (heard()) return;
-  // A grace period first: the worker often sends the work back in the same batch as its hand-in.
-  setTimeout(() => {
-    if (heard()) return;
-    void import('../../agent/a2a-transport.js').then(async ({ deliverA2AMessage }) => {
-      const sent = await deliverA2AMessage({
-        intent: 'COMPLETE', threadId: thread, requiresResponse: false, toAgent: asker, fromAgent: row.agent_id,
-        payload: `${note}\n\n[Engine relay: the assignee handed in "${row.title ?? workId}" (${workId.slice(0, 8)}) without replying on this thread; the text above is its hand-in note.]`,
-      });
-      if (!sent.delivered) logger.warn('hand-in relay to the asker was not delivered', { workId, reason: sent.reason });
-    }).catch((err: unknown) => logger.warn('hand-in relay to the asker failed', { workId, error: String(err) }));
-  }, 20_000).unref?.();
+/** A hand-in's note goes back as the helper's last words; a note the engine filed is labelled as the Dojo's. */
+export function handInHeard(workId: string, h: HandInRecord): Promise<void> {
+  const text = h.filedBy === 'engine' ? `[Engine note: ${h.note}]` : h.note;
+  const outcome = h.outcome === 'finished' ? 'COMPLETE' : 'FAIL';
+  return finalWordsBack({ workerId: workerOf(workId), taskId: workId, text, outcome, orNewThread: false });
+}
+
+/** A helper's last words reach the agent that gave it the job, once and at once: on the job's thread when it has
+ *  one and the helper has not already given its final answer there by its own send; else, from `complete_task`, to
+ *  its maker on a new thread. Nothing goes for a request that was called off, or from the Dreamer's nightly batches. */
+export async function finalWordsBack(p: {
+  workerId: string; taskId: string | null; text: string; outcome: 'COMPLETE' | 'FAIL'; orNewThread: boolean;
+}): Promise<void> {
+  const db = getDb();
+  const task = p.taskId ? db.prepare('SELECT a2a_thread_id AS thread, opened_at FROM work WHERE id = ?').get(p.taskId) as
+    { thread: string | null; opened_at: number } | undefined : undefined;
+  // The giver is the sender of the job's first ASSIGN; without a task that ASSIGN is the job, so a job already handed
+  // in by its reply is not answered twice.
+  const assign = p.taskId && !task?.thread ? undefined : db.prepare(
+    `SELECT a2a_thread_id AS thread, created_at AS at, source_agent_id AS giver FROM messages WHERE agent_id = @worker
+       AND a2a_intent = 'ASSIGN' AND source_agent_id IS NOT NULL AND (@thread IS NULL OR a2a_thread_id = @thread) ORDER BY seq ASC LIMIT 1`,
+  ).get({ worker: p.workerId, thread: task?.thread ?? null }) as { thread: string; at: number; giver: string } | undefined;
+  const thread = task ? task.thread : assign?.thread ?? null;
+  const since = task?.opened_at ?? assign?.at ?? 0;
+  const maker = assign?.giver ?? (db.prepare('SELECT parent_agent FROM agents WHERE id = ?').get(p.workerId) as
+    { parent_agent: string | null } | undefined)?.parent_agent;
+  if (!maker || maker === p.workerId || !p.text.trim() || isDreamerAgent(p.workerId) || (!thread && !p.orNewThread)) return;
+  // Held back only by the helper's own final reply on the thread: a STATUS, a question or the Dojo's copy of a note is not one.
+  const answered = thread && db.prepare(`SELECT 1 FROM messages m JOIN deliveries d ON d.message_id = m.id AND d.tool = 'send_to_agent' AND d.outcome = 'delivered'
+    WHERE m.agent_id = ? AND m.source_agent_id = ? AND m.a2a_thread_id = ? AND m.created_at >= ?
+      AND m.a2a_intent IN (${FINAL_REPLY_SQL})`).get(maker, p.workerId, thread, since);
+  if (thread && (answered || resultForEndedRequest(maker, thread))) return;
+  await import('../../agent/a2a-transport.js')
+    .then(({ deliverA2AMessage }) => deliverA2AMessage({
+      intent: p.outcome, threadId: thread ?? '', requiresResponse: true, toAgent: maker, fromAgent: p.workerId, payload: p.text,
+    }))
+    .then((sent) => { if (!sent.delivered) logger.warn('last words were not delivered', { workerId: p.workerId, reason: sent.reason }); })
+    .catch((err: unknown) => logger.warn('last words failed', { workerId: p.workerId, error: String(err) }));
 }
 
 // ── Dependents unblock when the work they wait on is done ──
@@ -155,26 +216,19 @@ export function checkDependencies(completedTaskId: string): void {
           by: 'pm', actorId: getPMAgentId(),
           reason: `every dependency of this task is complete (last: ${completedTaskId.slice(0, 8)})`,
         }), 'pm: dependencies cleared, task unblocked', { taskId: row.id });
+        // Its holder (else the main agent) is woken to work it.
+        const task = db.prepare('SELECT priority, description FROM work WHERE id = ?').get(row.id) as { priority: string | null; description: string | null };
+        const content = `Task "${row.title}" (${row.id}) is now unblocked. All dependencies are complete.\n\n`
+          + `Priority: ${task.priority ?? 'normal'}\n` + (task.description ? `Description: ${task.description}\n` : '')
+          + `Previously blocked on: ${dependsOn.join(', ')}`;
+        void import('../../agent/agent-notice.js').then(({ redriveWithoutReply }) => redriveWithoutReply(
+          { toAgentId: row.assigned_to ?? getPrimaryAgentId(), fromAgentId: getPMAgentId(), content, taskId: row.id }));
       }
 
       logger.info('Task unblocked by dependency completion', {
         taskId: row.id,
         taskTitle: row.title,
         completedDep: completedTaskId,
-      });
-
-      // Notify primary agent or the assigned agent
-      const recipient = row.assigned_to ?? getPrimaryAgentId();
-      const task = db.prepare('SELECT priority, description FROM work WHERE id = ?').get(row.id) as { priority: string | null; description: string | null };
-      const message = `Task "${row.title}" (${row.id}) is now unblocked. All dependencies are complete.`
-        + (startsLater ? ` It starts at its own scheduled time (${new Date(row.scheduled_start ?? row.next_run_at ?? nowMs).toISOString()}), not before.` : '') + '\n\n' +
-        `Priority: ${task.priority ?? 'normal'}\n` +
-        (task.description ? `Description: ${task.description}\n` : '') +
-        `Previously blocked on: ${dependsOn.join(', ')}`;
-      sendAgentMessage(getPMAgentId(), recipient, 'status', message, {
-        taskId: row.id,
-        event: 'unblocked',
-        completedDependency: completedTaskId,
       });
     }
   }

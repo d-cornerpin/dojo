@@ -1,7 +1,9 @@
-// The delegation turn-end: on a non-A2A turn a wake-intent `send_to_agent` (QUESTION / ASSIGN / BLOCK)
-// is answered on a later turn, so the turn ends here and the owner's question is delegated to the threads.
+// The delegation turn-end: on a non-A2A turn a wake-intent send (QUESTION / ASSIGN / BLOCK) that went out, by
+// send_to_agent or a spawn's job, is answered on a later turn, so the turn ends here and the question is delegated.
 
-import { JOIN_TTL_MINUTES, openDelegationJoin, threadHopCount, type DelegationThread } from '../../../../work/store.js';
+import {
+  JOIN_TTL_MINUTES, findJoinChildByThread, openDelegationJoin, threadHopCount, type DelegationThread,
+} from '../../../../work/store.js';
 import { broadcast } from '../../../../gateway/ws.js';
 import type { AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
@@ -16,38 +18,38 @@ const logger = createLogger('v2-loop');
 
 export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext): StepOutcome {
   const {
-    agentId, turnNumber, db, counterparty, result, triggerRow, triggerWorkId,
+    agentId, turnNumber, db, counterparty, triggerRow, triggerWorkId,
     triggerConversationId, persistedContent, deferredDeliveredByAck,
   } = ctx;
 
+  // This turn's reply-warranting sends that went out, whichever tool made them, keyed by turn number on their own
+  // delivery rows: a2a rows are stored to the whole second, so a clock bound would sweep in the previous turn's sends.
+  // Read per turn, not per response: once the turn has delegated, any later tool step ends it after the one status-line steer.
+  const sentRows = counterparty.kind === 'agent' ? [] : db.prepare(
+    `SELECT m.a2a_thread_id AS a2a_thread_id, m.agent_id AS agent_id, m.a2a_intent AS a2a_intent
+       FROM deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE d.agent_id = @agentId AND d.turn_number = @turnNumber
+        AND d.tool = 'send_to_agent' AND d.outcome = 'delivered'
+        AND m.source_agent_id = @agentId AND m.a2a_thread_id IS NOT NULL
+        AND m.a2a_intent IN ('QUESTION','ASSIGN','BLOCK')
+      ORDER BY m.created_at ASC, m.rowid ASC`,
+  ).all({ agentId, turnNumber }) as Array<{ a2a_thread_id: string; agent_id: string; a2a_intent: string | null }>;
   // End the turn now, or the agent re-asks or fabricates the answer. Every send in this one response's batch
   // still goes out, so multi-delegation is not blocked.
-  const issuedWakeAsk = (result.toolCalls ?? []).some((tc) => {
-    if (tc.name !== 'send_to_agent') return false;
-    const intent = String((tc.arguments as Record<string, unknown> | undefined)?.intent ?? '').toUpperCase();
-    return intent === 'QUESTION' || intent === 'ASSIGN' || intent === 'BLOCK';
-  });
-  if (counterparty.kind !== 'agent' && issuedWakeAsk) {
+  if (sentRows.length > 0) {
     // The ask's work row is already claimed, which stops a re-trigger; the join is child rows with an
-    // atomic countdown, and the message row is untouched. On reply the engine relays, never re-asks.
-    if (triggerRow && triggerWorkId) {
+    // atomic countdown, and the message row is untouched. Its answer comes back through the request.
+    // Ends as delegated only when a live piece is out; a send swallowed by another request's piece delegated nothing.
+    if (triggerRow) {
       try {
-        // This turn's reply-warranting sends, keyed by turn number on its own delivery rows: a2a rows are
-        // stored to the whole second, so a clock bound would sweep in the previous turn's sends.
-        const sentRows = db.prepare(
-          `SELECT m.a2a_thread_id AS a2a_thread_id, m.agent_id AS agent_id, m.a2a_intent AS a2a_intent
-             FROM deliveries d JOIN messages m ON m.id = d.message_id
-            WHERE d.agent_id = @agentId AND d.turn_number = @turnNumber
-              AND d.tool = 'send_to_agent' AND d.outcome = 'delivered'
-              AND m.source_agent_id = @agentId AND m.a2a_thread_id IS NOT NULL
-              AND m.a2a_intent IN ('QUESTION','ASSIGN','BLOCK')
-            ORDER BY m.created_at ASC, m.rowid ASC`,
-        ).all({ agentId, turnNumber }) as Array<{ a2a_thread_id: string; agent_id: string; a2a_intent: string | null }>;
         const seen = new Set<string>();
         const threads: DelegationThread[] = [];
         for (const r of sentRows) {
           if (!r.a2a_thread_id || seen.has(r.a2a_thread_id)) continue;
           seen.add(r.a2a_thread_id);
+          // A follow-up on a thread whose piece belongs to another request is part of that piece, not a second one.
+          const open = findJoinChildByThread(agentId, r.a2a_thread_id);
+          if (open && open.parentId !== triggerWorkId) continue;
           threads.push({
             threadId: r.a2a_thread_id,
             assigneeAgent: r.agent_id,
@@ -55,27 +57,27 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
             hopCount: threadHopCount(r.a2a_thread_id) ?? 0,
           });
         }
-        if (threads.length > 0) {
-          const opened = openDelegationJoin({
-            parentWorkId: triggerWorkId,
-            agentId,
-            // Copied now, never resolved later: the reply returns on the conversation the ask came on.
-            replyConversationId: triggerConversationId,
-            ttlAt: Date.now() + JOIN_TTL_MINUTES * 60_000,
-            threads,
-          });
-          logger.info('v2: delegated the owner question, join opened', {
-            agentId, work: triggerWorkId, children: opened.length, ownerRowid: triggerRow.rowid,
-          }, agentId);
-        }
+        const opened = triggerWorkId && threads.length > 0 ? openDelegationJoin({
+          parentWorkId: triggerWorkId,
+          agentId,
+          // Copied now, never resolved later: the reply returns on the conversation the ask came on.
+          replyConversationId: triggerConversationId,
+          ttlAt: Date.now() + JOIN_TTL_MINUTES * 60_000,
+          threads,
+        }) : [];
+        if (opened.length === 0) return proceed(state);
+        logger.info('v2: delegated the owner question, join opened', {
+          agentId, work: triggerWorkId, children: opened.length, ownerRowid: triggerRow.rowid,
+        }, agentId);
       } catch (err) {
         logger.warn('v2: delegation join could not be opened', {
           agentId, error: err instanceof Error ? err.message : String(err),
         }, agentId);
+        return proceed(state);
       }
     }
     // A user-triggered turn may not go silent on a hand-off, and this exit bypasses every turn-ending floor:
-    // one steer for a status line. If ignored, exit anyway; the park relay still delivers the answer.
+    // one steer for a status line. If ignored, exit anyway; the answer still comes back through the request.
     if (
       triggerRow &&
       !state.surfacedReplyThisTurn && !deferredDeliveredByAck &&

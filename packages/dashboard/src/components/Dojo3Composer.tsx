@@ -636,20 +636,20 @@ export function Dojo3Composer({
 
         {/* BAR: presence (left) + attach / voice / send-or-stop (right) */}
         <div className="composer__bar">
-          {/* Presence (in-dojo / away) only matters when the iMessage bridge is
-              enabled: that's the channel that reaches the user while away. Hide
-              it entirely otherwise. */}
+          {/* Presence (in-dojo / away) matters only with iMessage on: while out,
+              an urgent Healer approval is texted instead of waiting in Vitals.
+              Hidden otherwise. */}
           {presence?.imessageConfigured && (
           <button
             type="button"
             className={`composer__presence ${isAway ? 'is-out' : ''}`}
             onClick={() => { void togglePresence(); }}
             onPointerDown={(e) => e.preventDefault()}
-            aria-label={isAway ? 'Out of the dojo (replies via iMessage). Tap to come back in.' : 'In the dojo. Tap to step out.'}
+            aria-label={isAway ? 'Out: urgent approvals are texted. Tap to come back in.' : 'In the dojo. Tap to step out.'}
             aria-pressed={isAway}
           >
             <span className="composer__presence-dot" aria-hidden="true" />
-            <span className="composer__presence-text">{isAway ? 'Out · iMessage' : 'In the Dojo'}</span>
+            <span className="composer__presence-text">{isAway ? 'Out' : 'In the Dojo'}</span>
           </button>
           )}
 

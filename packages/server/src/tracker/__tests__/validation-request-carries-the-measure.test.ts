@@ -42,14 +42,14 @@ const lines = async (): Promise<string> => validationMeasureLines(TASK);
 
 describe('E1: the Measure line, in its four shapes', () => {
   it('a measure that reads 0: the count at the start and when it was read', async () => {
-    setMeasure(TASK, MEASURE, { ok: true, count: 10551 }, T0 - 60_000);
+    setMeasure(TASK, MEASURE, { ok: true, count: 10551 }, T0 - 60_000, { setBy: 'the-creator' });
     recordMeasured(TASK, { ok: true, count: 0 }, T0);
     expect(await lines()).toContain('\n  Measure: gmail_search "label:Sweep-1": 0 remaining of 10,551 at start (measured 2026-10-24 12:04 UTC)\n');
   });
 
 
   it('the provider failed at close: says so, with the last good reading', async () => {
-    setMeasure(TASK, MEASURE, { ok: true, count: 25 }, T0 - 120_000);
+    setMeasure(TASK, MEASURE, { ok: true, count: 25 }, T0 - 120_000, { setBy: 'the-creator' });
     recordMeasured(TASK, { ok: true, count: 9 }, T0 - 60_000);
     recordMeasured(TASK, { ok: false, error: 'Gmail 503' }, T0);
     expect(await lines()).toContain('\n  Measure: gmail_search "label:Sweep-1": could not be read at close (Gmail 503) — last good reading 9 at 2026-10-24 12:03 UTC\n');

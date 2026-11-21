@@ -99,7 +99,7 @@ describe('replay of #28: a contact texts, the job needs the owner told, both are
 
     // 5. The agent's written answer: delivery follows the address (the contact, iMessage), whatever else is newer or the owner's presence.
     for (const presence of ['in_dojo', 'away'] as const) {
-      expect(resolveDeliveryChannel(address, { presence, imessageBridgeConfigured: true, ownerAffinityChannel: 'imessage' })).toBe('imessage');
+      expect(resolveDeliveryChannel(address)).toBe('imessage');
     }
     expect(address.senderId).toBe(CONTACT_ADDRESS);
 

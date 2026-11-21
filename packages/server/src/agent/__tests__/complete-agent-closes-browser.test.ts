@@ -67,6 +67,7 @@ beforeEach(() => {
       group_id TEXT,
       classification TEXT,
       task_id TEXT,
+      parent_agent TEXT,
       status TEXT DEFAULT 'idle',
       config TEXT NOT NULL DEFAULT '{}',
       max_runtime INTEGER,

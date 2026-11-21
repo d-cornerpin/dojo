@@ -106,7 +106,7 @@ const handlers = {
     // pending map was consumed or overwritten by a newer inbound.
     // Turn-scoped ONLY, by law: a last-inbound fallback could deliver owner-directed
     // content to a contact who texted mid-generation. Null means "not an iMessage
-    // reply": dashboard, or the owner on the away branch, never a guessed contact.
+    // reply": the dashboard, never a guessed contact.
     const requesterIMessage = getTurnScopedImRecipient(agentId);
     const triggeredByIMessage = requesterIMessage !== null;
     const wokenByFailure = isFailureWokenTurn(agentId);   // captured at CALL time: a failure inside a failure-woken turn does not wake again

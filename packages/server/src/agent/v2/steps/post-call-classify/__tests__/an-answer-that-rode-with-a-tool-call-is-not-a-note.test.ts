@@ -68,10 +68,6 @@ vi.mock('../../../../../db/connection.js', () => ({ getDb: () => fakeDb }));
 
 // The owed-compile spine read is stubbed OFF: these clauses are about the third carve-out, and
 // a turn that also holds an owed compile is T52's arm and has its own file.
-vi.mock('../../../compile-owed-gate.js', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  stillCompileOwed: () => [],
-}));
 
 vi.mock('../../../../../prompt/registry/assembler.js', () => ({ injectRegistryMessage: () => true }));
 

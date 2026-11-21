@@ -57,17 +57,17 @@ function seedOwnerAsk(messageId: string): string {
   return askId;
 }
 
-/** A model line delivered on the dashboard in `turn`, `clock` seconds after now. */
-function line(id: string, content: string, turn: number): string {
+/** A model line delivered on the dashboard in `turn`, `clock` seconds after now, in a turn serving `askMessage`. */
+function line(id: string, content: string, turn: number, askMessage: string | null = null): string {
   clock += 2;
   db().prepare(
     `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, turn_number, display_kind, created_at)
      VALUES (?, ?, 'assistant', ?, 'owner', ?, ?, 'agent-text', ?)`,
   ).run(`m-${id}`, AGENT, content, CONV, turn, Date.now() + clock * 1000);
   db().prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
-     VALUES (?, ?, ?, 'dashboard', 'dashboard', ?, ?, 'delivered', datetime('now', ?))`,
-  ).run(id, AGENT, turn, CONV, `m-${id}`, `+${clock} seconds`);
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at, root_kind, root_id)
+     VALUES (?, ?, ?, 'dashboard', 'dashboard', ?, ?, 'delivered', datetime('now', ?), ?, ?)`,
+  ).run(id, AGENT, turn, CONV, `m-${id}`, `+${clock} seconds`, askMessage ? 'ask' : null, askMessage);
   return `m-${id}`;
 }
 
@@ -127,7 +127,7 @@ beforeEach(() => {
 describe('a task answered in turn N closes on that answer in a later turn', () => {
 
 
-  it('the ANSWERED STAMP edge: a task with no ask edge, stamped answered on the turn that settled the ask', () => {
+  it('a task with no ask edge is not tied to the answer of a request it was never linked to', () => {
     const askId = seedOwnerAsk('msg-ask-st');
     stampClaimingTurn(askId, ASK_TURN);
     const t = openTrackerTask({
@@ -135,11 +135,11 @@ describe('a task answered in turn N closes on that answer in a later turn', () =
       origin: { kind: 'agent', sourceMessageId: null, turn: null, convKey: null },
     });
     db().prepare('UPDATE work SET source_message_id = NULL WHERE id = ?').run(t);
-    line('d-ack-st', 'On it.', ASK_TURN);
-    endTurnAndSettle(askId, 'msg-ask-st', line('d-ans-st', 'Tidied: two files moved.', ASK_TURN));
+    line('d-ack-st', 'On it.', ASK_TURN, 'msg-ask-st');
+    endTurnAndSettle(askId, 'msg-ask-st', line('d-ans-st', 'Tidied: two files moved.', ASK_TURN, 'msg-ask-st'));
     db().prepare('UPDATE messages SET served_by_turn = ? WHERE id = ?').run(ASK_TURN, 'msg-ask-st');
     stampAnswered(t);
-    expect(proofDelivery(t)).toBe('d-ans-st');
+    expect(proofDelivery(t)).toBeNull();
   });
 });
 
@@ -154,8 +154,8 @@ describe('every close door reads the one proof check', () => {
     const askId = seedOwnerAsk('msg-ask-h2');
     stampClaimingTurn(askId, ASK_TURN);
     const steps = seedSteps('msg-ask-h2');
-    line('d-ack-h2', 'On it.', ASK_TURN);
-    endTurnAndSettle(askId, 'msg-ask-h2', line('d-ans-h2', 'Done.', ASK_TURN));
+    line('d-ack-h2', 'On it.', ASK_TURN, 'msg-ask-h2');
+    endTurnAndSettle(askId, 'msg-ask-h2', line('d-ans-h2', 'Done.', ASK_TURN, 'msg-ask-h2'));
     laterA2ATurn();
     expect(proofDelivery(steps[0])).toBeNull();
   });
@@ -164,7 +164,7 @@ describe('every close door reads the one proof check', () => {
     seedOwnerAsk('msg-ask-own');
     const steps = seedSteps('msg-ask-own');
     laterA2ATurn();
-    line('d-now', 'the follow-up result', ASK_TURN + 1);
+    line('d-now', 'the follow-up result', ASK_TURN + 1, 'msg-ask-own');
     expect(proofDelivery(steps[2])).toBe('d-now');
   });
 });

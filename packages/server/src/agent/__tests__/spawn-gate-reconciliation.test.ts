@@ -73,7 +73,6 @@ vi.mock('../../config/platform.js', () => ({
 vi.mock('../runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage: vi.fn(async () => {}) }),
 }));
-vi.mock('../agent-bus.js', () => ({ sendAgentMessage: vi.fn() }));
 vi.mock('../agent-notice.js', () => ({ postAgentNotice: vi.fn() }));
 vi.mock('../../memory/retrieval.js', () => ({ memoryGrep: () => 'No results found' }));
 vi.mock('../../memory/message-store.js', () => ({

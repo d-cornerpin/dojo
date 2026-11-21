@@ -479,6 +479,7 @@ export function autoCreateAssignTask(params: {
   threadId: string;
   // The id of the ASSIGN message row that births this task (its lineage origin).
   assignMessageId?: string | null;
+  taskId?: string | null;
 }): { taskId: string; isNew: boolean } | null {
   const db = getDb();
   try {
@@ -500,6 +501,10 @@ export function autoCreateAssignTask(params: {
       }, params.senderId);
       return null;
     }
+
+    // A transfer's task rides its job's ASSIGN and takes its thread; one that has a thread by then is not taken.
+    if (params.taskId && db.prepare('UPDATE work SET a2a_thread_id = ?, updated_at = ? WHERE id = ? AND a2a_thread_id IS NULL')
+      .run(params.threadId, Date.now(), params.taskId).changes === 1) return { taskId: params.taskId, isNew: true };
 
     // Reuse if a task already exists for this thread.
     const existing = db

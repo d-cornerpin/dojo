@@ -39,7 +39,7 @@ const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation:
 function turnWith(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard'): void {
   endTurnContext(AGENT);
   const t = openTurnContext(AGENT);
-  t.address = computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null });
+  t.address = computeTurnAddress({ autoRoutes: true, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null });
 }
 
 beforeEach(() => {

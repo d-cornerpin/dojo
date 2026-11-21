@@ -11,7 +11,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 import { runLadder } from '../ladder.js';
 import { buildWorkBoardLane } from '../../../memory/work-board-lane.js';
 import { freshBoard, handedIn, call, stateOf, PM, WORKER, TASK } from './helpers/decision-world.js';
-import { hintsTo, resetLadderWorld, MIN } from './helpers/ladder-world.js';
+import { hintsTo, resetLadderWorld, turnTaken, MIN } from './helpers/ladder-world.js';
 
 describe('a sent-back task stays on its worker\'s list', () => {
   it('is on the assembled list and in work_update\'s list, and its stall is hinted', async () => {
@@ -21,6 +21,7 @@ describe('a sent-back task stays on its worker\'s list', () => {
     expect(stateOf()).toBe('sent_back');
     expect((await buildWorkBoardLane(WORKER)).activeTasks).toContain('Write the report');
     expect((await call(WORKER, 'work_update', { action: 'list' })).content).toContain('Write the report');
+    turnTaken(WORKER);   // its turn took the send-back and ended
     await runLadder(Date.now() + 6 * MIN);
     expect(hintsTo(WORKER).filter((h) => h.includes('has not moved since'))).toHaveLength(1);
   });

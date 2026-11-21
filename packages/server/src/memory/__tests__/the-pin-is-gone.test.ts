@@ -374,9 +374,9 @@ describe('t145 B round 4 — a long turn on an ask with NO task: its own tool ro
   });
 });
 
-describe('t145 B round 2 — a REAL unstamped finished ask: delegated, the helper answers, a wake turn delivers', () => {
+describe('a finished delegated ask: the helper answers, the request\'s next turn delivers', () => {
   /** The owner's long ask is handed to a helper (the turn ends with no reply row), the helper's
-   *  piece lands, and the wake turn gives the owner the result. No hand-cleared stamp. */
+   *  piece lands, and the turn serving the request gives the owner the result. */
   async function delegatedAndDelivered(): Promise<string> {
     await submitUserMessage(AGENT, LONG_ASK);
     await turn(
@@ -395,12 +395,10 @@ describe('t145 B round 2 — a REAL unstamped finished ask: delegated, the helpe
     return (mockDb.current!.prepare("SELECT id FROM messages WHERE role = 'user' AND content LIKE ? ORDER BY seq LIMIT 1").get(`%${JOB}%`) as { id: string }).id;
   }
 
-  it('the ask is finished and its answer stamp is NULL by the engine itself, then "You there?" re-runs nothing and gets a presence reply', async () => {
+  it('the ask is finished, then "You there?" re-runs nothing and gets a presence reply', async () => {
     const askRow = await delegatedAndDelivered();
-    // THE PREMISE, REAL THIS TIME: nobody touched the stamp. The serving turn ended without a reply
-    // row and the answer was delivered by a different (wake) turn, so the ask's row was never stamped.
-    const row = mockDb.current!.prepare('SELECT answer_message_id AS a FROM messages WHERE id = ?').get(askRow) as { a: string | null };
-    expect(row.a, 'premise: the finished ask carries no answer stamp').toBeNull();
+    // The answer came back through the request itself, so the turn that delivered it served the ask.
+    expect((mockDb.current!.prepare("SELECT state FROM work WHERE root_id = ? AND kind = 'ask'").get(askRow) as { state: string }).state).toBe('done');
     const delivered = mockDb.current!.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'assistant' AND content LIKE '%venue notes are done%'").get() as { n: number };
     expect(delivered.n, 'premise: the result really reached the owner').toBeGreaterThan(0);
 

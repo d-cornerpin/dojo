@@ -1,24 +1,31 @@
 // When a task last moved: one expression, read by the PM's ladder and the close-out gate. Only activity that
 // structurally names THAT task refreshes it. Plain assignee notes, PM pokes and engine bookkeeping are not
-// movement; a status, an edit, a delivery or the turn's `activity` stamp is.
+// movement; a status, an edit, a delivery or the turn's `activity` stamp is. The PM's acts are never movement.
 
 import { getDb } from '../db/connection.js';
 import { taskScope } from './tracker-view.js';
 import { turnContext } from '../agent/turn-context.js';
 
+const PM_ID_SQL = `COALESCE((SELECT value FROM config WHERE key = 'pm_agent_id'), 'pm')`;
+
 /** Epoch ms the task aliased `a` last moved. `claim_turn` is not movement (`work/task-turns.ts`); a ledger
  *  item its calls touched (`work/ledger-store.ts`) is, so a job working through a set never looks idle. */
-export const taskMovedAtSql = (a: string): string => `MAX(${a}.updated_at,
+export const taskMovedAtSql = (a: string): string => `MAX(${a}.opened_at,
   COALESCE((SELECT MAX(l.last_at) FROM work_ledger l WHERE l.work_id = ${a}.id), 0), COALESCE((SELECT MAX(e.created_at)
-  FROM work_events e WHERE e.work_id = ${a}.id AND ((e.kind IN ('transition', 'activity', 'opened') AND e.actor <> 'migration-901')
+  FROM work_events e WHERE e.work_id = ${a}.id AND ((e.kind IN ('transition', 'activity', 'opened') AND e.actor NOT IN ('migration-901', ${PM_ID_SQL}))
   OR (e.actor IN (${a}.agent_id, 'agent:' || ${a}.agent_id)
       AND NOT (e.kind = 'audit' AND json_extract(e.payload, '$.entry_kind') = 'observation')))), 0))`;
 
 export const LADDER_ANCHOR_SQL = `COALESCE((SELECT unixepoch(applied_at) * 1000 FROM _migrations WHERE name LIKE '901%'), 0)`;
 
-/** SQL: when the row under alias `a` began to stall: last move, latest hold lift, or the ladder anchor. */
+/** SQL: when the row under alias `a` began to stall: last move, latest hold lift not by the PM, or the ladder anchor. */
 export const stallSinceSql = (a: string): string => `MAX(${taskMovedAtSql(a)}, ${LADDER_ANCHOR_SQL}, COALESCE((SELECT MAX(c.created_at)
-  FROM work_events c WHERE c.work_id = ${a}.id AND c.kind = 'audit' AND json_extract(c.payload, '$.entry_kind') = 'hold_cleared'), 0))`;
+  FROM work_events c WHERE c.work_id = ${a}.id AND c.kind = 'audit' AND json_extract(c.payload, '$.entry_kind') = 'hold_cleared'
+    AND c.actor <> ${PM_ID_SQL}), 0))`;
+
+/** SQL: the owner was carded for the current stall of the row under alias `a`. */
+export const cardedSinceStallSql = (a: string): string => `EXISTS (SELECT 1 FROM work_events k WHERE k.work_id = ${a}.id
+  AND k.kind = 'validation_escalated' AND k.created_at >= ${stallSinceSql(a)})`;
 
 /** Was this task served to this turn by a tracker notice (re-drive, retask, assignment)? Being woken by one
  *  is not progress: only what the agent then does on the task moves it. */

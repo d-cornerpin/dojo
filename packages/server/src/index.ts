@@ -415,9 +415,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4b3. Boot re-drain of delegated owner questions (fail-closed backstop). resolveJoinsAtBoot lands a
-  // reply that already arrived and fails closed (owner notice) when the asked agent is terminated or the
-  // join is past its ttl_at; fresh joins are left to the reaper. It only relays or settles rows, never
+  // 4b3. Boot re-drain of delegated owner questions. resolveJoinsAtBoot lands a reply that already arrived and
+  // ends the pieces whose helper's work stopped while the Dojo was down, telling once. It only relays or settles rows, never
   // wakes an agent. Delayed so the channel bridges are up (a down bridge falls back to the dashboard).
   setTimeout(() => {
     void (async () => {

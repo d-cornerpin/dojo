@@ -65,7 +65,7 @@ describe('no agent decides its own work', () => {
     expect(r.content).toMatch(/handed in and waits for a decision/);
   });
 
-  it('an agent that worked the task before moving it on never decides it: past the PM, the owner does', async () => {
+  it('an agent that only handed its own task on did not work it: past the PM it decides', async () => {
     freshBoard(MAIN);
     expect((await call(MAIN, 'work_update', { action: 'reassign', task_id: TASK, assigned_to: WORKER, cause: 'coordination' })).isError).toBe(false);
     await handedIn(WORKER);
@@ -73,12 +73,11 @@ describe('no agent decides its own work', () => {
       doneDb().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'audit', ?, 'engine', ?)")
         .run(TASK, JSON.stringify({ entry_kind: 'review_miss', n }), Date.now());
     }
-    expect(whoDecides(TASK)).toEqual({ kind: 'owner' });
+    expect(whoDecides(TASK)).toEqual({ kind: 'agent', agentId: MAIN });
     await openAll(MAIN);
     const r = await approve(MAIN);
-    expect(r.isError).toBe(true);
-    expect(r.content).toMatch(/your own work/);
-    expect(stateOf()).toBe('handed_in');
+    expect(r.isError, r.content).toBe(false);
+    expect(stateOf()).toBe('done');
   });
 
   it('the PM approves another agent\'s task: Done, with the adjudication on record', async () => {

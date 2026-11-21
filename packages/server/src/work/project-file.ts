@@ -55,11 +55,13 @@ function noteLines(projectId: string): Dated[] {
   }));
 }
 
+const DECIDED_AS: Record<string, string> = { approve: 'approved', cancel: 'cancelled', owner_done: 'closed by the owner' };
+
 /** Every decision and instruction given on these tasks, from their audit trails. */
 function reviewLines(tasks: Array<{ id: string; title: string | null }>): Dated[] {
   const trail = (id: string) => readAuditTrail(id, { limit: Number.MAX_SAFE_INTEGER, kinds: ['decided', 'directive'] });
   return tasks.flatMap((t) => trail(t.id).map((r) => {
-    const what = r.entry_kind === 'directive' ? 'retasked' : r.action_taken === 'approve' ? 'approved' : 'sent back';
+    const what = r.entry_kind === 'directive' ? 'retasked' : DECIDED_AS[r.action_taken ?? ''] ?? 'sent back';
     const reason = (r.reason ?? '').split('\n')[0];
     return { at: tsToMs(r.created_at) ?? 0, text: `\n    ${r.created_at} "${t.title ?? t.id}" ${what}: ${reason}` };
   }));

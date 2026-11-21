@@ -1,6 +1,6 @@
 // `routeTerminalReply` queues the reply on the destination the SAME resolver gives the agent
 // (`resolveDeliveryChannel`), whatever the newest row, the trigger row or the owner's presence says; and the
-// channel the agent is told (`liveAddress`) equals the channel used, including after a presence flip.
+// channel the agent is told (the turn's address) equals the channel used, whatever presence does mid-turn.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const { queueSpy, presence, bridge } = vi.hoisted(() => ({
@@ -17,20 +17,19 @@ vi.mock('../../../../../logger.js', () => ({ createLogger: () => ({ info: vi.fn(
 
 import { routeTerminalReply } from '../route-reply.js';
 import { computeTurnAddress } from '../../../turn-address.js';
-import { liveAddress } from '../../../turn-address-live.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
 
 const contact: TurnCounterparty = { kind: 'user', name: 'Pat Example', relation: 'known_contact', channel: 'imessage', senderId: '+15550100', threadId: null, senderIsAgent: false };
 const owner: TurnCounterparty = { kind: 'user', name: 'Owner Example', relation: 'owner', channel: 'dashboard', senderId: null, threadId: null, senderIsAgent: false };
 
-function addressFor(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard' | null, now: 'in_dojo' | 'away', primary = true) {
-  return computeTurnAddress({ autoRoutes: primary, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null, presence: now, imessageBridgeConfigured: true, ownerAffinityChannel: null });
+function addressFor(cp: TurnCounterparty, inbound: 'imessage' | 'dashboard' | null, primary = true) {
+  return computeTurnAddress({ autoRoutes: primary, counterparty: cp, isEngineTurn: false, isNotificationTurn: false, inboundChannel: inbound, inboundContext: null });
 }
 /** The channel the reply was queued on, or `dashboard` when nothing left the dashboard. */
 async function destinationOf(cp: TurnCounterparty, address: ReturnType<typeof addressFor>, stateInbound: 'imessage' | 'dashboard' | null): Promise<string> {
   queueSpy.mockClear();
   const state = { lastAssistantTextForIM: 'hi', explicitSendThisTurn: {}, repliedToCounterpartyThisTurn: {}, steerQueue: { pending: [], fired: [] }, inboundChannel: stateInbound, inboundContext: null } as never;
-  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, ownerAffinityDestination: null, replyFiles: [] }, counterparty: cp, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false } as never;
+  const ctx = { agentId: 'primary', turnNumber: 1, turnCtx: { address, replyFiles: [] }, counterparty: cp, chosenConvKey: 'c', settledContextWakeTurn: false, isEngineTurn: false } as never;
   await routeTerminalReply(state, ctx);
   expect(queueSpy.mock.calls.length).toBeLessThanOrEqual(1);
   const queued = queueSpy.mock.calls[0] as unknown as [{ address: { channel: string } }] | undefined;
@@ -43,14 +42,13 @@ describe('delivery follows the turn address', () => {
   it('a contact\'s iMessage turn is delivered by iMessage, whatever the owner\'s presence', async () => {
     for (const p of ['in_dojo', 'away'] as const) {
       presence.current = p;
-      expect(await destinationOf(contact, addressFor(contact, 'imessage', p), 'imessage')).toBe('imessage');
+      expect(await destinationOf(contact, addressFor(contact, 'imessage'), 'imessage')).toBe('imessage');
     }
   });
 
   it('a job turn (no trigger row, state inbound empty) still delivers to the address\'s bound channel', async () => {
     const address = computeTurnAddress({
       autoRoutes: true, counterparty: contact, isEngineTurn: false, isNotificationTurn: false, inboundChannel: 'imessage', inboundContext: null,
-      presence: 'in_dojo', imessageBridgeConfigured: true, ownerAffinityChannel: null,
     });
     expect(await destinationOf(contact, address, null)).toBe('imessage');
   });
@@ -58,45 +56,28 @@ describe('delivery follows the turn address', () => {
   it('an A2A turn never delivers to a person', async () => {
     const peer: TurnCounterparty = { kind: 'agent', name: 'peer-agent', relation: 'agent', channel: 'a2a', senderId: null, threadId: 't1', senderIsAgent: false };
     presence.current = 'away';
-    expect(await destinationOf(peer, addressFor(peer, 'dashboard', 'away'), 'dashboard')).toBe('dashboard');
+    expect(await destinationOf(peer, addressFor(peer, 'dashboard'), 'dashboard')).toBe('dashboard');
   });
 });
 
-describe('what the agent is told equals what is used, including after a presence flip', () => {
-  // Owner ruling 2026-11-04 (field fix 3 test-2 round): a person's DASHBOARD ask is answered on the
-  // dashboard whatever the presence, so the presence-flip requirement this clause holds is shown on
-  // an owner turn that no dashboard message started (a proactive turn), which away still forwards.
-  it('owner turn with no inbound: told dashboard at preflight, the owner goes away mid-turn: the live address and delivery both say iMessage', async () => {
-    const address = addressFor(owner, null, 'in_dojo');
-    expect(address.deliveryChannel).toBe('dashboard');
-    expect(liveAddress(address)?.deliveryChannel).toBe('dashboard');
-    presence.current = 'away';
-    const told = liveAddress(address)!;
-    expect(told.deliveryChannel).toBe('imessage');
-    expect(told.routed).toBe(true);
-    expect(await destinationOf(owner, address, null)).toBe(told.deliveryChannel);
-  });
-
+describe('what the agent is told equals what is used, whatever presence does mid-turn', () => {
   it('owner ruling: a DASHBOARD ask stays on the dashboard when the owner goes away mid-turn', async () => {
-    const address = addressFor(owner, 'dashboard', 'in_dojo');
+    const address = addressFor(owner, 'dashboard');
     presence.current = 'away';
-    expect(liveAddress(address)!.deliveryChannel).toBe('dashboard');
+    expect(address.deliveryChannel).toBe('dashboard');
     expect(await destinationOf(owner, address, 'dashboard')).toBe('dashboard');
   });
 
-  it('and back again: the owner returns, both say dashboard', async () => {
+  it('a turn no message started stays on the dashboard while the owner is away', async () => {
     presence.current = 'away';
-    const address = addressFor(owner, 'dashboard', 'away');
-    presence.current = 'in_dojo';
-    expect(liveAddress(address)?.deliveryChannel).toBe('dashboard');
-    expect(await destinationOf(owner, address, 'dashboard')).toBe('dashboard');
+    const address = addressFor(owner, null);
+    expect(address.deliveryChannel).toBe('dashboard');
+    expect(await destinationOf(owner, address, null)).toBe('dashboard');
   });
 
   it('a sub-agent\'s reply stays in the dashboard even with the owner away (no iMessage promise)', () => {
-    presence.current = 'away';
-    const sub = addressFor(owner, 'dashboard', 'away', false);
+    const sub = addressFor(owner, 'imessage', false);
     expect(sub.deliveryChannel).toBe('dashboard');
     expect(sub.routed).toBe(false);
-    expect(liveAddress(sub)?.deliveryChannel).toBe('dashboard');
   });
 });

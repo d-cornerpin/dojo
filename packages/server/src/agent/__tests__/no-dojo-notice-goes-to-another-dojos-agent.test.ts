@@ -12,11 +12,13 @@ vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => ne
 import { sweepExpiredJoins } from '../a2a-transport.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { imessage, testDb } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, relayRows, ASK } from './helpers/text-relay.js';
+import { delegatedTextRequest, relayRows, served, ASK } from './helpers/text-relay.js';
 
 const toldRows = () => testDb().prepare("SELECT content FROM messages WHERE origin_intent = 'fanout_join'").all() as Array<{ content: string }>;
 
+/** The helper took the request and its turn ended with no answer; then the next look. */
 async function deadlinePasses(): Promise<void> {
+  served();
   testDb().prepare('UPDATE work SET ttl_at = ? WHERE id = ?').run(Date.now() - 1, ASK);
   await sweepExpiredJoins();
   await deliverDueReplies(Date.now());

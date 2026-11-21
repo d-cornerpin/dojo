@@ -207,17 +207,9 @@ describe('THE ANNOUNCEMENT — the platform’s own voice reaches the socket, no
     expect(announced()).toContain(rec.noticeId!);
   });
 
-  it('THE BATTERY’S RED, at the ladder’s own call shape: no silent insert', () => {
-    // `bmsgc3l0cnb`'s row exactly — TB2's rung 6: the out-of-band subject, no turn (a SWEEP
-    // has none), the delegated-job line. This is the shape that went out user-visible and
-    // unannounced, and it is the one the clause has to hold for.
+  it('a sweep\'s call shape (no turn): no silent insert', () => {
     workRow(WORK);
-    ghost({
-      floor: 'delegated-job-stuck', turnNumber: null,
-      ownerLine:
-        'your agent delegated part of a request, the pieces came back, and it has not been able to '
-        + 'finish or report on it — the platform steered it several times and got no reply.',
-    });
+    ghost({ floor: 'run-undelivered', turnNumber: null, ownerLine: 'a scheduled run finished without delivering anything to you.' });
     const rows = userVisibleRows();
     expect(rows.length).toBe(1);
     const silent = rows.filter((r) => !announced().includes(r.id));
@@ -261,7 +253,7 @@ describe('THE ANNOUNCEMENT — the platform’s own voice reaches the socket, no
   it('NEGATIVE CONTROL: a broadcast that throws still leaves both durable halves written', () => {
     workRow(WORK);
     const rec = recordFloorGhost({
-      agentId: AGENT, turnNumber: null, floor: 'delegated-job-stuck', workId: WORK,
+      agentId: AGENT, turnNumber: null, floor: 'run-undelivered', workId: WORK,
       attempts: 5, ownerLine: 'your agent went quiet.',
     }, { broadcast: () => { throw new Error('ws is down'); } });
     expect(rec.eventId).not.toBeNull();

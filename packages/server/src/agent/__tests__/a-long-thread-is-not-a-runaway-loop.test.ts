@@ -26,7 +26,7 @@
 // the purge. All three are in this file.
 //
 // §1 the aging, on the spine store · §2 the aging, on the fallback store
-// §3 the loud drop, and the two enumerated exemptions, counted both ways
+// §3 the loud drop
 // §4 the purge, and the live work row it must refuse to purge
 // §5 the wire clause: the window is carried, not re-chosen
 
@@ -336,19 +336,6 @@ describe('§3 a dropped message is said out loud', () => {
     const warns = dropLines('warn');
     expect(warns.length).toBe(1);
     expect(warns[0].reason).toBe('AGENT_NOT_FOUND');
-  });
-
-  it('THE CONTROL: the two drops the sender is TOLD about stay at info', async () => {
-    // AWAITING_REPLY — the sender's own unanswered wake intent is the most recent delivery.
-    seedFallbackThread('thread-t109a-latch', 1, 60_000);
-    mockDb.current!.prepare('UPDATE a2a_threads SET last_sender = ?, last_intent = ? WHERE thread_id = ?')
-      .run(SENDER, 'QUESTION', 'thread-t109a-latch');
-    const res = await deliver('thread-t109a-latch', 'QUESTION');
-    expect(res.reason, 'precondition: the latch fired').toBe('AWAITING_REPLY');
-    expect(dropLines('warn'), 'the protection working is not a warning').toEqual([]);
-    const infos = dropLines('info');
-    expect(infos.length).toBe(1);
-    expect(infos[0].reason).toBe('AWAITING_REPLY');
   });
 });
 

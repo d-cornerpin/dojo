@@ -18,7 +18,7 @@ export function imessageTurn(turnNumber = 1) {
     inboundChannel: 'imessage', inboundContext: { recipientAddress: PERSON },
   } as Partial<AgentTurnState>);
   const turnCtx = {
-    agentId: AGENT, kind: 'user', root, address, ownerAffinityDestination: null, servedWork: undefined,
+    agentId: AGENT, kind: 'user', root, address, servedWork: undefined,
     deferredUserReplyWithTools: null, engineStartAckDeliveredThisTurn: false, deferredDeliveredByAck: false,
     startAckSteerArmedThisTurn: false, startAckSteerRequested: false, earlyAnswerRowId: null, replyFiles: [], state,
   } as unknown as Parameters<typeof runTurnClosures>[0];

@@ -6,18 +6,18 @@ import { latestHandIn, workerOf } from '../work/done/record.js';
 import {
   decidedBy, holdingQuestions, questionsHoldUntil, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS,
 } from '../work/done/who-decides.js';
-import { LADDER_ENTRY } from '../work/done/ladder.js';
+import { LADDER_ENTRY, pmCanRun } from '../work/done/ladder.js';
 import { appendAuditEntry } from '../work/audit-trail.js';
 import { heldDeliveryLine } from './owed-delivery.js';
 import { getDb } from '../db/connection.js';
 import { writeAgentStatus } from '../agent/agent-status.js';
-import { taskScope, holdWordsSql, heldByOwnerSql } from '../work/tracker-view.js';
+import { taskScope, holdWordsSql, heldByOwnerSql, msToUtcText } from '../work/tracker-view.js';
+import { agentActivity } from './liveness.js';
 import { planStepLineOf } from '../work/plan-store.js';
 import { ownerWordsLines, projectOf, workFile } from '../work/project-file.js';
 import { listTaskLog } from './task-log.js';
 import { workingExpr } from '../work/terminal-states.js';
 import { createLogger } from '../logger.js';
-import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { contextWindowPolicy } from '../memory/budget.js';
@@ -186,7 +186,7 @@ function waitingForPM(pmId: string): string[] {
 
 function markedStalls(pmId: string): string[] {
   return (getDb().prepare(
-    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND ${workingExpr('w')} AND NOT ${heldByOwnerSql('w')} AND EXISTS (SELECT 1 FROM work_events e
+    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND ${workingExpr('w', true)} AND NOT ${heldByOwnerSql('w')} AND EXISTS (SELECT 1 FROM work_events e
        WHERE e.work_id = w.id AND e.kind = 'audit' AND json_extract(e.payload, '$.entry_kind') = ?
          AND e.created_at >= COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = ? AND m.origin_intent = 'pm_review'), 0))
      ORDER BY w.updated_at LIMIT 10`,
@@ -220,8 +220,10 @@ function stallBlock(id: string, n: number): string {
     `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'hand_in_refused'
        AND id > COALESCE((SELECT MAX(h.id) FROM work_events h WHERE h.work_id = ? AND h.kind IN ('handed_in', 'decided')), 0) ORDER BY id`,
   ).all(id, id) as Array<{ payload: string }>).map((r) => (JSON.parse(r.payload) as { reasons?: string[] }).reasons?.join(' ') ?? '');
+  const act = agentActivity(workerOf(id));
   return `${n}. STALLED: "${w.title ?? id}" [${id}], worked by ${workerOf(id)}, has made no progress past its patience bound since the engine's hint.`
     + `${w.hold ? ` It is held: ${w.hold}.` : ''}`
+    + `\n  Its worker was last seen: ${act.lastWhat}${act.lastAt ? ` at ${msToUtcText(act.lastAt)}` : ''}.`
     + (refused.length > 0 ? `\n  Its refused hand-ins:\n${refused.map((r, i) => `    ${i + 1}. ${r}`).join('\n')}` : '')
     + taskLines(id);
 }
@@ -247,8 +249,8 @@ export async function runPMReview(): Promise<void> {
     const waiting = waitingForPM(pmId), stalled = markedStalls(pmId);
     held = new Map(waiting.map((id) => [id, latestHandIn(id)?.eventId ?? 0] as const));
     if (waiting.length + stalled.length === 0) return;
-    const pm = getDb().prepare('SELECT model_id, status FROM agents WHERE id = ?').get(pmId) as { model_id: string | null; status: string } | undefined;
-    if (!pm?.model_id || pm.status === 'terminated') { recordMisses(pmId, held, 'the project manager could not run its review'); return; }
+    const pm = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(pmId) as { model_id: string | null } | undefined;
+    if (!pmCanRun() || !pm?.model_id) { recordMisses(pmId, held, 'the project manager could not run its review'); return; }
     // One file per project (or per task with none), each in its own room beside the blocks.
     const subjects = [...new Set([...waiting, ...stalled].map((id) => projectOf(id)?.id ?? id))];
     const policy = contextWindowPolicy(agentTurnWindow(pmId, pm.model_id), { toolPayloadTokens: 0 });
@@ -264,11 +266,10 @@ export async function runPMReview(): Promise<void> {
       + '[Engine hint: for each HANDED IN row, open its proof with work_validate(action="open_proof", task_id, item=N), then work_validate(action="decide", task_id, '
       + 'verdict="approve", reason="<one line: how the proof meets the goal>"), or verdict="send_back" with the reason naming what is missing. A measured task is met when its '
       + 'measure reads 0 or the named remainder holds; a task whose job is a decision is met by the owner\'s recorded words above, never by the worker quoting him. '
-      + 'A row you do not decide stays waiting and goes to the next decider. For each STALLED row your one move is work_validate(action="retask", task_id, '
-      + 'directive="<the next concrete step>"), or nothing: never poke, never reassign, never send_to_agent(intent="ASSIGN").]';
+      + 'A row you do not decide stays waiting and goes to the next decider. For each STALLED row: work_validate(action="retask", task_id, '
+      + 'directive="<the next concrete step>") if it can go on; no move means its work has stopped. Never poke, never reassign, never send_to_agent(intent="ASSIGN").]';
     const msgId = uuidv4();
     insertEngineEventIfAbsent({ id: msgId, agentId: pmId, content: report, sourceAgentId: null, originIntent: 'pm_review', work: null });
-    broadcast({ type: 'chat:message', agentId: pmId, message: { id: msgId, agentId: pmId, role: 'user' as const, content: report, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() } });
     const runtime = getAgentRuntime();
     const asked = await runtime.handleMessage(pmId, report);
     let bound: ReturnType<typeof setTimeout> | undefined;

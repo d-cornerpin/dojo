@@ -537,7 +537,7 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
   const hasSendToAgent = agentTools.some(t => t.name === 'send_to_agent');
   if (hasSendToAgent) {
     lines.push(`## Talking to Other Agents`);
-    lines.push(`Other agents can't see your chat. Use \`send_to_agent\` to message them, the DOJO validates intent and threading. Wake intents (QUESTION/ASSIGN/BLOCK/ANSWER/DELIVERABLE) prompt a reply; no-wake intents (FYI/STATUS/COMPLETE/FAIL) don't.`);
+    lines.push(`Other agents can't see your chat. Use \`send_to_agent\` to message them; the DOJO validates intent and threading. FYI and STATUS do not wake the receiver; every other intent does.`);
     lines.push('');
   }
 

@@ -129,7 +129,7 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { startGmailWatcher, stopGmailWatcher } from '../../services/gmail-watcher.js';
-import { deliverA2AMessage } from '../../agent/a2a-transport.js';
+import { deliverA2AMessage, relayPiecesWhole } from '../../agent/a2a-transport.js';
 import { insertEngineEvent } from '../message-store.js';
 import { insertInboundMessageIfAbsent, } from '../../work/ask-title.js';
 import { recordInboundMeta } from '../../agent/v2/inbound-channel.js';
@@ -547,11 +547,12 @@ describe('fix round 1 — I-3: work done elsewhere for the owner\'s request appe
     openDelegationJoin({ parentWorkId: askIdForMessage(ask.id), agentId: AGENT, replyConversationId: ask.conversation_id,
       ttlAt: Date.now() + 3_600_000, threads: [{ threadId: THREAD, assigneeAgent: 'peer-agent', intent: 'ASSIGN' }] });
     await deliverA2AMessage({ intent: 'DELIVERABLE', threadId: THREAD, requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'PELICAN status is green across all three sites.' });
+    await relayPiecesWhole(askIdForMessage(ask.id), 'compile', null);   // the agent did not pass it on; the Dojo does
     const relay = mockDb.current!.prepare(`SELECT content FROM messages WHERE role = 'assistant' AND content LIKE '%PELICAN status is green%'`).get() as { content: string } | undefined;
     expect(relay, 'the engine relayed the delegated result to the owner').toBeDefined();
     await submitUserMessage(AGENT, 'Thanks — anything else?');
     const t = await turn({ content: 'No.' });
-    const label = labelBefore(wireText(t[0]), 'PELICAN status is green');
+    const label = labelBefore(wireText(t[0]), "Dojo: The helper's answer");
     // t196: a relayed result now says it was SENT (the old "result delivered later" wording stays for media results).
     expect(label).toMatch(/dashboard conversation with TestUser — sent to TestUser on dashboard at .* by the engine as the result of the request of /);
     expect(label).not.toMatch(/subject not recorded/);
@@ -604,6 +605,7 @@ describe('round 2 — delegated work cancelled midway, then re-asked (plan backw
     // Re-asked: a new request, a new thread, and this time the answer comes back.
     const ask2 = await delegate('Please try the HERON report again.', T2);
     await deliverA2AMessage({ intent: 'DELIVERABLE', threadId: T2, requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'HERON report: all clear at every site.' });
+    await relayPiecesWhole(askIdForMessage(ask2), 'compile', null);
     // ...and the first thread's answer straggles in after it was given up.
     await deliverA2AMessage({ intent: 'DELIVERABLE', threadId: T1, requiresResponse: false, toAgent: AGENT, fromAgent: 'peer-agent', payload: 'HERON report (late): partial data.' });
 
@@ -620,10 +622,11 @@ describe('round 2 — delegated work cancelled midway, then re-asked (plan backw
     await submitUserMessage(AGENT, 'So, the HERON report?');
     const t = await turn({ content: 'All clear.' });
     const all = wireText(t[0]);
-    // In view twice: the relay he has, then the helper's own report on its thread, labelled as delegated work.
-    expect(all.split('all clear at every site').length - 1, 'the relay and the helper\'s report').toBe(2);
+    // In view three times: the helper's own report on its thread, labelled as delegated work, the relay he has,
+    // and the Dojo's note to the agent saying what it sent.
+    expect(all.split('all clear at every site').length - 1, 'the helper\'s report, the relay and the note').toBe(3);
     expect(all).toMatch(/work you delegated to Peer for the request of the person you are talking with\] \[A2A:DELIVERABLE thread:7e1f2a3b/);
-    expect(headerBefore(all, 'all clear at every site'), 'labelled with THE REQUEST it answers')
+    expect(headerBefore(all, "Dojo: The helper's answer, as it was delivered:\n\nHERON report: all clear"), 'labelled with THE REQUEST it answers')
       // t196: the engine's relay says it was SENT, still naming the request it answers.
       .toMatch(/sent to TestUser on dashboard at [^\]]* as the result of the request of [^\]]*"Please try the HERON report again\."/);
   });

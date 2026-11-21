@@ -2375,7 +2375,7 @@
   margin-left: auto;
 }
 
-/* presence toggle (bottom-left): in the dojo vs out / iMessage */
+/* presence toggle (bottom-left): in the dojo vs out */
 .dojo3-stage .composer__presence {
   display: inline-flex;
   align-items: center;

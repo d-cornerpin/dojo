@@ -65,7 +65,7 @@ afterEach(() => { vi.useRealTimers(); });
 describe('the task board shows measured progress', () => {
   it('a measured task: what was touched, what the measure still returns, of what, and when it was read — after State, before Last note', async () => {
     const id = task('Sort the inbox');
-    setMeasure(id, MEASURE, { ok: true, count: 10551 }, NOW - 600_000);
+    setMeasure(id, MEASURE, { ok: true, count: 10551 }, NOW - 600_000, { setBy: AGENT });
     touch(id, 139);
     recordMeasured(id, { ok: true, count: 10412 }, NOW - 120_000);
     updateTask(id, { notes: 'halfway through the newsletters' });
@@ -79,7 +79,7 @@ describe('the task board shows measured progress', () => {
 
   it('a measure that could not be read says so, with when', async () => {
     const id = task('Sort the inbox');
-    setMeasure(id, MEASURE, { ok: true, count: 80 }, NOW - 600_000);
+    setMeasure(id, MEASURE, { ok: true, count: 80 }, NOW - 600_000, { setBy: AGENT });
     recordMeasured(id, { ok: false, error: '503' }, NOW - 60_000);
     const block = lineOf((await buildWorkBoardLane(AGENT)).activeTasks!, 'Sort the inbox');
     expect(block).toContain(`Progress: 0 messages touched; measure gmail_search "in:inbox -label:Done" could not be read at ${recordedInstant(NOW - 60_000)} (80 at start)`);
@@ -99,7 +99,7 @@ describe('the task board shows measured progress', () => {
 
   it('a waiting (paused or blocked) task prints no Progress line', async () => {
     const id = task('Sort the inbox');
-    setMeasure(id, MEASURE, { ok: true, count: 10 }, NOW - 600_000);
+    setMeasure(id, MEASURE, { ok: true, count: 10 }, NOW - 600_000, { setBy: AGENT });
     touch(id, 3);
     setHold(id, 'blocked', 'the mailbox sign-in expired', AGENT);
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;
@@ -112,7 +112,7 @@ describe('the task board shows measured progress', () => {
     const long: Measure = { tool: 'gmail_search', args: { query: 'q'.repeat(5000) }, unit: 'u'.repeat(5000) };
     for (let i = 0; i < 5; i++) {
       const id = task(`Job ${i}`);
-      setMeasure(id, long, { ok: true, count: 9_999_999 }, NOW - 600_000);
+      setMeasure(id, long, { ok: true, count: 9_999_999 }, NOW - 600_000, { setBy: AGENT });
       touch(id, 5);
     }
     const block = (await buildWorkBoardLane(AGENT)).activeTasks!;

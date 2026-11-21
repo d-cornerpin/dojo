@@ -118,10 +118,15 @@ export function runsReadyToCloseOnDelivery(): RunReadyToClose[] {
        AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.root_kind = w.kind AND t.root_id = w.id AND t.ended_at IS NULL)
   `).all(OCCURRENCE_KIND) as Array<{ occurrence_id: string; task_id: string }>;
   return rows.flatMap((row) => {
-    if (!occurrenceOwesDeliverable(row.occurrence_id).owes) return [];
-    const deliveryId = proofDelivery(row.task_id, true);
+    const deliveryId = owedRunDelivery(row.occurrence_id);
     return deliveryId ? [{ occurrenceId: row.occurrence_id, taskId: row.task_id, deliveryId }] : [];
   });
+}
+
+/** The delivery the engine saw this run make, tied to it, when its task owes a message; else null. */
+export function owedRunDelivery(occurrenceId: string): string | null {
+  const o = occurrenceOwesDeliverable(occurrenceId);
+  return o.owes && o.taskId ? proofDelivery(o.taskId, true) : null;
 }
 
 export interface RunSettlement {
@@ -303,11 +308,11 @@ export function deleteOccurrencesOf(workIds: string[]): number {
 }
 
 /** The occurrence this schedule has in flight, if any: a crashed fire leaves exactly this row behind. */
-export function inFlightOccurrence(workId: string): { id: string; sequence: number } | null {
+export function inFlightOccurrence(workId: string, opts: { anyState?: true } = {}): { id: string; sequence: number } | null {
   const r = getDb().prepare(
     `SELECT id, sequence FROM work
-      WHERE kind = ? AND parent_id = ? AND state = 'open'
+      WHERE kind = ? AND parent_id = ? AND (? OR state = 'open')
       ORDER BY sequence DESC LIMIT 1`,
-  ).get(OCCURRENCE_KIND, workId) as { id: string; sequence: number } | undefined;
+  ).get(OCCURRENCE_KIND, workId, opts.anyState ? 1 : 0) as { id: string; sequence: number } | undefined;
   return r ?? null;
 }
