@@ -399,7 +399,7 @@ export async function sendToAgent(agentId: string, input: {
     });
     switch (result.reason) {
       case 'HOP_LIMIT_EXCEEDED':
-        content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;
+        content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. This exchange has gone on long enough: stop, or bring it to the person you work for.`;
         break;
       case 'SEMANTIC_DUPLICATE':
         // A duplicate-dropped ASSIGN means the work is ALREADY assigned; re-sending
