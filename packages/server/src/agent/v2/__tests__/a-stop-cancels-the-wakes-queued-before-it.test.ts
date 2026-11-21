@@ -1,5 +1,5 @@
 // A turn the owner stopped ends the engine self-wakes queued before it: the clock owes nothing and none is served.
-// A wake rooted in a person's request still stands, and a wake queued after the Stop is served.
+// A wake rooted in a person's request or in a run they scheduled still stands, and a wake queued after the Stop is served.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/reply-sender.js')).connectionMock());
@@ -32,10 +32,10 @@ describe('a stop cancels the wakes queued before it', () => {
     expect(dueOf(AGENT)).toEqual({ now: false, next: null });
   });
 
-  it("a wake rooted in a person's request still stands after the Stop", () => {
-    const ask = queue('the delegated piece never came back', 'ask');
+  it.each(['ask', 'occurrence'])("a wake rooted in a person's request or schedule (%s) still stands after the Stop", (rootKind) => {
+    const tied = queue('the delegated piece never came back', rootKind);
     stoppedTurn();
-    expect(getPendingEngineEvent(AGENT)?.id).toBe(ask.id);
+    expect(getPendingEngineEvent(AGENT)?.id).toBe(tied.id);
   });
 
   it('a self-wake queued after the Stop is served', async () => {
