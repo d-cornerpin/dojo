@@ -255,6 +255,11 @@ describe('resolveSpawnGrants / resolveUpdateGrants', () => {
     expect(g.tools.categories).toEqual([...(MOST_RESTRICTIVE_GRANTS.tools.categories as string[]), 'Web']);
   });
 
+  it("the owner's own picks for a helper's tool groups stay exactly as set", () => {
+    const out = resolveSpawnGrants({ tools: { categories: ['Web'] } }, null, true);
+    expect(out.ok && out.grants.tools.categories).toEqual(['Web']);
+  });
+
   it('⚠ UPDATE MERGES OVER THE TARGET’S CURRENT OBJECT — an omitted section is not erased', () => {
     agent('primary', 'sensei');
     const target = agent('worker', 'apprentice', (g) => {
