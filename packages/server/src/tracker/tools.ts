@@ -1883,7 +1883,7 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
 // Closes a whole project and every open task on it in one call (abandoned, duplicate or rescoped project),
 // so agents do not strand tasks in on_deck or loop work_update(action="status") task by task.
 
-const REDRIVE_LATER = ' The directive could not be delivered just now (it is logged); the task is back in play and the PM sweep re-drives it on its schedule.';
+const REDRIVE_LATER = ' The directive could not be delivered (it is logged on the task), so the worker was not told; as after any retask, unless the worker moves the task the owner is asked about it next.';
 
 // PM or main agent: an open task's worker is told to redo it with a directive (at least 30 characters). Refused on a
 // cancelled task, a handed-in one (that is decided instead) and one with no worker. Moves the task to in_progress
