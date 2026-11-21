@@ -374,7 +374,7 @@ describe('t145 B round 4 — a long turn on an ask with NO task: its own tool ro
   });
 });
 
-describe('t145 B round 2 — a finished delegated ask: the helper answers, the request\'s next turn delivers', () => {
+describe('a finished delegated ask: the helper answers, the request\'s next turn delivers', () => {
   /** The owner's long ask is handed to a helper (the turn ends with no reply row), the helper's
    *  piece lands, and the turn serving the request gives the owner the result. */
   async function delegatedAndDelivered(): Promise<string> {

@@ -62,7 +62,7 @@ describe('a text to the owner is never refused', () => {
 
   const freshState = () => ({
     structuringToolCalledThisTurn: false, steerQueue: { pending: [], fired: [] }, heavyLoadsThisTurn: 0, lastContextRatio: 0,
-    loopCount: 0, compileGateSatisfied: true, compileOwedAskIds: [],
+    loopCount: 0,
   });
 
   const buildCtx = (

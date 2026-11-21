@@ -39,8 +39,8 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
   if (sentRows.length > 0) {
     // The ask's work row is already claimed, which stops a re-trigger; the join is child rows with an
     // atomic countdown, and the message row is untouched. Its answer comes back through the request.
-    let livePieces = 0;
-    if (triggerRow && triggerWorkId) {
+    // Ends as delegated only when a live piece is out; a send swallowed by another request's piece delegated nothing.
+    if (triggerRow) {
       try {
         const seen = new Set<string>();
         const threads: DelegationThread[] = [];
@@ -57,28 +57,25 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
             hopCount: threadHopCount(r.a2a_thread_id) ?? 0,
           });
         }
-        if (threads.length > 0) {
-          const opened = openDelegationJoin({
-            parentWorkId: triggerWorkId,
-            agentId,
-            // Copied now, never resolved later: the reply returns on the conversation the ask came on.
-            replyConversationId: triggerConversationId,
-            ttlAt: Date.now() + JOIN_TTL_MINUTES * 60_000,
-            threads,
-          });
-          livePieces = opened.length;
-          logger.info('v2: delegated the owner question, join opened', {
-            agentId, work: triggerWorkId, children: opened.length, ownerRowid: triggerRow.rowid,
-          }, agentId);
-        }
+        const opened = triggerWorkId && threads.length > 0 ? openDelegationJoin({
+          parentWorkId: triggerWorkId,
+          agentId,
+          // Copied now, never resolved later: the reply returns on the conversation the ask came on.
+          replyConversationId: triggerConversationId,
+          ttlAt: Date.now() + JOIN_TTL_MINUTES * 60_000,
+          threads,
+        }) : [];
+        if (opened.length === 0) return proceed(state);
+        logger.info('v2: delegated the owner question, join opened', {
+          agentId, work: triggerWorkId, children: opened.length, ownerRowid: triggerRow.rowid,
+        }, agentId);
       } catch (err) {
         logger.warn('v2: delegation join could not be opened', {
           agentId, error: err instanceof Error ? err.message : String(err),
         }, agentId);
+        return proceed(state);
       }
     }
-    // Ends as delegated only when a live piece is out; a send swallowed by another request's piece delegated nothing.
-    if (triggerRow && livePieces === 0) return proceed(state);
     // A user-triggered turn may not go silent on a hand-off, and this exit bypasses every turn-ending floor:
     // one steer for a status line. If ignored, exit anyway; the answer still comes back through the request.
     if (

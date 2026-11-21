@@ -1361,14 +1361,14 @@ function landedContentNotice(
  *  The child transition IS the exactly-once guard; the PARENT is not transitioned at all. */
 async function resolveJoinUnderClosedParent(
   join: JoinState, opts: { askedNameHint?: string | null } = {},
-): Promise<'relayed' | 'noticed' | 'already-settled'> {
+): Promise<'noticed' | 'already-settled'> {
   const state = await landStrandedReplies(join);
   if (!state) return 'already-settled';
 
   const snapshot = joinPieces(state.id);
   const outstanding = snapshot.filter((p) => !isTerminal(p.state));
   // Everything is back after all: the landing that completed the join already put the answer back.
-  if (outstanding.length === 0) return 'relayed';
+  if (outstanding.length === 0) return 'already-settled';
 
   // Settle FIRST, deliver second: the guard has to be won before the send, exactly as the
   // first arm wins `failJoinClosed` before it delivers.
@@ -1434,8 +1434,7 @@ export async function sweepExpiredJoins(): Promise<{
   for (const join of orphaned) {
     try {
       const outcome = await resolveJoinUnderClosedParent(join);
-      if (outcome === 'relayed') out.relayedReplies++;
-      else if (outcome === 'noticed') out.noticedUnderClosedParent++;
+      if (outcome === 'noticed') out.noticedUnderClosedParent++;
       logger.info('join TTL reaper: expired join under an already-closed parent', {
         agentId: join.agentId, work: join.id, parentState: join.parentState,
         remaining: join.remaining, landed: join.landed, outcome,
