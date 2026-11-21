@@ -55,24 +55,25 @@ function wakeBudgetClearsAt(agentId: string): number | null {
 
 export interface AgentRequest {
   messageId: string; rowid: number; threadId: string; threadShort: string; intent: string; fromId: string; fromName: string;
-  createdAt: number; attempts: number; dueAt: number;
+  createdAt: number; attempts: number; dueAt: number; kept: number;
 }
 
-/** Requests from other agents with no final reply (on `thread` when given), oldest first, with when each may be served (a
- *  provider's reset). One whose asker still waits on it is owed until answered or given up; any other, for a day, and
- *  once served for its serving window. Once served, an open task on its thread owns it: parked, the job item serves it;
- *  held by the owner, nobody does; working, the PM's ladder watches it. */
+/** Requests from other agents with no final reply (on `thread` when given), oldest first, with when each may be served. One its
+ *  asker waits on is owed until served, and again once that turn was cut or something new reached its thread; any other, for a day,
+ *  and for its serving window. Once served, an open task on its thread owns it (parked: its job; owner-held: nobody; else the ladder). */
 export function agentRequests(agentId: string, now = Date.now(), thread: string | null = null): AgentRequest[] {
   const rows = getDb().prepare(`
     SELECT m.seq AS rowid, m.id AS messageId, m.a2a_thread_id AS threadId, m.a2a_intent AS intent,
            m.source_agent_id AS fromId, COALESCE(s.name, m.source_agent_id) AS fromName, m.created_at AS createdAt,
-           m.delivery_attempts AS attempts, COALESCE(m.next_attempt_at, 0) AS dueAt
+           m.delivery_attempts AS attempts, COALESCE(m.next_attempt_at, 0) AS dueAt, ${openPieceOnSql('m.a2a_thread_id')} AS kept
       FROM messages m JOIN agents a ON a.id = m.agent_id LEFT JOIN agents s ON s.id = m.source_agent_id
      WHERE m.agent_id = @agentId AND m.role = 'user' AND m.lane <> 'events'
        AND m.a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK') AND m.a2a_thread_id IS NOT NULL AND m.source_agent_id IS NOT NULL
        AND m.swept_at IS NULL AND NOT ${RESULT_FOR_ENDED_REQUEST('m')}
        AND m.created_at >= (unixepoch(COALESCE(a.session_started_at, '1970-01-01')) * 1000) AND (@thread IS NULL OR m.a2a_thread_id = @thread)
-       AND (${openPieceOnSql('m.a2a_thread_id')} OR CASE WHEN m.served_by_turn IS NULL THEN m.created_at >= @now - 86400000
+       AND (CASE WHEN m.served_by_turn IS NULL THEN ${openPieceOnSql('m.a2a_thread_id')} OR m.created_at >= @now - 86400000
+                 WHEN ${openPieceOnSql('m.a2a_thread_id')} THEN EXISTS (SELECT 1 FROM turns t WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn AND (t.exit_reason IS NULL
+                   OR t.exit_reason IN ('preempt', 'abort', 'terminated', 'provider_error', 'stream_idle') OR EXISTS (SELECT 1 FROM messages n WHERE n.agent_id = m.agent_id AND n.a2a_thread_id = m.a2a_thread_id AND n.role = 'user' AND n.id <> m.id AND n.created_at >= unixepoch(t.started_at) * 1000)))
                  ELSE MAX(COALESCE((SELECT unixepoch(t.started_at) * 1000 FROM turns t
                                      WHERE t.agent_id = m.agent_id AND t.turn_number = m.served_by_turn), m.created_at),
                           COALESCE(m.next_attempt_at, 0)) >= @now - @servedWindow END)

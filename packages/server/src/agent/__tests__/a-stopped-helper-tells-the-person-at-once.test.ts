@@ -2,8 +2,8 @@
 // deleted, the helper ended), the person waiting is told at that moment, once, with no sweep, however old the request.
 // Until then the request is kept however long the task is open. A stop the Dojo missed while it was down is caught
 // by the boot pass from the rows. A later answer reaches the person once, as an Update. A plain question (no task) is
-// kept while its helper is in a run or still owes it, whatever its age, a restart or a pause; it ends when the helper
-// ends, errs, or gives it up after its budget of serves.
+// kept while its helper is in a run, has not yet been served it (whatever its age, a restart or a pause), or said it is
+// still on it or asked something back; once served, with its turn ended and no final reply, it is settled once.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -13,7 +13,7 @@ vi.mock('../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engi
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
 
-import { deliverA2AMessage, failJoinPieceForAbandonedAsk, resolveJoinsAtBoot, sweepExpiredJoins } from '../a2a-transport.js';
+import { deliverA2AMessage, resolveJoinsAtBoot, sweepExpiredJoins } from '../a2a-transport.js';
 import { activeRuns } from '../shared-state.js';
 import { agentRequests } from '../v2/owed.js';
 import { sweepBootStaleness } from '../../work/work-reaper.js';
@@ -97,24 +97,35 @@ async function looked(hours: number): Promise<[string, number, number]> {
   return told();
 }
 const owes = (): boolean => agentRequests(HELPER).some((r) => r.threadId === THREAD);
-/** The helper's turn took the question an hour ago and ended (or was lost at a restart) with no reply. */
-const servedAndSilent = (): void => {
-  const at = new Date(Date.now() - HOUR).toISOString();
-  testDb().prepare("INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason) VALUES (?, 1, ?, ?, 0, 'answered')").run(HELPER, at, at);
-  testDb().prepare('UPDATE messages SET served_by_turn = 1 WHERE agent_id = ? AND a2a_thread_id = ?').run(HELPER, THREAD);
+/** The helper's turn `n` took the question and ended as `exit` (null: still running) with no final reply. */
+const served = (exit: string | null = 'answered', n = 1): void => {
+  testDb().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason)
+    VALUES (?, ?, datetime('now', '-60 seconds'), CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END, 0, ?)`).run(HELPER, n, exit, exit);
+  testDb().prepare("UPDATE messages SET served_by_turn = ? WHERE agent_id = ? AND a2a_thread_id = ? AND a2a_intent = 'QUESTION'").run(n, HELPER, THREAD);
 };
+const says = (intent: string): Promise<unknown> => deliverA2AMessage({ intent, threadId: THREAD, requiresResponse: intent === 'QUESTION', payload: 'Still on it: the hall or the garden?', toAgent: AGENT, fromAgent: HELPER } as never);
 
 describe('a plain question waits for its helper', () => {
-  it('in a run, owing it, served and silent: kept; given up after its serves: told once', async () => {
+  it('a slow helper in one long turn is never ended; served once and silent, it is settled at the next look, once', async () => {
+    await asked();
+    served(null);
     activeRuns.add(HELPER);
-    expect(await looked(2)).toEqual(['blocked', 0, 0]);
+    expect(await looked(5)).toEqual(['blocked', 0, 0]);
     activeRuns.delete(HELPER);
-    const id = await asked();
-    expect(await looked(2)).toEqual(['blocked', 0, 0]);
-    servedAndSilent();
-    expect([await looked(2), owes()]).toEqual([['blocked', 0, 0], true]);
-    await failJoinPieceForAbandonedAsk(id, THREAD.slice(0, 8), HELPER);
-    expect(await told()).toEqual(['failed', 1, 1]);
+    testDb().prepare("UPDATE turns SET ended_at = datetime('now'), exit_reason = 'answered' WHERE agent_id = ?").run(HELPER);
+    expect([await looked(1), owes()]).toEqual([['failed', 1, 1], false]);
+    expect(await looked(1)).toEqual(['failed', 1, 1]);
+  });
+
+  it('a question back keeps it until answered; then it is owed again, and a final reply settles it once', async () => {
+    await asked();
+    served();
+    await says('QUESTION');
+    expect(await looked(3)).toEqual(['blocked', 0, 0]);
+    await deliverA2AMessage({ intent: 'ANSWER', threadId: THREAD, requiresResponse: false, payload: 'The hall.', toAgent: HELPER, fromAgent: AGENT } as never);
+    expect([await looked(1), owes()]).toEqual([['blocked', 0, 0], true]);
+    await helperAnswers('The hall is free on the 14th.');
+    expect([await looked(1), testDb().prepare('SELECT state FROM work WHERE parent_id = ?').get(ASK)]).toEqual([[requestState(), 0, 0], { state: 'done' }]);
   });
 
   it('a helper paused 25 hours is still owed the question it never saw, and keeps the request', async () => {
@@ -130,7 +141,7 @@ describe('a plain question waits for its helper', () => {
     vi.setSystemTime(Date.now() + HOUR);
     sweepBootStaleness();
     expect(owes()).toBe(true);
-    servedAndSilent();
+    served('terminated');
     await resolveJoinsAtBoot();
     expect(await told()).toEqual(['blocked', 0, 0]);
   });
