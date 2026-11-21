@@ -133,14 +133,14 @@ const restingNotes = (): number => (db().prepare("SELECT COUNT(*) AS n FROM heal
 const checksNotKept = (): number => (db().prepare("SELECT COUNT(*) AS n FROM summary_checks WHERE outcome = 'not_kept'").get() as { n: number }).n;
 
 describe('the memory tidy-up tries each note once', () => {
-  it('merges that come back at 90% of their input: each note is offered at most twice, to the own model only, and then never again', async () => {
+  it('merges that come back at 90% of their input: each note is offered once, to the own model only, and then never again', async () => {
     seed(12, { depth: 3, chars: 36_000 });
     await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
     const jobs = mergeJobs();
     expect(jobs.length, 'non-vacuity: the writer was asked to merge').toBeGreaterThan(0);
     const offers = new Map<string, number>();
     for (const j of jobs) for (const n of j.notes) offers.set(n, (offers.get(n) ?? 0) + 1);
-    expect([...offers.values()].filter((n) => n > 2), 'no note is offered more than twice at its depth').toEqual([]);
+    expect([...offers.values()].filter((n) => n > 1), 'no note is offered twice at its depth').toEqual([]);
     expect(jobs.filter((j) => j.modelId !== OWN), 'a refused merge is not handed to the local writer').toEqual([]);
     expect(writer.calls.length, 'each job is an answer and at most one rewrite').toBeLessThanOrEqual(2 * jobs.length);
 
@@ -183,10 +183,10 @@ describe('the memory tidy-up tries each note once', () => {
     marks.fail = true;
     seed(12, { depth: 3, chars: 36_000 });
     await checkAndCompact(AGENT, OWN, WINDOW, { force: true });
-    expect(mergeJobs().length, 'twelve leaves: eleven pairs, each newer note given one more partner').toBe(11);
+    expect(mergeJobs().length, 'twelve leaves: six pairs, each note offered once').toBe(6);
   });
 
-  it('steady use, a writer keeping 0.30 to 0.46 of its input, 256 leaves one at a time: two offers at most, and a bounded cost per leaf', async () => {
+  it('steady use, a writer keeping 0.30 to 0.46 of its input, 256 leaves one at a time: one offer each, and a bounded cost per leaf', async () => {
     writer.ratios = [0.30, 0.38, 0.46, 0.34, 0.42];
     seed(0, { depth: 9, chars: 36_000 });
     const plain = 'The crew counted the bays and filed the manifests for the night shift. '.repeat(70);
@@ -194,11 +194,11 @@ describe('the memory tidy-up tries each note once', () => {
     const offers = new Map<string, number>();
     for (const j of mergeJobs()) for (const n of j.notes) offers.set(n, (offers.get(n) ?? 0) + 1);
     expect(restingNotes(), 'non-vacuity: some pairs were refused').toBeGreaterThan(0);
-    expect(Math.max(...offers.values()), 'offers of any one note at its depth').toBeLessThanOrEqual(2);
-    expect(writer.calls.length / 256, 'writer calls per new leaf').toBeLessThanOrEqual(3);
+    expect(Math.max(...offers.values()), 'offers of any one note at its depth').toBe(1);
+    expect(writer.calls.length / 256, 'writer calls per new leaf').toBeLessThanOrEqual(1);
   });
 
-  it('a note the summary check refuses as the newer of its pair, then sixteen fresh leaves one at a time: it gets one more partner and no third', async () => {
+  it('a note the summary check refuses, then sixteen fresh leaves one at a time: it is never offered again', async () => {
     writer.ratio = 0.35;
     seed(0, { depth: 9, chars: 36_000 });
     addLeaf(0, NOTE(0));
@@ -206,7 +206,22 @@ describe('the memory tidy-up tries each note once', () => {
     for (let i = 2; i <= 17; i++) { addLeaf(i, NOTE(i)); await mergeUntriedNotes(AGENT, OWN); }
     expect(checksNotKept(), 'non-vacuity: the check refused it').toBeGreaterThan(0);
     const partners = new Set(mergeJobs().filter((j) => j.notes.includes(bad)).map((j) => j.notes.join()));   // a refused pair is written once more with the check's reasons
-    expect(partners.size, 'its partners: the first, then one more').toBe(2);
+    expect(partners.size, 'its one partner').toBe(1);
+  });
+
+  it('a merge longer than its two notes is not kept, however much the wrapper around them adds', async () => {
+    writer.ratio = 0.35;   // of the wrapped input: more than the two short notes themselves
+    seed(0, { depth: 9, chars: 36_000 });
+    addLeaf(0, 'The bay count is 14.'); addLeaf(1, 'Seal S-2001 is logged.');
+    expect((await mergeUntriedNotes(AGENT, OWN)).created).toBe(0);
+    expect(mergeJobs().length, 'non-vacuity: the pair was dialled').toBe(1);
+  });
+
+  it('a merge that only comes out too long, with every fact kept, is not written again', async () => {
+    seed(0, { depth: 9, chars: 36_000 });
+    for (const i of [0, 1]) addLeaf(i, 'The crew counted the bays and filed the manifests for the night shift. '.repeat(70));
+    expect((await mergeUntriedNotes(AGENT, OWN)).rested).toBe(2);
+    expect(writer.calls.length, 'one answer, no rewrite').toBe(1);
   });
 
   it('an empty answer marks no note and the writer as not answering, so a later run does not dial it again', async () => {

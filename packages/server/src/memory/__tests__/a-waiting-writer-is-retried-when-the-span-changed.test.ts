@@ -82,19 +82,22 @@ describe('t269 I1 — a merge no writer can write is dialled once, then left who
     expect(outs.map((o) => o?.stage)).toEqual([null, null, null, null, null]);
   });
 
-  it('…until the note that rests changes: then the pair is tried again', async () => {
+  it('…until a note that rests changes: then it is offered again', async () => {
     const a = leaf('UNWRITABLE note one'); leaf('UNWRITABLE note two');
     await condense(); await condense();
     expect(writer.dials).toBe(1);
+    leaf('UNWRITABLE note three');
+    await condense();
+    expect(writer.dials, 'both notes of the refused pair rest: a fresh note has no partner').toBe(1);
     updateSummaryContent(a, 'note one, edited by the owner', 8);
     await condense();
     expect(writer.dials).toBe(2);
   });
 
-  it('four notes: each older note rests, each newer one gets one more partner (3 dials), then none', async () => {
+  it('four notes: each refused pair rests both its notes (2 dials), then none', async () => {
     for (let i = 0; i < 4; i += 1) leaf(`UNWRITABLE note ${i}`);
     for (let i = 0; i < 4; i += 1) await condense();
-    expect(writer.dials).toBe(3);
+    expect(writer.dials).toBe(2);
   });
 
   it('a save that signals a model change re-offers nothing the same writer refused', async () => {

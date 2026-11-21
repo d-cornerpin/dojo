@@ -373,7 +373,7 @@ describe('t140 round 3 — condensation never merges a placeholder', () => {
     expect(placeholders().length).toBeGreaterThan(0);
     writers.mode = {};
     __resetSummaryWriterHealthForTests(); mockDb.current!.prepare("DELETE FROM healer_state WHERE scope LIKE 'writer_wait.%'").run();
-    for (let i = 0; i < 3; i++) createLeafSummary(AGENT, `Real summary ${i}: the crew counted the depot.`, 40, [], '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z');
+    for (let i = 0; i < 3; i++) createLeafSummary(AGENT, `Real summary ${i}: the crew counted the depot. `.repeat(8), 40, [], '2026-01-01T00:00:00.000Z', '2026-01-01T00:01:00.000Z');
     await mergeUntriedNotes(AGENT, CHEAP);
     const merged = (sql: string) => (db().prepare(sql).get(AGENT) as { n: number }).n;
     expect(merged("SELECT COUNT(*) AS n FROM summaries s WHERE s.agent_id = ? AND s.content LIKE 'Real summary%' AND s.id IN (SELECT parent_id FROM summary_parents)"),
