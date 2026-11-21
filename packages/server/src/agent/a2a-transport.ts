@@ -32,7 +32,7 @@ import {
   dueJoinsUnderClosedParent,
   failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
-  extendJoinTtl,
+  extendJoinTtl, JOIN_MAX_AGE_DAYS,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
@@ -1285,8 +1285,9 @@ async function resolveOpenJoin(
     return 'relayed';
   }
   if (!opts.failIfUnanswered) return 'left-open';
-  // A job still open on the join is never failed for time; whether it moves is the stall ladder's question.
-  if (jobStillOpen(state)) { extendJoinTtl(state.id); return 'extended'; }
+  // A job still open is kept for six days, a day inside the sweep's window, so the person is told before it leaves.
+  const young = Date.now() - (state.openedAt ?? 0) < (JOIN_MAX_AGE_DAYS - 1) * 86_400_000;
+  if (young && jobStillOpen(state)) { extendJoinTtl(state.id); return 'extended'; }
 
   const snapshot = joinPieces(state.id);   // before the settle: the notice names what landed and what did not
   const claimed = failJoinClosed(state.id, {
