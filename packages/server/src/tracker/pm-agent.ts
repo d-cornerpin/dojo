@@ -11,7 +11,8 @@ import { appendAuditEntry } from '../work/audit-trail.js';
 import { heldDeliveryLine } from './owed-delivery.js';
 import { getDb } from '../db/connection.js';
 import { writeAgentStatus } from '../agent/agent-status.js';
-import { taskScope, holdWordsSql, heldByOwnerSql } from '../work/tracker-view.js';
+import { taskScope, holdWordsSql, heldByOwnerSql, msToUtcText } from '../work/tracker-view.js';
+import { agentActivity } from './liveness.js';
 import { planStepLineOf } from '../work/plan-store.js';
 import { ownerWordsLines, projectOf, workFile } from '../work/project-file.js';
 import { listTaskLog } from './task-log.js';
@@ -185,7 +186,7 @@ function waitingForPM(pmId: string): string[] {
 
 function markedStalls(pmId: string): string[] {
   return (getDb().prepare(
-    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND ${workingExpr('w')} AND NOT ${heldByOwnerSql('w')} AND EXISTS (SELECT 1 FROM work_events e
+    `SELECT w.id FROM work w WHERE ${taskScope('w')} AND ${workingExpr('w', true)} AND NOT ${heldByOwnerSql('w')} AND EXISTS (SELECT 1 FROM work_events e
        WHERE e.work_id = w.id AND e.kind = 'audit' AND json_extract(e.payload, '$.entry_kind') = ?
          AND e.created_at >= COALESCE((SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = ? AND m.origin_intent = 'pm_review'), 0))
      ORDER BY w.updated_at LIMIT 10`,
@@ -219,8 +220,10 @@ function stallBlock(id: string, n: number): string {
     `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'hand_in_refused'
        AND id > COALESCE((SELECT MAX(h.id) FROM work_events h WHERE h.work_id = ? AND h.kind IN ('handed_in', 'decided')), 0) ORDER BY id`,
   ).all(id, id) as Array<{ payload: string }>).map((r) => (JSON.parse(r.payload) as { reasons?: string[] }).reasons?.join(' ') ?? '');
+  const act = agentActivity(workerOf(id));
   return `${n}. STALLED: "${w.title ?? id}" [${id}], worked by ${workerOf(id)}, has made no progress past its patience bound since the engine's hint.`
     + `${w.hold ? ` It is held: ${w.hold}.` : ''}`
+    + `\n  Its worker was last seen: ${act.lastWhat}${act.lastAt ? ` at ${msToUtcText(act.lastAt)}` : ''}.`
     + (refused.length > 0 ? `\n  Its refused hand-ins:\n${refused.map((r, i) => `    ${i + 1}. ${r}`).join('\n')}` : '')
     + taskLines(id);
 }
@@ -263,8 +266,9 @@ export async function runPMReview(): Promise<void> {
       + '[Engine hint: for each HANDED IN row, open its proof with work_validate(action="open_proof", task_id, item=N), then work_validate(action="decide", task_id, '
       + 'verdict="approve", reason="<one line: how the proof meets the goal>"), or verdict="send_back" with the reason naming what is missing. A measured task is met when its '
       + 'measure reads 0 or the named remainder holds; a task whose job is a decision is met by the owner\'s recorded words above, never by the worker quoting him. '
-      + 'A row you do not decide stays waiting and goes to the next decider. For each STALLED row your one move is work_validate(action="retask", task_id, '
-      + 'directive="<the next concrete step>"), or nothing: never poke, never reassign, never send_to_agent(intent="ASSIGN").]';
+      + 'A row you do not decide stays waiting and goes to the next decider. For each STALLED row: work_validate(action="retask", task_id, '
+      + 'directive="<the next concrete step>") if it can go on; no move means its work has stopped and whoever waits on it is told. '
+      + 'Never poke, never reassign, never send_to_agent(intent="ASSIGN").]';
     const msgId = uuidv4();
     insertEngineEventIfAbsent({ id: msgId, agentId: pmId, content: report, sourceAgentId: null, originIntent: 'pm_review', work: null });
     const runtime = getAgentRuntime();

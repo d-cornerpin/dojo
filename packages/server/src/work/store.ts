@@ -98,6 +98,7 @@ interface WorkRow {
   agent_id: string;
   title: string | null;
   source_message_id: string | null;
+  a2a_thread_id: string | null;
 }
 
 const now = (): number => Date.now();
@@ -135,7 +136,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
 
   // ── G1: the row must exist; a stale id is refused with something steerable. ──
   const row = db.prepare(
-    'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children, agent_id, title, source_message_id FROM work WHERE id = ?',
+    'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children, agent_id, title, source_message_id, a2a_thread_id FROM work WHERE id = ?',
   ).get(workId) as WorkRow | undefined;
   if (!row) {
     return { kind: 'refused', workId, reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
@@ -323,8 +324,9 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     retireObligationMemory({ workId, agentId: row.agent_id, title: row.title, state: input.to });
   }
 
-  // A tracker task that ended or was handed in may unblock settling of the owner's request linked to it.
-  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id);
+  // A tracker task that ended or was handed in may settle the owner's request linked to it; one that ended, a request kept
+  // on its thread (a hand-in's words land by themselves).
+  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal ? row.a2a_thread_id : null);
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
   return { kind: 'applied', value };
@@ -497,7 +499,7 @@ export function abandonUnservableAsks(agentId?: string): {
 
 export const JOIN_TTL_MINUTES = 60;
 
-/** Joins older than this are stale: nothing re-fires them and the owner is not told about them. */
+/** How far back the deadline sweep and the boot pass scan; the events judge a request of any age (`judgeKeptRequests`). */
 export const JOIN_MAX_AGE_DAYS = 7;
 
 /** The A2A per-thread hop cap, keyed on `work.hop_count`. */
@@ -802,7 +804,7 @@ function loudOnPieceAbort<T>(childId: string, settle: () => T): T {
 
 /** A piece came back: the child settles `done` against its delivery, its text recorded in the same
  *  transaction, and the countdown moves. An empty reply is refused here: the piece stays outstanding so
- *  the real one can land (else the TTL fails the join closed). */
+ *  the real one can land (else it ends once its helper's work has stopped). */
 export function landPiece(
   childId: string,
   p: { deliveryId: string; content: string; messageId?: string | null; actorId?: string | null },

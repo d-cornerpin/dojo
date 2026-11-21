@@ -33,7 +33,7 @@ import {
   failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
   extendJoinTtl,
-  type JoinState, type JoinPiece,
+  type JoinState, type JoinPiece, type PieceSettleResult,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
@@ -45,6 +45,7 @@ import { agentTurnWindow } from '../router/router-window.js';
 import { renderTokens } from '../memory/lanes.js';
 import { handInHeard } from '../work/done/effects.js';
 import { latestHandIn } from '../work/done/record.js';
+import { openPieces } from '../tracker/liveness.js';
 import { FINAL_REPLY_INTENTS, FINAL_REPLY_SQL, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
@@ -1024,7 +1025,7 @@ async function landReplyOnJoin(p: LandInput): Promise<{ handled: boolean; handOf
   }
 
   // An EMPTY terminal reply is not a deliverable. The refusal lives inside `landPiece` so no
-  // caller can forget it; the piece stays outstanding for the real one or the TTL closes it.
+  // caller can forget it; the piece stays outstanding for the real one, or ends once its helper's work has stopped.
   const deliveryId = recordPieceDelivery({
     fromAgent: p.fromAgent, toAgent: p.agentId, messageId: p.messageId, intent: p.intent,
   });
@@ -1243,15 +1244,6 @@ function updateAfterSendBack(p: LandInput): boolean {
   return true;
 }
 
-/** Is an open piece of this join waiting on a job whose task is still open and whose helper is not ended? */
-function jobStillOpen(join: JoinState): boolean {
-  return !!getDb().prepare(`SELECT 1 FROM work c
-      JOIN work t ON t.kind = 'task' AND t.a2a_thread_id = c.root_id AND t.agent_id = c.assignee_agent
-        AND t.state NOT IN ('done', 'failed', 'abandoned')
-      JOIN agents h ON h.id = c.assignee_agent AND h.status <> 'terminated'
-     WHERE c.parent_id = ? AND c.kind = 'task' AND c.state IN ('open', 'claimed', 'blocked') LIMIT 1`).get(join.id);
-}
-
 /** LAND a stranded reply before judging the join, through the one landing: the owner must not hear "no answer"
  *  while it sits unlanded on the child. Returns the join after the landing (null if gone). */
 async function landStrandedReplies(join: JoinState): Promise<JoinState | null> {
@@ -1280,27 +1272,21 @@ async function handInsNeverHeard(join: JoinState): Promise<void> {
   }));
 }
 
-async function resolveOpenJoin(
-  join: JoinState, opts: { failIfUnanswered: boolean; askedNameHint?: string | null },
-): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled' | 'extended'> {
+/** Judge an open request: land what came back, end each piece whose helper's work has stopped, and answer or tell
+ *  once the last piece is settled. Work still alive is never ended for time: at the deadline the next look moves on. */
+async function resolveOpenJoin(join: JoinState, opts: { atDeadline: boolean }): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled'> {
   await handInsNeverHeard(join);
-  const state = await landStrandedReplies(joinState(join.id) ?? join);
-  if (!state) return 'already-settled';
-  if (state.complete) {
-    await resolveCompletedJoin(state, opts.askedNameHint ?? undefined);
+  const landed = await landStrandedReplies(joinState(join.id) ?? join);
+  if (!landed) return 'already-settled';
+  if (landed.complete) {
+    await resolveCompletedJoin(landed);
     return 'relayed';
   }
-  if (!opts.failIfUnanswered) return 'left-open';
-  // A job still open on the join is never failed for time; whether it moves is the stall ladder's question.
-  if (jobStillOpen(state)) { extendJoinTtl(state.id); return 'extended'; }
-
-  const snapshot = joinPieces(state.id);   // before the settle: the notice names what landed and what did not
-  const claimed = failJoinClosed(state.id, {
-    reason: 'the delegated answer never came back inside the deadline', expectedState: state.parentState,
-  });
-  if (claimed.kind !== 'applied') return 'already-settled';
-  tellAgentTheJoinFailed(state, 'the delegated answer never came back inside the deadline.', await relayNotice(state, landedContentNotice(state, snapshot, false, opts.askedNameHint)));
-  return 'failed-closed';
+  for (const p of openPieces(landed.id)) if (!p.alive) await abandonPiece(p.childId, 'its helper\'s work on it has stopped', 'work-reaper');
+  const state = joinState(landed.id);
+  if (!state || state.complete) return state?.parentState === 'failed' ? 'failed-closed' : 'already-settled';
+  if (opts.atDeadline) extendJoinTtl(state.id);
+  return 'left-open';
 }
 
 /** One piece for the person: who sent it, a failure or a missing answer said as what it was, the text whole. */
@@ -1310,18 +1296,16 @@ function arrivedLine(p: JoinPiece): string {
   return `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}${label}: ${text}`;
 }
 
-/** THE ONE NOTICE FOR A FAN-OUT OUT OF TIME WITH SOMETHING BACK, built from a snapshot taken
+/** THE ONE NOTICE FOR A PIECE UNDER AN ANSWERED REQUEST THAT NEVER CAME BACK, built from a snapshot taken
  *  BEFORE the settle: it names what arrived and who never did. Nothing back falls through to
  *  `failClosedNotice`, so one composer owns "I could not get an answer". */
-function landedContentNotice(
-  join: JoinState, snapshot: JoinPiece[], parentAnswered: boolean, askedNameHint?: string | null,
-): string {
+function landedContentNotice(join: JoinState, snapshot: JoinPiece[]): string {
   const landed = snapshot.filter((p) => (p.state === 'done' || p.state === 'failed') && (p.content ?? '').trim().length > 0);
-  if (landed.length === 0) return failClosedNotice(join, askedNameHint, snapshot);
+  if (landed.length === 0) return failClosedNotice(join, null, snapshot);
   const missing = snapshot.filter((p) => !isTerminal(p.state));
-  const names = missing.map((p) => resolveAgentDisplayName(p.assigneeAgent) ?? askedNameHint ?? 'another agent');
+  const names = missing.map((p) => resolveAgentDisplayName(p.assigneeAgent) ?? 'another agent');
   const who = names.length === 1 ? names[0] : `${names.length} of the agents it asked`;
-  return `${parentAnswered ? 'following up on something your agent answered earlier' : 'your agent delegated this'}: ${who} never came back `
+  return `following up on something your agent answered earlier: ${who} never came back `
     + `inside the deadline. Here is what did arrive:\n${landed.map(arrivedLine).join('\n')}`;
 }
 
@@ -1329,9 +1313,7 @@ function landedContentNotice(
  *  `dueJoinsUnderClosedParent` for why widening the first arm was refused. Same discipline:
  *  land stranded replies; relay if all landed; else settle children `abandoned`, ONE notice.
  *  The child transition IS the exactly-once guard; the PARENT is not transitioned at all. */
-async function resolveJoinUnderClosedParent(
-  join: JoinState, opts: { askedNameHint?: string | null } = {},
-): Promise<'noticed' | 'already-settled'> {
+async function resolveJoinUnderClosedParent(join: JoinState): Promise<'noticed' | 'already-settled'> {
   const state = await landStrandedReplies(join);
   if (!state) return 'already-settled';
 
@@ -1339,32 +1321,26 @@ async function resolveJoinUnderClosedParent(
   const outstanding = snapshot.filter((p) => !isTerminal(p.state));
   // Everything is back after all: the landing that completed the join already put the answer back.
   if (outstanding.length === 0) return 'already-settled';
+  if (openPieces(state.id).some((p) => p.alive)) { extendJoinTtl(state.id); return 'already-settled'; }   // the deadline only looks
 
   // Settle FIRST, deliver second: the guard has to be won before the send, exactly as the
   // first arm wins `failJoinClosed` before it delivers.
   let claimed = 0;
   for (const piece of outstanding) {
-    const r = settlePieceWithoutResult(piece.childId, {
-      to: 'abandoned', actorId: 'work-reaper',
-      reason: 'the deadline passed and the ask it belonged to had already been answered',
-    });
+    const r = await abandonPiece(piece.childId, 'the deadline passed and the ask it belonged to had already been answered', 'work-reaper');
     if (r.result.kind === 'applied') claimed++;
   }
   // Defence in depth: the FINDER is the guard; this covers only the two-scanners-at-once race.
   if (claimed === 0) return 'already-settled';
-  tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question ran out of time.', await relayNotice(state, landedContentNotice(state, snapshot, true, opts.askedNameHint)));
+  tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question ran out of time.', await relayNotice(state, landedContentNotice(state, snapshot)));
   return 'noticed';
 }
 
-/** The TTL sweep, keyed on `work.ttl_at` (scheduled in index.ts, every 10 minutes): land a
- *  stranded reply if one exists, else fail closed, exactly once per join (the transition IS
+/** The TTL sweep, keyed on `work.ttl_at` (scheduled in index.ts, every 10 minutes): a deadline is when to look.
+ *  It lands a stranded reply, ends stopped pieces, and tells exactly once per join (the transition IS
  *  the guard). `dueJoins` and `dueJoinsUnderClosedParent` are complementary arms on `state`. */
-export async function sweepExpiredJoins(): Promise<{
-  failedClosed: number; relayedReplies: number; noticedUnderClosedParent: number;
-  /** Joins the reaper kept open because a job on them is still open. */
-  extendedForLiveAssignee: number;
-}> {
-  const out = { failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0, extendedForLiveAssignee: 0 };
+export async function sweepExpiredJoins(): Promise<{ failedClosed: number; relayedReplies: number; noticedUnderClosedParent: number }> {
+  const out = { failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0 };
 
   let joins: JoinState[] = [];
   try {
@@ -1375,16 +1351,10 @@ export async function sweepExpiredJoins(): Promise<{
   }
   for (const join of joins) {
     try {
-      const outcome = await resolveOpenJoin(join, { failIfUnanswered: true });
+      const outcome = await resolveOpenJoin(join, { atDeadline: true });
       if (outcome === 'relayed') out.relayedReplies++;
       else if (outcome === 'failed-closed') out.failedClosed++;
-      else if (outcome === 'extended') out.extendedForLiveAssignee++;
-      // Name the outcome: a join kept open is not a join closed.
-      logger.info(outcome === 'extended'
-        ? 'join TTL reaper: expired join kept open, a job on it is still open'
-        : 'join TTL reaper: closed expired join', {
-        agentId: join.agentId, work: join.id, outcome,
-      });
+      logger.info('join TTL reaper: looked at an expired join', { agentId: join.agentId, work: join.id, outcome });
     } catch (err) {
       logger.warn('join TTL reaper: failed to close join', {
         agentId: join.agentId, work: join.id, error: err instanceof Error ? err.message : String(err),
@@ -1418,23 +1388,14 @@ export async function sweepExpiredJoins(): Promise<{
   return out;
 }
 
-/** The boot re-drain, over ALL open joins (bounded): land stranded replies, fail closed when
- *  the asked agent terminated or the TTL passed. It never wakes an agent, so no boot storm. */
+/** The boot re-drain, over ALL open joins (bounded): land stranded replies, end stopped pieces, fail closed when
+ *  the TTL passed with nothing alive. It never wakes an agent, so no boot storm. */
 export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; failedClosed: number; leftOpen: number }> {
   const out = { relayedReplies: 0, failedClosed: 0, leftOpen: 0 };
   const joins = openJoins(JOIN_BOOT_BATCH);
   for (const join of joins) {
     try {
-      const pastTtl = join.ttlAt !== null && Date.now() > join.ttlAt;
-      // A terminated asked agent can never reply: don't make the owner wait out the TTL.
-      // The assignee is recorded on the child at delegation time.
-      const askedTerminated = !pastTtl && joinPieces(join.id).some((piece) => {
-        if (isTerminal(piece.state) || !piece.assigneeAgent) return false;
-        const row = getDb().prepare('SELECT status FROM agents WHERE id = ?')
-          .get(piece.assigneeAgent) as { status?: string } | undefined;
-        return row?.status === 'terminated';
-      });
-      const outcome = await resolveOpenJoin(join, { failIfUnanswered: pastTtl || askedTerminated });
+      const outcome = await resolveOpenJoin(join, { atDeadline: join.ttlAt !== null && Date.now() > join.ttlAt });
       if (outcome === 'relayed') out.relayedReplies++;
       else if (outcome === 'failed-closed') out.failedClosed++;
       else if (outcome === 'left-open') out.leftOpen++;
@@ -1481,24 +1442,36 @@ export async function failJoinPieceForAbandonedAsk(
     const full = (db.prepare('SELECT a2a_thread_id FROM messages WHERE id = ?')
       .get(inboundAskMessageId) as { a2a_thread_id: string | null } | undefined)?.a2a_thread_id ?? null;
     if (!full) return;
-    const children = childrenForThread(full);
-    for (const child of children) {
+    for (const child of childrenForThread(full)) {
       if (isTerminal(child.state)) continue;
-      const settled = settlePieceWithoutResult(child.id, {
-        to: 'abandoned',
-        reason, actorId: askedAgentId ?? null,
-      });
-      if (settled.result.kind !== 'applied') continue;
-      if (settled.join.complete) {
-        await resolveCompletedJoin(settled.join, resolveAgentDisplayName(askedAgentId) ?? undefined);
-      }
-      logger.info('A2A ABANDONED: delegated piece settled abandoned', {
-        agentId: child.agentId, work: child.id, complete: settled.join.complete,
-      });
+      const settled = await abandonPiece(child.id, reason, askedAgentId ?? null);
+      if (settled.result.kind === 'applied') logger.info('A2A ABANDONED: delegated piece settled abandoned', { agentId: child.agentId, work: child.id, complete: settled.join.complete });
     }
   } catch (err) {
     logger.warn('A2A ABANDONED: join fail-closed hook failed', {
       inboundAskMessageId, error: err instanceof Error ? err.message : String(err),
     });
+  }
+}
+
+/** End a piece as abandoned; a request still open whose last piece this was is answered or told, once. */
+async function abandonPiece(childId: string, reason: string, actorId: string | null): Promise<PieceSettleResult> {
+  const s = settlePieceWithoutResult(childId, { to: 'abandoned', reason, actorId });
+  if (s.result.kind === 'applied' && s.join.complete && !isTerminal(s.join.parentState)) await resolveCompletedJoin(s.join, resolveAgentDisplayName(actorId) ?? undefined);
+  return s;
+}
+
+/** A helper's work changed (its task ended or was deleted, the owner was carded, the helper ended): judge now every open
+ *  request with a piece assigned to it or on that thread. The agent or thread bounds it: no age floor, no row limit. */
+export async function judgeKeptRequests(agentId: string, threadId: string | null = null): Promise<void> {
+  try {
+    const joins = getDb().prepare(`SELECT DISTINCT parent_id AS id FROM work WHERE kind = 'task' AND root_kind = 'a2a_thread' AND parent_id IS NOT NULL
+        AND state IN ('open', 'claimed', 'blocked') AND (assignee_agent = ? OR root_id = ?)`).all(agentId, threadId) as Array<{ id: string }>;
+    for (const { id } of joins) {
+      const j = joinState(id);
+      if (j && !isTerminal(j.parentState)) await resolveOpenJoin(j, { atDeadline: false });
+    }
+  } catch (err) {   // an event's judge never breaks the event; the sweep and the boot pass look again from rows
+    logger.warn('kept requests could not be judged at the event', { agentId, error: err instanceof Error ? err.message : String(err) });
   }
 }

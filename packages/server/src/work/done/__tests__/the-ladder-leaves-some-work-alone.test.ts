@@ -1,7 +1,7 @@
 // The ladder leaves alone: a pause the owner set, dated or not (its clock restarts when the pause lifts), a Working
 // row whose worker no longer exists, a Working row already idle 14 days when the box first ran the ladder (and a
-// younger idle row's clock starts at that first run, never at its old date), a worker in a live turn, and
-// a row decided between two sweeps.
+// younger idle row's clock starts at that first run, never at its old date), a worker in a live turn, an Open task
+// nobody delegated (one delegated and never started is laddered), and a row decided between two sweeps.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -42,6 +42,14 @@ describe('the ladder leaves some work alone', () => {
     expect(setHold(TASK, 'paused', 'paused by the owner until Monday', 'owner', Date.now() + DAY).ok).toBe(true);
     await runLadder(Date.now() + 60 * MIN);
     expect(hintsTo(WORKER)).toEqual([]);
+  });
+
+  it('an Open task nobody delegated is left alone; one delegated and never started is hinted', async () => {
+    for (const [thread, hints] of [[null, 0], ['thread-open', 1]] as const) {
+      doneDb().prepare("UPDATE work SET state = 'open', a2a_thread_id = ? WHERE id = ?").run(thread, TASK);
+      await runLadder(Date.now() + 6 * MIN);
+      expect(hintsTo(WORKER)).toHaveLength(hints);
+    }
   });
 
   it('a row whose worker no longer exists is never touched', async () => {

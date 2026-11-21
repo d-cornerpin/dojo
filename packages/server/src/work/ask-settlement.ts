@@ -955,9 +955,10 @@ export function settleAskOnJobEnded(agentId: string, jobId: string): AskSettleme
   return null;
 }
 
-export function settleAskOnTaskEnded(agentId: string, askMessageId: string | null | undefined): void {
+export function settleAskOnTaskEnded(agentId: string, askMessageId: string | null | undefined, threadId: string | null = null): void {
   announceAgentLiveWork(agentId);   // an ended task is no longer a parked job Stop would end
   reaskAsync(agentId, askMessageId, null);
+  if (threadId) void import('../agent/a2a-transport.js').then((m) => m.judgeKeptRequests(agentId, threadId));
 }
 onTaskEnded(settleAskOnTaskEnded);
 

@@ -13,7 +13,7 @@ import { runLadder, LADDER_ENTRY } from '../ladder.js';
 import { armDebouncedReview, runPMReview } from '../../../tracker/pm-agent.js';
 import { engineHandIn } from '../hand-in.js';
 import { freshBoard, handedIn, call, PM, WORKER, TASK } from './helpers/decision-world.js';
-import { entries, lastReport, pmCanRun, resetLadderWorld, turn, MIN } from './helpers/ladder-world.js';
+import { entries, lastReport, pmCanRun, resetLadderWorld, turn, turnTaken, MIN } from './helpers/ladder-world.js';
 import { doneDb } from './helpers/done-db.js';
 
 function anotherTask(id: string, worker: string, title: string): void {
@@ -30,6 +30,7 @@ describe('a stall the hint did not move reaches the PM', () => {
   it('one bound after the hint the task is marked for the PM, the PM is woken, and its report names it once', async () => {
     await runLadder(Date.now() + 6 * MIN);
     expect(entries(TASK, LADDER_ENTRY.pm)).toBe(0);
+    turnTaken(WORKER);
     await runLadder(Date.now() + 11 * MIN);
     expect(entries(TASK, LADDER_ENTRY.pm)).toBe(1);
     expect(armDebouncedReview).toHaveBeenCalledWith(TASK, 'ladder');

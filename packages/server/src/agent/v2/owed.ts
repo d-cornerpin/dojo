@@ -141,9 +141,14 @@ export function personsWaiting(agentId: string): number {
   }
 }
 
-/** Is anything owed now, and the earliest future due time: one build of the items, read without writing. */
-export function dueOf(agentId: string, now = Date.now()): { now: boolean; next: number | null } {
-  const items = owedItems(agentId, { pure: true });
+/** One piece of work an owed item can be for: a task (an event naming it, its own due time) or a thread (its request). */
+export interface OwedWork { taskId?: string | null; threadId?: string | null }
+const isFor = (i: OwedItem, w: OwedWork): boolean => (!!w.taskId && (i.event?.taskId === w.taskId || (i.kind === 'job' && i.ref === w.taskId)))
+  || (!!w.threadId && i.request?.threadId === w.threadId);
+
+/** Is anything owed now (only for `work`, when given), and the earliest future due time: one build of the items, read without writing. */
+export function dueOf(agentId: string, now = Date.now(), work?: OwedWork): { now: boolean; next: number | null } {
+  const items = owedItems(agentId, { pure: true }).filter((i) => !work || isFor(i, work));
   const future = items.map((i) => i.dueAt).filter((t) => t > now);
   return { now: items.some((i) => i.dueAt <= now), next: future.length > 0 ? Math.min(...future) : null };
 }

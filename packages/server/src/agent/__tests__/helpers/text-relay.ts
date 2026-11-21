@@ -74,3 +74,20 @@ export const relayRows = (): RelayRow[] => testDb().prepare(
 export const textsSent = (): string[] => imessage.send.mock.calls.map((c) => c[1]);
 
 export const requestState = (): string => (testDb().prepare('SELECT state FROM work WHERE id = ?').get(ASK) as { state: string }).state;
+
+/** The helper's own task for the request, on its thread, under `parent` when given. */
+export function helperTask(parent: string | null = null): string {
+  testDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, a2a_thread_id, parent_id, opened_at, updated_at)
+    VALUES ('task-helper-1', 'task', ?, 'agent', 'tracker', 'task-helper-1', 'claimed', 'ASSIGN', 0, 0, 'Check the venue', ?, ?, ?, ?)`).run(HELPER, THREAD, parent, Date.now(), Date.now());
+  return 'task-helper-1';
+}
+
+/** The "no answer" notices queued for the person, and the engine lines the agent was given about it. */
+export const failedNotices = (): number => relayRows().filter((r) => r.tool === 'a2a-join-failed').length;
+export const agentLines = (): number => (testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND origin_intent = 'fanout_join'").get(AGENT) as { n: number }).n;
+
+/** Every engine pass an event started has run. */
+export async function passesRun(): Promise<void> {
+  await vi.dynamicImportSettled();
+  for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+}

@@ -14,8 +14,10 @@ import { countAbortable, isStopFenced, activeRuns } from '../agent/shared-state.
 import { isPrimaryAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../config/platform.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { noteNoticeOnce, endNotice, readNotice } from '../agent/agent-owner-cards.js';
-import { notWaitingForItsTimeSql, taskScope } from '../work/tracker-view.js';
-import { taskMovedAtSql } from '../work/task-freshness.js';
+import { notWaitingForItsTimeSql, taskScope, holdSetBySql } from '../work/tracker-view.js';
+import { taskMovedAtSql, cardedSinceStallSql } from '../work/task-freshness.js';
+import { dueOf, type OwedWork } from '../agent/v2/owed.js';
+import { liveWork, parkedJobs } from '../agent/live-work.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('liveness');
@@ -79,10 +81,33 @@ export function agentActivity(agentId: string, now = Date.now()): Activity {
   };
 }
 
-/** Is a turn live, or a model request open on a live connection, RIGHT NOW? From the live-run and abort
- *  registries, never a row (a crash leaves rows behind). The stall ladder leaves an agent alone for this. */
-export function agentIsLive(agentId: string): boolean {
-  return activeRuns.has(agentId) || countAbortable(agentId) > 0;
+/** Is the agent working on `work`, or about to: anything in flight, something owed or parked for this work, a live
+ *  delegation of its own, or paused. Never an agent in error, ended, or in a run the Dojo flagged SILENT. */
+export function workerBusy(agentId: string, work: OwedWork, seen = new Set<string>()): boolean {
+  const a = getDb().prepare('SELECT status, silent_notice FROM agents WHERE id = ?').get(agentId) as { status: string; silent_notice: string | null } | undefined;
+  if (!a || ['error', 'terminated'].includes(a.status) || a.silent_notice !== null || seen.has(agentId)) return false;
+  const live = liveWork(agentId), due = dueOf(agentId, Date.now(), work);
+  if (a.status === 'paused' || activeRuns.has(agentId) || live.turn > 0 || live.background > parkedJobs(agentId).length
+    || due.now || due.next !== null) return true;
+  seen.add(agentId);
+  return (getDb().prepare("SELECT id FROM work WHERE agent_id = ? AND remaining_children > 0 AND state NOT IN ('done', 'failed', 'abandoned')")
+    .all(agentId) as Array<{ id: string }>).some((j) => openPieces(j.id, seen).some((p) => p.alive));
+}
+
+/** SQL: piece `c` has a task on its thread still open, its agent not ended, and not ended by the owner's card: a card
+ *  never ends it while the owner or the engine holds the task, or when the task is the join's own agent's. */
+const ALIVE = (c: string): string => `EXISTS (SELECT 1 FROM work t JOIN agents h ON h.id = t.agent_id AND h.status <> 'terminated'
+  WHERE t.kind = 'task' AND t.a2a_thread_id = ${c}.root_id AND t.state NOT IN ('done', 'failed', 'abandoned')
+    AND ((t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
+
+/** The open pieces of a join, each alive while its work is: its task (ALIVE), or with no task, its helper busy for it. */
+export function openPieces(joinId: string, seen = new Set<string>()): Array<{ childId: string; alive: boolean }> {
+  return (getDb().prepare(`SELECT c.id, c.assignee_agent AS helper, c.root_id AS thread, ${ALIVE('c')} AS alive,
+      EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked
+      FROM work c WHERE c.parent_id = ? AND c.kind = 'task' AND c.state IN ('open', 'claimed', 'blocked')`).all(joinId) as
+    Array<{ id: string; helper: string | null; thread: string; alive: number; tasked: number }>).map((p) => ({
+    childId: p.id, alive: p.alive === 1 || (p.tasked === 0 && !!p.helper && workerBusy(p.helper, { threadId: p.thread }, seen)),
+  }));
 }
 
 /** The task's own last movement, epoch ms: the stall ladder's clock (`work/task-freshness.ts`). */

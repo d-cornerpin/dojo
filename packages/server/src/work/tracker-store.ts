@@ -10,6 +10,7 @@ import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
 import { clearReferencesToWork } from './work-refs.js';
+import { notifyTaskEnded } from './task-ended.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, type WorkPatchOutcome } from './outcome.js';
 import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from './store.js';
@@ -298,6 +299,9 @@ export function bumpWorkAttempts(id: string): number {
 export function deleteTrackerRow(id: string): number {
   const db = getDb();
   let changes = 0;
+  // What waited on the row or its child tasks is released once they are gone.
+  const ended = db.prepare("SELECT agent_id, source_message_id, a2a_thread_id FROM work WHERE kind = 'task' AND (id = ? OR parent_id = ?)")
+    .all(id, id) as Array<{ agent_id: string; source_message_id: string | null; a2a_thread_id: string | null }>;
   withUnit(() => {
     const children = (db.prepare('SELECT id FROM work WHERE parent_id = ?').all(id) as
       Array<{ id: string }>).map(r => r.id);
@@ -306,6 +310,7 @@ export function deleteTrackerRow(id: string): number {
     clearReferencesToWork([id]);             // every reference, for the row itself
     changes = db.prepare('DELETE FROM work WHERE id = ?').run(id).changes;
   });
+  for (const t of ended) notifyTaskEnded(t.agent_id, t.source_message_id, t.a2a_thread_id);
   return changes;
 }
 

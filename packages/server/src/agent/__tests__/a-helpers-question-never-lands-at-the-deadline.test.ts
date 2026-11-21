@@ -24,7 +24,7 @@ describe('a helper\'s question never lands at the deadline', () => {
     vi.setSystemTime(Date.now() + 3_700_000);
     await sweepExpiredJoins();
     const piece = testDb().prepare('SELECT state, notes FROM work WHERE parent_id = ?').get(ASK) as { state: string; notes: string | null };
-    expect(piece).toEqual({ state: 'failed', notes: null });
+    expect(piece).toEqual({ state: 'abandoned', notes: null });
     expect(requestState()).toBe('failed');
     expect(relayRows().map((d) => d.tool)).toEqual(['a2a-join-failed']);
   });

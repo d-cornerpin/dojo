@@ -1,6 +1,6 @@
 // A request that ends ends its helpers' work with it: called off ("never mind" in the person's words, or Stop),
 // its pieces are abandoned, each helper is told once to stop, and a later answer relays nothing; failed for want
-// of an answer, its pieces fail, nobody is told, and a late answer still goes back to the agent for the person.
+// of an answer, its pieces end, nobody is told, and a late answer still goes back to the agent for the person.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -17,13 +17,12 @@ import { executeTool } from '../tools/index.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, relayRows, requestState, HELPER, THREAD, CONV, ASK } from './helpers/text-relay.js';
+import { delegatedTextRequest, helperAnswers, helperTask, relayRows, requestState, HELPER, CONV, ASK } from './helpers/text-relay.js';
 
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
 beforeEach(() => {
   delegatedTextRequest();
-  testDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, a2a_thread_id, opened_at, updated_at)
-    VALUES ('task-helper-1', 'task', ?, 'agent', 'tracker', 'task-helper-1', 'claimed', 'ASSIGN', 0, 0, 'Check the venue', ?, ?, ?)`).run(HELPER, THREAD, Date.now(), Date.now());
+  helperTask();
 });
 
 const pieceState = (): string => (testDb().prepare('SELECT state FROM work WHERE parent_id = ?').get(ASK) as { state: string }).state;
@@ -63,11 +62,11 @@ describe("ending a request ends its helpers' work", () => {
     expect(toldToStop()[0]).toContain('was called off by the owner. Stop working on "Check the venue" [task-helper-1]');
   });
 
-  it('a request that runs out of time fails its piece, tells nobody, and a late answer goes back to the agent', async () => {
+  it('a request whose helper\'s job ended unanswered fails, tells no helper, and a late answer goes back to the agent', async () => {
     testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'task-helper-1'").run(Date.now());   // the job ended unanswered
     vi.setSystemTime(Date.now() + 3_700_000);
     await sweepExpiredJoins();
-    expect([requestState(), pieceState()]).toEqual(['failed', 'failed']);
+    expect([requestState(), pieceState()]).toEqual(['failed', 'abandoned']);
     await settled();
     expect(toldToStop()).toEqual([]);
     await helperAnswers('The venue is free on the 14th.');

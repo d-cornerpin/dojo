@@ -1,5 +1,5 @@
 // A request waiting on a helper's job is never failed for time while the job's task is open and the helper is not
-// ended, however long it runs; a plain question with no task on its thread still fails at its deadline.
+// ended, however long it runs.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('./helpers/agent-requests.js')).connectionMock());
@@ -27,7 +27,6 @@ describe('a job whose task is open is never failed for time', () => {
     aged(ask, 5);
     const out = await sweepExpiredJoins();
     expect(out.failedClosed).toBe(0);
-    expect(out.extendedForLiveAssignee).toBe(1);
     expect(requestState(ask)).toBe('claimed');
     expect(deadline(ask)).toBeGreaterThan(Date.now() + 50 * 60_000);
   });
@@ -36,14 +35,6 @@ describe('a job whose task is open is never failed for time', () => {
     const ask = await askerDelegates('ASSIGN', THREAD);
     testDb().prepare("UPDATE agents SET status = 'terminated' WHERE id = ?").run(HELPER);
     aged(ask, 2);
-    expect((await sweepExpiredJoins()).failedClosed).toBe(1);
-    expect(requestState(ask)).toBe('failed');
-  });
-
-  it('a plain question with no task on its thread fails at the deadline even while the helper is busy', async () => {
-    const ask = await askerDelegates('QUESTION', THREAD);
-    testDb().prepare("UPDATE agents SET status = 'working' WHERE id = ?").run(HELPER);
-    aged(ask, 1);
     expect((await sweepExpiredJoins()).failedClosed).toBe(1);
     expect(requestState(ask)).toBe('failed');
   });

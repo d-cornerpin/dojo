@@ -17,6 +17,7 @@ import type DatabaseType from 'better-sqlite3';
 /** The columns any tracker-reading unit test has needed so far. */
 export function createWorkTable(db: DatabaseType.Database): void {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);
     CREATE TABLE IF NOT EXISTS work (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,

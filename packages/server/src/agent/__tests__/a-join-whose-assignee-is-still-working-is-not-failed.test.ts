@@ -108,9 +108,7 @@ function seedAssigneeJob(): void {
     .run(ASSIGNEE, THREAD, at, at);
 }
 
-async function sweep(): Promise<{
-  failedClosed: number; relayedReplies: number; extendedForLiveAssignee: number;
-}> {
+async function sweep(): Promise<{ failedClosed: number; relayedReplies: number }> {
   return sweepExpiredJoins();
 }
 
@@ -131,7 +129,7 @@ describe('§1 a healthy delegate past the deadline keeps its join', () => {
     const out = await sweep();
 
     expect(out.failedClosed, 'a working delegate is not a missing answer').toBe(0);
-    expect(out.extendedForLiveAssignee, 'the reaper recorded the refusal to kill').toBe(1);
+    expect(joinState(parent)!.ttlAt!, 'the reaper kept it: its deadline moved on').toBeGreaterThan(Date.now());
     expect(workRow(parent).state, 'the join stays open, in exactly the state it was').toBe('claimed');
   });
 
@@ -148,14 +146,14 @@ describe('§1 a healthy delegate past the deadline keeps its join', () => {
   });
 
   it('the owner is NOT told a false story about a missing answer', async () => {
-    seedLiveJoinPastTtl();
+    const parent = seedLiveJoinPastTtl();
     seedAssigneeJob();
 
-    const out = await sweep();
+    await sweep();
 
     // A sweep that did nothing at all would also leave the owner un-told; the control is that the
     // reaper DID reach this row and chose to keep it.
-    expect(out.extendedForLiveAssignee, 'the reaper reached the row and kept it').toBe(1);
+    expect(joinState(parent)!.ttlAt!, 'the reaper reached the row and kept it').toBeGreaterThan(Date.now());
     const said = ownerFacing().map((m) => m.content).join('\n');
     expect(said, 'nothing came back YET is not the same as never answered').not.toMatch(/never answered/i);
     expect(said, 'and the platform has not "stopped waiting" — it is still waiting').not.toMatch(/stopped waiting/i);
@@ -170,7 +168,6 @@ describe('§2 a dead delegate still fails the join, and the owner still hears ab
     const out = await sweep();
 
     expect(out.failedClosed, 'the deadline must still bite when nothing is working').toBe(1);
-    expect(out.extendedForLiveAssignee, 'nothing was extended').toBe(0);
     expect(workRow(parent).state).toBe('failed');
   });
 

@@ -14,16 +14,15 @@ import { resolveJoinsAtBoot, sweepExpiredJoins } from '../a2a-transport.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import { clearPlatformConfigCache } from '../../config/platform.js';
-import { agentStaysSilent, delegatedTextRequest, helperAnswers, relayRows, requestState, textsSent, ASK, THREAD } from './helpers/text-relay.js';
+import { agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, relayRows, requestState, textsSent, ASK, THREAD } from './helpers/text-relay.js';
 
 const pieceState = (): string => (testDb().prepare('SELECT state FROM work WHERE parent_id = ?').get(ASK) as { state: string }).state;
-const failedNotices = (): number => relayRows().filter((r) => r.tool === 'a2a-join-failed').length;
 
 async function theRequestFailsForTime(): Promise<void> {
   vi.setSystemTime(Date.now() + 3_700_000);
   await sweepExpiredJoins();
   await deliverDueReplies(Date.now());
-  expect([requestState(), pieceState(), failedNotices()]).toEqual(['failed', 'failed', 1]);
+  expect([requestState(), pieceState(), failedNotices()]).toEqual(['failed', 'abandoned', 1]);
 }
 
 beforeEach(() => delegatedTextRequest());
@@ -60,7 +59,7 @@ describe('a late answer reaches the person once with its own text', () => {
     expect(relay).not.toMatch(/reported a failure|in time/);
   });
 
-  it('one late of two: the other is said to have not answered in time, and the late row is not called owed', async () => {
+  it('one late of two: the other is said to have never answered, and the late row is not called owed', async () => {
     delegatedTextRequest({}, [THREAD, 'thread-relay-0002']);
     testDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('primary_agent_id', ?)").run(AGENT);
     clearPlatformConfigCache();
@@ -69,13 +68,13 @@ describe('a late answer reaches the person once with its own text', () => {
     expect(testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE content LIKE '%returned a deliverable%'").get()).toEqual({ n: 0 });
     await agentStaysSilent();
     await deliverDueReplies(Date.now());
-    expect(textsSent().at(-1)).toContain('From Helper (it did not answer in time):');
+    expect(textsSent().at(-1)).toContain('From Helper (it never answered):');
   });
 
   it('an empty late reply changes nothing and goes nowhere', async () => {
     await theRequestFailsForTime();
     await helperAnswers('   ');
-    expect([requestState(), pieceState()]).toEqual(['failed', 'failed']);
+    expect([requestState(), pieceState()]).toEqual(['failed', 'abandoned']);
     expect(relayRows()).toHaveLength(1);
   });
 });

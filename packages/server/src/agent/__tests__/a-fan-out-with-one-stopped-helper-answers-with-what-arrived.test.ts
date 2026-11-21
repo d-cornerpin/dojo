@@ -1,16 +1,8 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// t239 (item 4) — THE LIVE-PARENT TIMEOUT NOTICE USES THE ONE LANDED-CONTENT COMPOSER.
-//
-// A fan-out whose parent ask is still open and whose deadline passes with one piece landed and
-// one never answered used to tell the owner a single bare failure sentence: it relayed NONE of
-// what had landed, and it counted a piece that came back with real content as "replied with
-// nothing usable". The closed-parent arm already had the honest shape (say what arrived, name
-// only who did not). There is now ONE composer for both arms: landed pieces are relayed, only
-// the missing piece is named missing.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// A fan-out with one helper whose work stopped settles when its last piece does: what arrived goes back to the agent
+// to answer in its own words, the stopped helper marked as never answering, and no Dojo notice reaches the person.
+// With nothing back at all, the person gets the one "no answer" notice.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { isOwnerAlertSystemNote } from '@dojo/shared';
 
 vi.setConfig({ testTimeout: 15_000 });
 
@@ -103,45 +95,31 @@ beforeEach(() => {
   db.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-1', ?, 'dashboard', 'owner')`).run(AGENT);
 });
 
-describe('t239 item 4 — the live-parent timeout notice relays what landed and names only what is missing', () => {
-  it('RED→GREEN: one piece landed with real content, one never answered', async () => {
-    seedLiveFanOut();
-    landPiece(findJoinChildByThread(AGENT, T1)!.id, {
-      deliveryId: seedDelivery('d-1'), content: 'The sum is 72.', messageId: null,
-    });
+const putBack = (parent: string): string | null => (mockDb.current!.prepare(
+  "SELECT json_extract(payload, '$.kind') AS k FROM work_events WHERE work_id = ? AND kind = 'compile_resolved' ORDER BY id DESC LIMIT 1",
+).get(parent) as { k: string } | undefined)?.k ?? null;
+const pieceStates = (parent: string): string[] => (mockDb.current!.prepare('SELECT state FROM work WHERE parent_id = ? ORDER BY opened_at, id')
+  .all(parent) as Array<{ state: string }>).map((r) => r.state);
 
-    const r = await sweep();
-
-    expect(r.failedClosed).toBe(1);
-    const msgs = ownerFacing();
-    expect(msgs).toHaveLength(1);
-    const text = msgs[0].content;
-    expect(text, 'what DID arrive is relayed').toContain('The sum is 72.');
-    expect(text, 'who did not come back is named').toContain('Slow');
-    expect(text, 'and the one that DID is not named as missing').not.toMatch(/Fast[^.]*never/i);
-    expect(text, 'a piece with real content is never "nothing usable"').not.toMatch(/nothing usable|no usable answer/i);
-    expect(msgs[0].role).toBe('system');
-    expect(isOwnerAlertSystemNote(text)).toBe(true);
+describe('a fan-out with one stopped helper answers with what arrived', () => {
+  it('one piece landed, one helper idle with nothing coming: the agent gets what arrived, the person no notice', async () => {
+    const parent = seedLiveFanOut();
+    landPiece(findJoinChildByThread(AGENT, T1)!.id, { deliveryId: seedDelivery('d-1'), content: 'The sum is 72.', messageId: null });
+    expect((await sweep()).failedClosed).toBe(0);
+    expect([putBack(parent), pieceStates(parent), ownerFacing()]).toEqual(['compile', ['done', 'abandoned'], []]);
   });
 
-  it('a piece that came back FAILED with a reason is relayed as arrived too, and is not named missing', async () => {
-    seedLiveFanOut(true);
-    landPiece(findJoinChildByThread(AGENT, T1)!.id, {
-      deliveryId: seedDelivery('d-1'), content: 'The sum is 72.', messageId: null,
-    });
+  it('a piece that came back FAILED with a reason counts as arrived', async () => {
+    const parent = seedLiveFanOut(true);
+    landPiece(findJoinChildByThread(AGENT, T1)!.id, { deliveryId: seedDelivery('d-1'), content: 'The sum is 72.', messageId: null });
     settlePieceWithoutResult(findJoinChildByThread(AGENT, T2)!.id, {
       to: 'failed', reason: 'the peer replied FAIL', content: 'I could not write the story: no model was free.', actorId: 'slowhelper',
     });
     await sweep();
-    const msgs = ownerFacing();
-    expect(msgs).toHaveLength(1);
-    expect(msgs[0].content).toContain('The sum is 72.');
-    expect(msgs[0].content).toContain('no model was free');
-    expect(msgs[0].content).toContain('Third');
-    expect(msgs[0].content).not.toMatch(/Slow[^.]*never came back/i);
+    expect([putBack(parent), pieceStates(parent), ownerFacing()]).toEqual(['compile', ['done', 'failed', 'abandoned'], []]);
   });
 
-  it('CONTROL: nothing landed keeps the existing fail-closed sentence (one composer, same words)', async () => {
+  it('nothing back: the one fail-closed notice', async () => {
     seedLiveFanOut();
     await sweep();
     const msgs = ownerFacing();

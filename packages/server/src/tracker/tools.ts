@@ -1189,6 +1189,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (!task) {
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
     }
+    writeTaskLog({ taskId, fromEntity: isPMAgent(agentId) ? 'pm' : `agent:${agentId}`, entryKind: 'evidence', actionTaken: 'edited', reason: 'the task was edited' });   // an edit is movement
 
     // Audit title/description content edits in task_log with a before/after trail, as goal edits get above.
     if (contentSnapshot) {
