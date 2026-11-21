@@ -540,7 +540,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     const isDeliverableShape =
       autoPromotedFromFyi ||
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
-    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinChild && !forEndedRequest) {
+    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinChild && !forEndedRequest && !findFailedJoinForThread(target.id, threadId)) {
       primaryDeliverableHint = deliverableArrivedNote(senderName);
     }
   } catch { /* best effort */ }
@@ -1179,9 +1179,7 @@ export async function relayPiecesWhole(joinId: string, kind: PutBackKind, eviden
   if (!join || (kind === 'compile' && settledOnPriorRelay(join.id))) return;
   const pieces = joinPieces(join.id);
   // One piece goes as delivered (to another Dojo's agent that is the whole message); several are each named.
-  const answer = pieces.length === 1 ? (pieces[0].content ?? '').trim() : pieces.map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}${
-    p.state === 'done' ? '' : p.state === 'failed' ? ' (it reported a failure)' : ' (it never answered)'}:\n${(p.content ?? '').trim()}`)
-    .join('\n\n');
+  const answer = pieces.length === 1 ? (pieces[0].content ?? '').trim() : pieces.map(arrivedLine).join('\n\n');
   const frame = kind === 'compile' ? `${engineRelayPreface(pieces.length)}\n\n`
     : `Update: ${helperOf(pieces, evidence)} ${kind === 'late' ? 'answered after all' : 'corrected its work after review'}. `;
   tellAgentWhatTheRelaySent(join, await relayToAsker(join, {
@@ -1201,7 +1199,7 @@ function deliverLateAnswerIfJoinFailedClosed(p: LandInput): boolean {
   if (!failed || !join || !evidence) return false;
   try {
     withUnit(() => {
-      if (claimFailedJoinForLateAnswer(join.id, evidence, `${p.senderName} answered after all`).kind !== 'applied') return;
+      if (join.parentState === 'failed' && claimFailedJoinForLateAnswer(join.id, evidence, `${p.senderName} answered after all`).kind !== 'applied') return;
       transition(failed.childId, {
         to: 'open', by: 'engine', actorId: 'a2a-join', evidenceRef: evidence, reason: `late answer: ${p.senderName} answered after all`,
       });
@@ -1335,14 +1333,16 @@ async function resolveOpenJoin(
   return 'failed-closed';
 }
 
+/** One piece for the person: who sent it, a failure or a missing answer said as what it was, the text whole. */
+function arrivedLine(p: JoinPiece): string {
+  const text = (p.content ?? '').trim();
+  const label = p.state === 'done' ? '' : p.state !== 'failed' ? ' (it never answered)' : text ? ' (it reported a failure)' : ' (it did not answer in time)';
+  return `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}${label}: ${text}`;
+}
+
 /** THE ONE NOTICE FOR A FAN-OUT OUT OF TIME WITH SOMETHING BACK, built from a snapshot taken
  *  BEFORE the settle: it names what arrived and who never did. Nothing back falls through to
  *  `failClosedNotice`, so one composer owns "I could not get an answer". */
-function arrivedLine(p: JoinPiece): string {
-  return `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}${p.state === 'failed' ? ' (it reported a failure)' : ''}: ${
-    (p.content ?? '').trim()}`;
-}
-
 function landedContentNotice(
   join: JoinState, snapshot: JoinPiece[], parentAnswered: boolean, askedNameHint?: string | null,
 ): string {

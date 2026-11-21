@@ -23,7 +23,7 @@ import { broadcast } from '../gateway/ws.js';
 import { announceAgentLiveWork, serveLater } from '../agent/v2/serve-later.js';
 import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import {
-  appendWorkEvent, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, stampClaimingTurn,
+  appendWorkEvent, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState, stampClaimingTurn,
   transition,
   type WorkState,
 } from './store.js';
@@ -82,10 +82,6 @@ function notShownNewestPutBack(askId: string, turn: number): boolean {
 export function recordPiecesShown(askId: string, agentId: string, turn: number, putBackId: number): void {
   appendWorkEvent(askId, 'audit', agentId, { marker: 'pieces_shown', turn, put_back_id: putBackId });
 }
-
-/** Some piece of this request came back with an answer. */
-const hasLandedPiece = (askId: string): boolean =>
-  getDb().prepare("SELECT 1 FROM work WHERE parent_id = ? AND kind = 'task' AND state = 'done'").get(askId) !== undefined;
 
 /** Where in the lifecycle the question is asked; it selects the no-evidence tie-break. `join` and `async`
  *  differ in evidence: the delivery must postdate `join_complete`, or be a background job's result. */
@@ -352,7 +348,7 @@ function standDownReServe(
   });
   if (r.kind !== 'applied') return out('unchanged', `stand-down refused: ${r.kind}`);
   // A helper's answer is owed to this request: the Dojo sends the pieces itself, once, instead of the card.
-  if (hasLandedPiece(ask.id)) {
+  if ((joinState(ask.id)?.landed ?? 0) > 0) {
     const putBack = newestPutBack(ask.id);
     afterCommit(() => void import('../agent/a2a-transport.js').then((m) => m.relayPiecesWhole(ask.id, putBack?.kind ?? 'compile', putBack?.evidence ?? null))
       .catch((err: unknown) => logger.warn('the stood-down request\'s pieces were not relayed', { workId: ask.id, error: String(err) })));
@@ -645,7 +641,7 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   if (ask.state === 'open') return out('unchanged', 'already open and waiting');
   if ((ctx.askedNothing === true || ctx.peerBox === true) && turnEndedInModelSilence(ask.agent_id, ctx.turnNumber)) {
     // A helper's answer owed to a peer box's request is still sent (the answer only): it wins over the silence.
-    if (ctx.peerBox && hasLandedPiece(workId)) return standDownReServe(ask, ctx, actorId, reServesSpent(workId, 'silence'), out);
+    if (ctx.peerBox && (joinState(workId)?.landed ?? 0) > 0) return standDownReServe(ask, ctx, actorId, reServesSpent(workId, 'silence'), out);
     const why = ctx.peerBox ? 'settled: the agent chose not to answer another Dojo box, and silence to a peer box is an allowed answer'
       : 'settled: the message asked for nothing (it only declined or acknowledged) and the agent stayed silent';
     const r = transition(workId, { to: 'abandoned', by: 'agent', actorId, expectedState: ask.state, reason: why });
