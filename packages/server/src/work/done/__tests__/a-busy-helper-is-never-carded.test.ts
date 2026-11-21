@@ -16,7 +16,7 @@ import { freshBoard, PM, MAIN, WORKER, OTHER, TASK } from './helpers/decision-wo
 import { cards, entries, hintsTo, keptRequest, keptState, pmCanRun, resetLadderWorld, workingTask, anchorBack, MIN } from './helpers/ladder-world.js';
 import { doneDb } from './helpers/done-db.js';
 
-/** Many sweeps, out to four days: nothing climbs past what `hints` allows, nothing is carded, the request is kept. */
+/** Many sweeps, out to four days on the ladder's clock (the owed windows read the real one): nothing climbs past what `hints` allows, nothing is carded, the request is kept. */
 async function longWait(ask: string, hints: number): Promise<void> {
   for (const at of [6, 12, 30, 120, 1440, 5760]) await runLadder(Date.now() + at * MIN);
   expect([hintsTo(WORKER).length, entries(TASK, LADDER_ENTRY.pm), cards.length, ...(await keptState(ask))]).toEqual([hints, 0, 0, 'claimed', 'open']);
@@ -31,7 +31,9 @@ describe('a busy helper is never carded', () => {
     try { await longWait(ask, 0); } finally { activeRuns.delete(WORKER); }
   });
 
-  it('with its reminder still coming', async () => {
+  it('with its reminder still coming, five hours after it was sent', async () => {
+    await runLadder(Date.now() + 6 * MIN);
+    doneDb().prepare("UPDATE messages SET created_at = created_at - ? WHERE agent_id = ? AND lane = 'events'").run(5 * 60 * MIN, WORKER);
     await longWait(ask, 1);
   });
 

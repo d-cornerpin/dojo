@@ -6,7 +6,7 @@ import { latestHandIn, workerOf } from '../work/done/record.js';
 import {
   decidedBy, holdingQuestions, questionsHoldUntil, sendBacks, REVIEW_MISS_ENTRY, QUEUED_TURN_BOUND_MS,
 } from '../work/done/who-decides.js';
-import { LADDER_ENTRY } from '../work/done/ladder.js';
+import { LADDER_ENTRY, pmCanRun } from '../work/done/ladder.js';
 import { appendAuditEntry } from '../work/audit-trail.js';
 import { heldDeliveryLine } from './owed-delivery.js';
 import { getDb } from '../db/connection.js';
@@ -249,8 +249,8 @@ export async function runPMReview(): Promise<void> {
     const waiting = waitingForPM(pmId), stalled = markedStalls(pmId);
     held = new Map(waiting.map((id) => [id, latestHandIn(id)?.eventId ?? 0] as const));
     if (waiting.length + stalled.length === 0) return;
-    const pm = getDb().prepare('SELECT model_id, status FROM agents WHERE id = ?').get(pmId) as { model_id: string | null; status: string } | undefined;
-    if (!pm?.model_id || pm.status === 'terminated') { recordMisses(pmId, held, 'the project manager could not run its review'); return; }
+    const pm = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(pmId) as { model_id: string | null } | undefined;
+    if (!pmCanRun() || !pm?.model_id) { recordMisses(pmId, held, 'the project manager could not run its review'); return; }
     // One file per project (or per task with none), each in its own room beside the blocks.
     const subjects = [...new Set([...waiting, ...stalled].map((id) => projectOf(id)?.id ?? id))];
     const policy = contextWindowPolicy(agentTurnWindow(pmId, pm.model_id), { toolPayloadTokens: 0 });
@@ -267,8 +267,7 @@ export async function runPMReview(): Promise<void> {
       + 'verdict="approve", reason="<one line: how the proof meets the goal>"), or verdict="send_back" with the reason naming what is missing. A measured task is met when its '
       + 'measure reads 0 or the named remainder holds; a task whose job is a decision is met by the owner\'s recorded words above, never by the worker quoting him. '
       + 'A row you do not decide stays waiting and goes to the next decider. For each STALLED row: work_validate(action="retask", task_id, '
-      + 'directive="<the next concrete step>") if it can go on; no move means its work has stopped and whoever waits on it is told. '
-      + 'Never poke, never reassign, never send_to_agent(intent="ASSIGN").]';
+      + 'directive="<the next concrete step>") if it can go on; no move means its work has stopped. Never poke, never reassign, never send_to_agent(intent="ASSIGN").]';
     const msgId = uuidv4();
     insertEngineEventIfAbsent({ id: msgId, agentId: pmId, content: report, sourceAgentId: null, originIntent: 'pm_review', work: null });
     const runtime = getAgentRuntime();

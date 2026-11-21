@@ -6,10 +6,9 @@
 //      questions stop holding it.
 //   3. A hand-in the PM did not decide after two reviews, or a task sent back three times: the main agent
 //      is woken to decide another agent's task.
-//   4. The owner's card, never a text: for the main agent's own task, for a decision the main agent let
-//      sit one more bound, or a stalled task once a PM review that began after step 2 has ended (at once when
-//      the PM cannot run). No sooner than 15 minutes after the stall nor in the first hour after the upgrade,
-//      at most once per task per day. Steps 1 to 4 of a stall wait while its worker is busy (`workerBusy`).
+//   4. The owner's card, never a text: for the main agent's own task, for a decision the main agent let sit one
+//      more bound, or a stall a finished PM review listed and left (at once when the PM cannot run; a retask starts the
+//      climb again). Not within 15 minutes, nor the first hour after the upgrade; once a day. A busy worker is left alone.
 // Bounds on the wakes: none to an agent a person is waiting on (`selfWakeStandDown`), one per
 // agent per sweep naming all its due rows, and at most 3 box-wide per 10 minutes; the rest wait for a later sweep.
 // Each wake marks one of its entries; the PM is not armed again until a PM turn finishes after its last arm.
@@ -78,8 +77,8 @@ const isKind = (kind: string) => (e: Ev): boolean => e.kind === kind;
 /** Where the row stands on the ladder and the step now due, from its own records. */
 function ladderStep(workId: string, now: number): LadderStep {
   const row = getDb().prepare(`SELECT w.state, w.updated_at, w.a2a_thread_id AS thread, ${stallSinceSql('w')} AS since, ${cardedSinceStallSql('w')} AS carded,
-      ${LADDER_ANCHOR_SQL} AS anchor FROM work w WHERE w.id = ?`).get(workId) as
-    { state: string; updated_at: number; thread: string | null; since: number; carded: number; anchor: number } | undefined;
+      ${LADDER_ANCHOR_SQL} AS anchor, (SELECT MAX(r.created_at) FROM work_events r WHERE r.work_id = w.id AND r.kind = 'audit' AND json_extract(r.payload, '$.entry_kind') = 'directive') AS retask
+      FROM work w WHERE w.id = ?`).get(workId) as { state: string; updated_at: number; thread: string | null; since: number; carded: number; anchor: number; retask: number | null } | undefined;
   if (!row || !(LIVE.includes(row.state) || (row.state === 'open' && row.thread))) return { reached: 0, due: null };
   const evs = eventsOf(workId);
   // `asked` ends the owner step for the hand-in his card was raised for (`carded`, for a stall); the day window in
@@ -115,13 +114,13 @@ function ladderStep(workId: string, now: number): LadderStep {
   const refusals = evs.filter((e) => e.kind === 'hand_in_refused' && e.at >= lastTurnIn);
   if (refusals.length >= REFUSALS_BEFORE_PM && !newest(evs, isEntry(LADDER_ENTRY.pm), refusals[REFUSALS_BEFORE_PM - 1].at)) return { reached: 1, due: 'pm' };
   if (workerBusy(workerOf(workId), { taskId: workId, threadId: row.thread })) return { reached: 0, due: null };
-  const since = row.since;
+  const since = row.since, from = Math.max(since, row.retask ?? 0);
   const bound = patienceBoundMs(workerOf(workId));
-  const hint = newest(evs, isEntry(LADDER_ENTRY.hint), since);
-  const pm = newest(evs, isEntry(LADDER_ENTRY.pm), since);
+  const hint = newest(evs, isEntry(LADDER_ENTRY.hint), from);
+  const pm = evs.find((e) => e.entry === LADDER_ENTRY.pm && e.at >= from);
   const floor = now - since >= OWNER_FLOOR_MS;
   if (row.carded) return { reached: 4, due: null };
-  if (pm) return { reached: 2, due: !pmCanRun() || pmReviewed(pm.at) ? owner(floor) : 'pm' };
+  if (pm) return { reached: 2, due: !pmCanRun() || pmReviewed(pm.at, workId) ? owner(floor) : workerBusy(getPMAgentId(), {}) ? null : 'pm' };
   if (hint) return { reached: 1, due: !pmCanRun() ? owner(floor) : now - hint.at >= bound ? 'pm' : null };
   return { reached: 0, due: now - since >= bound ? 'hint' : null };
 }
@@ -153,14 +152,13 @@ function pmPending(pmId: string, now: number): boolean {
 }
 
 /** The PM can run a review: it has a model and is not ended, paused or in error. */
-const pmCanRun = (): boolean => !!getDb().prepare(`SELECT 1 FROM agents WHERE id = ? AND model_id IS NOT NULL
+export const pmCanRun = (): boolean => !!getDb().prepare(`SELECT 1 FROM agents WHERE id = ? AND model_id IS NOT NULL
   AND status NOT IN ('terminated', 'paused', 'error')`).get(getPMAgentId());
 
-/** A PM review that listed the stall marked at `markAt` has ended: its report came after the mark (reports are stamped
- *  to the second), and the turn that took it ended. */
-const pmReviewed = (markAt: number): boolean => !!getDb().prepare(`SELECT 1 FROM messages m JOIN turns t ON t.agent_id = m.agent_id
-  AND t.turn_number = m.served_by_turn WHERE m.agent_id = ? AND m.origin_intent = 'pm_review' AND m.created_at >= ? AND t.ended_at IS NOT NULL`)
-  .get(getPMAgentId(), Math.floor(markAt / 1000) * 1000);
+/** A PM review that listed `workId`, made after its first mark (reports are stamped to the second), was taken by a turn that ended. */
+const pmReviewed = (markAt: number, workId: string): boolean => !!getDb().prepare(`SELECT 1 FROM messages m JOIN turns t ON t.agent_id = m.agent_id
+  AND t.turn_number = m.served_by_turn WHERE m.agent_id = ? AND m.origin_intent = 'pm_review' AND m.created_at >= ? AND instr(m.content, ?) > 0
+  AND t.ended_at IS NOT NULL`).get(getPMAgentId(), Math.floor(markAt / 1000) * 1000, `[${workId}]`);
 
 /** One engine hint to `agentId` naming each row, as an events-lane re-drive that owes no reply, recorded on every
  *  row it names so it is never sent twice for the same step. `key` names a one-row hint that is not a stall step. */
@@ -176,14 +174,13 @@ export async function hintOnce(agentId: string, rows: Array<{ workId: string; te
   return sent;
 }
 
-/** Step 4: the owner's card (once a day per task), and the ask on record his own words decide by. */
-function tellOwner(workId: string): void {
+/** Step 4: the owner's card (once a day per task), the ask his words decide by; a stall's card tells whoever waits on it. */
+function tellOwner(workId: string, stall: boolean): void {
   const key = stallKey(workId);
   if (!tellOwnerOncePerWindow(key, wordsOf(key), DAY_MS)) return;
   recordValidationEscalation(workId, 'engine', null);
-  // The card is the decision that this work has stopped: whoever waits on it is told now.
   const thread = (getDb().prepare('SELECT a2a_thread_id AS t FROM work WHERE id = ?').get(workId) as { t: string | null }).t;
-  void import('../../agent/a2a-transport.js').then((m) => m.judgeKeptRequests(workerOf(workId), thread));
+  if (stall) void import('../../agent/a2a-transport.js').then((m) => m.judgeKeptRequests(workerOf(workId), thread));
 }
 
 const rowOf = (workId: string) => getDb().prepare(`SELECT w.title, w.state, ${holdWordsSql('w')} AS hold, ${taskMovedAtSql('w')} AS moved FROM work w WHERE w.id = ?`)
@@ -221,8 +218,8 @@ export async function runLadder(now = Date.now()): Promise<void> {
   const byAgent = new Map<string, Due[]>();
   for (const { id } of candidates(now)) {
     try {
-      const { due } = ladderStep(id, now);
-      if (due === 'owner') tellOwner(id);
+      const { due, reached } = ladderStep(id, now);
+      if (due === 'owner') tellOwner(id, reached < 3);
       else if (due) {
         const to = due === 'pm' ? getPMAgentId() : due === 'decider' ? getPrimaryAgentId() : workerOf(id);
         byAgent.set(to, [...(byAgent.get(to) ?? []), { id, due }]);
