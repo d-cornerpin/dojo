@@ -38,18 +38,18 @@ export async function scheduleCompletionReport(ctx: FinalizeContext): Promise<vo
   const { agentId, turnNumber, db, isA2ATurn, turnStartedAt } = ctx;
 
   // A2A only (a user turn already reports); the engine-triggered report turn cannot re-trigger; work
-  // handed in since turn start, so reported once; one-shot only; never another agent's request; unreported.
+  // handed in since turn start, so reported once; one-shot only; never what another agent asked of it; unreported.
   if (isA2ATurn) {
     try {
       const justCompleted = db.prepare(`
         SELECT w.id AS id, w.title AS title, ${handInNoteExpr('w')} AS result FROM work w
         WHERE ${taskScope('w')} AND w.agent_id = ?
           AND ${handedInSinceExpr('w')}
-          AND w.repeat_interval IS NULL AND NOT ${peerOriginSql('w')}
+          AND w.repeat_interval IS NULL AND NOT (${peerOriginSql('w')} AND w.requester_id IS NOT ?)
           AND NOT ${ownerEvidencedClose('w')}
         ORDER BY w.updated_at ASC
         LIMIT 5
-      `).all(agentId, tsToMs(turnStartedAt) ?? 0) as Array<{ id: string; title: string; result: string | null }>;
+      `).all(agentId, tsToMs(turnStartedAt) ?? 0, agentId) as Array<{ id: string; title: string; result: string | null }>;
       if (justCompleted.length > 0) {
         const taskLines = justCompleted
           .map(t => `  - "${t.title}"${t.result ? `, ${t.result.replace(/\s+/g, ' ').slice(0, 160)}` : ''}`)

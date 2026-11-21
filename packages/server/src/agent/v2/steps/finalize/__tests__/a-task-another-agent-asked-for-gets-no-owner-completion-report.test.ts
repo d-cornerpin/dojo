@@ -33,12 +33,15 @@ beforeEach(() => {
 describe('a task another agent asked for gets no owner completion report', () => {
   it("only the owner's task is named when both are handed in on one A2A turn", async () => {
     const relay = autoCreateAssignTask({ senderId: HELPER, receiverId: MAIN, payload: 'Relay the list to the owner.', threadId: 'thread-relay' })!;
-    handIn('task-owner');
-    handIn(relay.taskId);
+    // The owner's card the agent opened and gave a helper, back in its hands: it keeps its thread.
+    mockDb.current!.prepare(`INSERT INTO work (id, kind, agent_id, requester, requester_id, root_kind, root_id, a2a_thread_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
+      VALUES ('task-card', 'task', ?, 'agent', ?, 'tracker', 'task-card', 'thread-card', 'claimed', 'tracker', 0, 0, 'Book the campsite', ?, ?)`).run(MAIN, MAIN, started, started);
+    for (const id of ['task-owner', 'task-card', relay.taskId]) handIn(id);
     await scheduleCompletionReport({ agentId: MAIN, turnNumber: 9, db: mockDb.current!, isA2ATurn: true, turnStartedAt: new Date(started).toISOString().slice(0, 19).replace('T', ' ') } as unknown as FinalizeContext);
     const reports = mockDb.current!.prepare("SELECT content FROM messages WHERE origin_intent = 'completion_report'").all() as Array<{ content: string }>;
     expect(reports).toHaveLength(1);
     expect(reports[0].content).toContain('Write the beach list');
+    expect(reports[0].content, 'its own card back from a helper').toContain('Book the campsite');
     expect(reports[0].content).not.toContain('Relay the list');
   });
 });
