@@ -1,5 +1,6 @@
 // An agent asked by another agent that already wrote on the request's thread (its own send, or the engine's
-// hand-in relay) is never told the asker "got nothing": the asker's store is the one record of a reply.
+// hand-in relay) is never told the asker "got nothing": the asker's store is the one record of a reply. A send that
+// names the thread by the short token it is shown lands on the full thread.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
@@ -7,12 +8,14 @@ import { randomUUID } from 'node:crypto';
 const mem: { db: Database.Database | null } = { db: null };
 vi.mock('../../../../../db/connection.js', () => ({ getDb: () => mem.db!, closeDb: () => {}, getDbPath: () => ':memory:' }));
 vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../../../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => {}, isRunning: () => false }), stopAgent: () => {} }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { insertMessage } from '../../../../../memory/message-store.js';
 import { advance, initState } from '../../../state.js';
 import type { AgentRequest } from '../../../owed.js';
 import { runMissedReply } from '../missed-reply.js';
+import { executeTool, toolResultOf } from '../../../../tools/index.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
 
 let helper = '', asker = '', thread = '';
@@ -72,5 +75,14 @@ describe('a send on the thread marks the request replied', () => {
   it('a row from the helper on another thread does not count', () => {
     replyLands(helper, `thread-${randomUUID()}`);
     expect(proseInsteadOfASend()).toContain('Asker got nothing');
+  });
+
+  it('a send naming the thread by its short token lands on the full thread: the helper is told it already replied', async () => {
+    thread = randomUUID();
+    insertMessage({ agentId: helper, role: 'user', lane: 'a2a', sourceAgentId: asker, a2aThreadId: thread, a2aIntent: 'QUESTION', a2aRequiresResponse: true, content: 'the figure, please' });
+    const sent = toolResultOf(await executeTool(helper, { id: 'tc-1', name: 'send_to_agent', arguments: { agent: asker, intent: 'ANSWER', thread_id: thread.slice(0, 8), payload: 'It is 42.' } }));
+    expect(sent.isError, String(sent.content)).toBeFalsy();
+    expect(mem.db!.prepare('SELECT a2a_thread_id AS t FROM messages WHERE agent_id = ? AND source_agent_id = ?').all(asker, helper)).toEqual([{ t: thread }]);
+    expect(proseInsteadOfASend()).toContain('You already replied to Asker');
   });
 });

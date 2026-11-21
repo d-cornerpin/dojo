@@ -54,6 +54,7 @@ vi.mock('../../../../../logger.js', () => ({
 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { scheduleCompletionReport } from '../close-the-loop.js';
+import { autoCreateAssignTask } from '../../../../../tracker/schema.js';
 import type { FinalizeContext } from '../index.js';
 import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -262,5 +263,22 @@ describe('the guard narrows nothing else', () => {
     expect(events[0].content).toContain(TITLE);
     // Both rows carry the same title, so the COUNT of listed lines is the assertion.
     expect(events[0].content.split('\n').filter((l) => l.startsWith('  - "'))).toHaveLength(1);
+  });
+
+  it("another agent's request is never reported to the owner; the agent's own card back from a helper is", async () => {
+    const t = Date.now() - 5 * 60_000;
+    mockDb.current!.prepare("INSERT INTO agents (id, name, status, session_started_at) VALUES ('agent-helper', 'Helper', 'idle', '1970-01-01')").run();
+    const relay = autoCreateAssignTask({ senderId: 'agent-helper', receiverId: AGENT, payload: 'Relay the list to the owner.', threadId: 'thread-relay' })!;
+    delivery('d-peer', { channel: 'a2a', tool: 'send_to_agent' });
+    handedInTask('task-card', 'd-peer', Date.now(), t);
+    mockDb.current!.prepare("UPDATE work SET requester = 'agent', requester_id = ?, a2a_thread_id = 'thread-card' WHERE id = 'task-card'").run(AGENT);
+    mockDb.current!.prepare("UPDATE work SET state = 'handed_in', updated_at = ? WHERE id = ?").run(Date.now(), relay.taskId);
+    mockDb.current!.prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'handed_in', '{}', ?, ?)").run(relay.taskId, AGENT, Date.now());
+
+    await scheduleCompletionReport(ctx(asTurnStartedAt(t)));
+    const events = reportEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].content).toContain(TITLE);
+    expect(events[0].content).not.toContain('Relay the list');
   });
 });

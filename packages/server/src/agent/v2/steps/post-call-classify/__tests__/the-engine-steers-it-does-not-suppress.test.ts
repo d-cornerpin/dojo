@@ -4,7 +4,8 @@
 // delivered (and `chat:retract`ed it off the screen), and a reply that looked like one sent in the last
 // five. Owner law: engine detects, agent speaks. Each floor now holds the line (demoted to a working
 // note, never discarded), states the fact to the agent once, and lets the agent decide; a reply written
-// again after the fact goes out.
+// again after the fact goes out. A reply a truth guard holds is held the same way: its streamed bubble is
+// closed and turned into a working note, nothing is sent, and the agent is steered to run again.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ToolCall } from '@dojo/shared';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
@@ -125,6 +126,7 @@ import { claimedAsk } from '../../../__tests__/helpers/owner-stop.js';
 import { dashboardCopy } from '../../../__tests__/helpers/text-request.js';
 import { runReplyFloors } from '../reply-floors.js';
 import { steerFired } from '../../../steer-queue.js';
+import { writeToolReceipt } from '../../../../../receipts/store.js';
 import type { PostCallScratch } from '../index.js';
 
 const scFor = (text: string): PostCallScratch => ({ persistedContent: text, deliberateSurfaceTurn: false, interAgentTurn: false } as unknown as PostCallScratch);
@@ -171,5 +173,24 @@ describe('a near-duplicate reply is steered, not nulled', () => {
     const out = await runPostCallClassify(freshState(), ctx);
     expect(out.directive).toBe('continue');
     expect(steerFired(out.state.steerQueue, 'near-duplicate-reply')).toBe(true);
+  });
+});
+
+describe('a reply held by a truth guard leaves no draft bubble', () => {
+  it('the streamed draft is closed and becomes a working note, and the agent is steered to run again', async () => {
+    const receiptId = writeToolReceipt({
+      agentId: AGENT, tool: 'gmail_send', tier: 1, verified: true, basis: 'provider-id', providerId: 'm-1', recipient: 'caterer@example.com', sentText: 'The invoice is attached.',
+    });
+    testDb().prepare(`INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, recipient_display, receipt_id, outcome, created_at)
+      VALUES ('d-1', ?, 'gmail_send', 'email', 'caterer@example.com', 'the caterer', ?, 'delivered', datetime('now'))`).run(AGENT, receiptId);
+    const reply = "I haven't sent it to the caterer yet.";
+    const sc = scFor(reply);
+    const out = await runReplyFloors(freshState(), ctxFor({ messageId: 'msg-draft', hasUnansweredUser: false, result: modelResult({ content: reply }) }), sc);
+    expect(out.directive).toBe('continue');
+    expect(sc.persistedContent).toBeNull();
+    const frames = broadcastSpy.mock.calls.map((c) => c[0]);
+    expect(frames).toContainEqual(expect.objectContaining({ type: 'chat:chunk', messageId: 'msg-draft', done: true }));
+    expect(frames).toContainEqual(expect.objectContaining({ type: 'chat:workingnote', messageId: 'msg-draft', content: reply }));
+    expect(out.state.steerQueue.pending.map((e) => e.content).join('\n')).toContain('you DID send email to the caterer');
   });
 });
