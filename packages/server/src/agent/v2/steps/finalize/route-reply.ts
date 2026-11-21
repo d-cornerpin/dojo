@@ -166,14 +166,9 @@ async function speakOnCall(state: AgentTurnState & { lastAssistantTextForIM: str
   try {
     const { getCallSession } = await import('../../../../twilio/call-session.js');
     const session = getCallSession(inbound.phoneCallSid!);
-    if (!session) {
-      logger.warn('v2.9.18: phone auto-reply skipped - no active session for callSid', {
-        agentId, callSid: inbound.phoneCallSid,
-      }, agentId);
-    } else if (session.isEnded()) {
-      logger.warn('v2.9.18: phone auto-reply skipped - call already ended', {
-        agentId, callSid: inbound.phoneCallSid,
-      }, agentId);
+    if (!session || session.isEnded()) {
+      logger.warn('phone auto-reply skipped: the call has ended', { agentId, callSid: inbound.phoneCallSid }, agentId);
+      tellAgentReplyHeld(agentId, 'phone', 'the call has ended');
     } else if (turnCtx.phoneStreamFlushedAny) {
       const tail = redactHandedCredentials(agentId, turnCtx.phoneStreamBuffer.takeRaw()).trim();
       if (tail) {
