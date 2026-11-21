@@ -81,12 +81,12 @@ export function agentActivity(agentId: string, now = Date.now()): Activity {
   };
 }
 
-/** Is the agent working on `work`: in flight, owed for it, on another live delegation of its own, or paused; never in error, ended or SILENT. */
+/** Is the agent working on `work`: in flight, owed for it, on another live delegation of its own, paused or in error; never ended or SILENT. */
 export function workerBusy(agentId: string, work: OwedWork, seen = new Set<string>()): boolean {
   const a = getDb().prepare('SELECT status, silent_notice FROM agents WHERE id = ?').get(agentId) as { status: string; silent_notice: string | null } | undefined;
-  if (!a || ['error', 'terminated'].includes(a.status) || a.silent_notice !== null) return false;
+  if (!a || a.status === 'terminated' || a.silent_notice !== null) return false;
   const live = liveWork(agentId), due = dueOf(agentId, Date.now(), work);
-  if (a.status === 'paused' || activeRuns.has(agentId) || live.turn > 0 || live.background > parkedJobs(agentId).length
+  if (['paused', 'error'].includes(a.status) || activeRuns.has(agentId) || live.turn > 0 || live.background > parkedJobs(agentId).length
     || due.now || due.next !== null) return true;
   if (seen.has(agentId)) return false;
   seen.add(agentId);

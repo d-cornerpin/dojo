@@ -83,7 +83,7 @@ export function joinFailureNotice(p: NoticeInput): string {
     ? `your agent delegated ${plural ? 'parts of this' : 'this'} to ${who}`
       + `${waited ? ` and waited ${waited}` : ''}, and `
       + `${plural ? 'none of them answered' : 'they never answered'}. `
-      + `The ${plural ? 'messages were' : 'message was'} delivered, `
+      + `The ${plural ? 'messages were' : 'message was'} delivered, nothing errored, `
       + `so the platform stopped waiting rather than leaving you in silence.`
     : t.silent > 0
       ? `your agent delegated ${plural ? 'parts of this' : 'this'} to ${who}`

@@ -23,7 +23,7 @@ import { decide } from '../../work/done/decide.js';
 import { deleteTrackerRow } from '../../work/tracker-store.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import {
-  agentLines, agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, helperTask, passesRun, requestState, relayRows, served, textsSent, ASK, HELPER, THREAD,
+  agentLines, agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, helperTask, passesRun, requestState, served, textsSent, ASK, HELPER, THREAD,
 } from './helpers/text-relay.js';
 
 /** The request, the person's notices and the agent's lines, once the passes an event started and the sends ran. */
@@ -67,8 +67,9 @@ describe('a stopped helper tells the person at once', () => {
     expect(await told()).toEqual(['failed', 1, 1]);
   });
 
-  it('the helper ended, on a request eight days old; a second end tells nobody', async () => {
+  it('the helper ended (from an error), on a request eight days old; a second end tells nobody', async () => {
     helperTask();
+    testDb().prepare("UPDATE agents SET status = 'error' WHERE id = ?").run(HELPER);
     testDb().prepare('UPDATE work SET opened_at = ? WHERE id = ? OR parent_id = ?').run(Date.now() - 8 * 24 * 3_600_000, ASK, ASK);
     writeAgentStatus(HELPER, 'terminated');
     expect(await told()).toEqual(['failed', 1, 1]);
@@ -160,12 +161,15 @@ describe('a plain question waits for its helper', () => {
     expect((testDb().prepare('SELECT state FROM work WHERE parent_id = ? ORDER BY root_id').all(ASK) as Array<{ state: string }>).map((r) => r.state)).toEqual(['abandoned', 'open']);
   });
 
-  it('a request eight days old, looked at since, is found when its helper errs; the notice claims no clean run', async () => {
-    await asked();
+  it('a helper in error keeps it, even eight days old; running again it is served; served and silent, the sweep settles it once', async () => {
     testDb().prepare('UPDATE work SET opened_at = ? WHERE id = ? OR parent_id = ?').run(Date.now() - 8 * 24 * HOUR, ASK, ASK);
     testDb().prepare("UPDATE agents SET status = 'error' WHERE id = ?").run(HELPER);
-    expect(await looked(2)).toEqual(['failed', 1, 1]);
-    expect(JSON.stringify(relayRows())).not.toContain('nothing errored');
+    expect(await looked(2)).toEqual(['blocked', 0, 0]);
+    testDb().prepare("UPDATE agents SET status = 'idle' WHERE id = ?").run(HELPER);
+    expect(owes()).toBe(true);
+    served();
+    expect(await looked(1)).toEqual(['failed', 1, 1]);
+    expect(await looked(1)).toEqual(['failed', 1, 1]);
   });
 
   it('a restart keeps a request with two pieces out, one closed as history at the update, and both are served again', async () => {

@@ -1,5 +1,5 @@
 // A helper that is working is never moved up the ladder and its request is never ended, however long it takes: in a
-// run, with its reminder still coming, or waiting on a live helper of its own. A parked job for other work does not
+// run, in error (it is woken again, or the owner has its card), with its reminder still coming, or waiting on a live helper of its own. A parked job for other work does not
 // count: the dropped task is still reminded.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -29,6 +29,11 @@ describe('a busy helper is never carded', () => {
   it('in a run', async () => {
     activeRuns.add(WORKER);
     try { await longWait(ask, 0); } finally { activeRuns.delete(WORKER); }
+  });
+
+  it('in error: kept like a paused helper, until it runs again or is ended', async () => {
+    doneDb().prepare("UPDATE agents SET status = 'error' WHERE id = ?").run(WORKER);
+    await longWait(ask, 0);
   });
 
   it('with its reminder still coming, five hours after it was sent', async () => {
