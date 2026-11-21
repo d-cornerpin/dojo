@@ -16,7 +16,7 @@ import { sendAlert } from '../services/imessage-bridge.js';
 import { noteNoticeOnce, endNotice, readNotice } from '../agent/agent-owner-cards.js';
 import { notWaitingForItsTimeSql, taskScope, holdSetBySql } from '../work/tracker-view.js';
 import { taskMovedAtSql, cardedSinceStallSql } from '../work/task-freshness.js';
-import { dueOf, type OwedWork } from '../agent/v2/owed.js';
+import { agentRequests, dueOf, type OwedWork } from '../agent/v2/owed.js';
 import { liveWork, parkedJobs } from '../agent/live-work.js';
 import { createLogger } from '../logger.js';
 
@@ -101,15 +101,14 @@ const ALIVE = (c: string): string => `EXISTS (SELECT 1 FROM work t JOIN agents h
   WHERE t.kind = 'task' AND t.a2a_thread_id = ${c}.root_id AND t.state NOT IN ('done', 'failed', 'abandoned')
     AND ((t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
 
-/** Open pieces of a join, alive by their task (ALIVE), a run in flight, or with no task a busy helper or its unanswered question back. */
+/** Open pieces of a join, alive by their task (ALIVE), a run in flight, or with no task a busy helper or a question back its asker owes. */
 export function openPieces(joinId: string, seen = new Set<string>()): Array<{ childId: string; alive: boolean }> {
-  return (getDb().prepare(`SELECT c.id, c.assignee_agent AS helper, c.root_id AS thread, ${ALIVE('c')} AS alive,
-      EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked,
-      EXISTS (SELECT 1 FROM messages w WHERE w.agent_id = c.agent_id AND w.a2a_thread_id = c.root_id AND w.source_agent_id = c.assignee_agent
-        AND w.a2a_intent IN ('QUESTION', 'BLOCK') AND NOT EXISTS (SELECT 1 FROM messages x WHERE x.a2a_thread_id = c.root_id AND x.created_at > w.created_at AND x.agent_id IN (c.agent_id, c.assignee_agent) AND x.role = 'user')) AS said
+  return (getDb().prepare(`SELECT c.id, c.agent_id AS asker, c.assignee_agent AS helper, c.root_id AS thread, ${ALIVE('c')} AS alive,
+      EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked
       FROM work c WHERE c.parent_id = ? AND c.kind = 'task' AND c.state IN ('open', 'claimed', 'blocked')`).all(joinId) as
-    Array<{ id: string; helper: string | null; thread: string; alive: number; said: number; tasked: number }>).map((p) => ({
-    childId: p.id, alive: p.alive === 1 || activeRuns.has(p.helper ?? '') || (p.tasked === 0 && !!p.helper && (p.said === 1 || workerBusy(p.helper, { threadId: p.thread }, seen))),
+    Array<{ id: string; asker: string; helper: string | null; thread: string; alive: number; tasked: number }>).map((p) => ({
+    childId: p.id, alive: p.alive === 1 || activeRuns.has(p.helper ?? '') || (p.tasked === 0 && !!p.helper
+      && (agentRequests(p.asker, Date.now(), p.thread).length > 0 || workerBusy(p.helper, { threadId: p.thread }, seen))),
   }));
 }
 

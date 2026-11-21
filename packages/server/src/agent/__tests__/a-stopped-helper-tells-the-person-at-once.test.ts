@@ -103,6 +103,15 @@ const owes = (): boolean => agentRequests(HELPER).some((r) => r.threadId === THR
 const asksBack = (): Promise<unknown> => deliverA2AMessage({ intent: 'QUESTION', threadId: THREAD, requiresResponse: true, payload: 'The hall or the garden?', toAgent: AGENT, fromAgent: HELPER } as never);
 
 describe('a plain question waits for its helper', () => {
+  it('a question back the asker is served and leaves unanswered: the next look settles it once', async () => {
+    served();
+    await asksBack();
+    testDb().prepare("INSERT INTO turns (agent_id, turn_number, started_at, ended_at, answered, exit_reason) VALUES (?, 50, datetime('now', '+2 seconds'), datetime('now', '+2 seconds'), 0, 'answered')").run(AGENT);
+    testDb().prepare("UPDATE messages SET served_by_turn = 50 WHERE agent_id = ? AND a2a_thread_id = ? AND a2a_intent = 'QUESTION'").run(AGENT, THREAD);
+    expect(await looked(1)).toEqual(['failed', 1, 1]);
+    expect(await looked(1)).toEqual(['failed', 1, 1]);
+  });
+
   it('a slow helper in one long turn is never ended; served once and silent, it is settled at the next look, once', async () => {
     await asked();
     served(null);
