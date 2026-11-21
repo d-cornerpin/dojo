@@ -232,7 +232,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   const at = now();
 
   withUnit(() => {
-    // A request that ends ends its open pieces with it: called off, they are abandoned and their helpers told;
+    // A request that ends ends its open pieces with it: called off, they are abandoned and their helpers' work stopped;
     // failed, they fail, nobody is told, and a late answer takes the late road.
     const ends = row.kind === 'ask' && (input.to === 'abandoned' || input.to === 'failed') && !isTerminal(from);
     const pieces = ends ? db.prepare(`SELECT id, assignee_agent AS helper, root_id AS thread FROM work

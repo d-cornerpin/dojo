@@ -9,10 +9,10 @@ import { endedMidRun } from './ended-mid-run.js';
 import {
   A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, a2aThreadTokenMatchesSql, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX,
 } from '@dojo/shared';
-import { postAgentNotice, redriveWithoutReply } from './agent-notice.js';
+import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getAgentRuntime } from './runtime.js';
+import { getAgentRuntime, stopAgent } from './runtime.js';
 import {
   deliveredResult, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork,
 } from '../memory/message-store.js';
@@ -22,7 +22,7 @@ import { queueReply, recordDelivery } from './v2/deliveries.js';
 import { replyAddressFor } from './v2/channel-sender.js';
 import { resultForEndedRequest } from './v2/counterparty.js';
 import { recordAtDoor, recordedId } from './v2/outbound.js';
-import { asTurn } from './turn-context.js';
+import { asTurn, turnContext } from './turn-context.js';
 // The join lives in `work`; everything here is transport: it lands pieces and relays answers.
 import {
   THREAD_HOP_CAP, isTerminal,
@@ -1416,21 +1416,17 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
   return out;
 }
 
-/** A request was called off: the helper on each of its pieces is told once to stop that work. */
+/** A request was called off: each helper's turn on that work stops, and the owner's call-off cancels its task. */
 export async function tellHelpersTheRequestEnded(pieces: Array<{ helper: string | null; thread: string }>, byOwner: boolean): Promise<void> {
+  const { decide } = await import('../work/done/decide.js');
   for (const piece of pieces) {
     if (!piece.helper) continue;
-    const task = getDb().prepare(
-      "SELECT id, title FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
-    ).get(piece.helper, piece.thread) as { id: string; title: string | null } | undefined;
-    const what = task ? `"${task.title ?? 'this work'}" [${task.id}]` : `the work on thread ${piece.thread.slice(0, A2A_THREAD_SHORT_LENGTH)}`;
-    await redriveWithoutReply({
-      toAgentId: piece.helper, fromAgentId: null, taskId: task?.id ?? null,
-      content: `[Engine] The request this work was for was called off${byOwner ? ' by the owner' : ''}. Stop working on ${what}: `
-        + 'hand it in as can\'t be done (work_update action="hand_in", outcome="cant_be_done", proof=[{kind:"remainder", ref:"<what is left>", '
-        + 'reason:"the request it was for was called off"}]), or, if you were made for this job, '
-        + 'end with complete_task(status="fallen"). Send nothing more about it.',
-    });
+    const task = (getDb().prepare(
+      "SELECT id FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
+    ).get(piece.helper, piece.thread) as { id: string } | undefined)?.id;
+    const live = turnContext(piece.helper);
+    if (live && [live.root?.id, live.servedJob, live.servedWork?.taskId].some((w) => w === piece.thread || (!!task && w === task))) stopAgent(piece.helper);
+    if (task && byOwner) decide({ workId: task, deciderAgentId: null, verdict: 'cancel', reason: 'the request it was for was called off by the owner' });
   }
 }
 
