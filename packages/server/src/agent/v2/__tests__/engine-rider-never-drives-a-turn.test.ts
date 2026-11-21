@@ -86,6 +86,7 @@ function seed(): Database.Database {
       id TEXT PRIMARY KEY, kind TEXT, state TEXT, agent_id TEXT,
       root_kind TEXT, root_id TEXT, opened_at INTEGER, closed_at INTEGER
     );
+    CREATE TABLE turns (agent_id TEXT, ended_at TEXT, exit_reason TEXT);
   `);
   db.prepare(`INSERT INTO agents (id, session_started_at) VALUES (?, '1970-01-01')`).run(AGENT);
   return db;
