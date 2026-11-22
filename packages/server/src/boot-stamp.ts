@@ -79,6 +79,11 @@ export function resolveSha(): { sha: string | null; shaSource: BootStamp['shaSou
   return { sha: null, shaSource: 'none' };
 }
 
+/** When the process that wrote the stamp on disk started, in epoch ms: read at boot before this process writes its own. */
+export function stampedStartMs(): number | null {
+  try { const at = Date.parse((JSON.parse(fs.readFileSync(bootStampPath(), 'utf-8')) as BootStamp).startedAt); return Number.isFinite(at) ? at : null; } catch { return null; }
+}
+
 /** Write the stamp; never throws, since a box that cannot write it must still boot. */
 export function writeBootStamp(): BootStamp | null {
   try {

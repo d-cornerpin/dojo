@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createLogger, setLogBroadcast } from './logger.js';
 import { getDb } from './db/connection.js';
 import { resetWorkingAgentsToIdleAtBoot } from './agent/agent-status.js';
+import { stampedStartMs } from './boot-stamp.js';
 import { runMigrations } from './db/migrations.js';
 import { abandonUnservableAsks } from './work/store.js';
 import { reconcileOrphanedClaims } from './work/orphaned-claims.js';
@@ -344,7 +345,7 @@ async function main(): Promise<void> {
   } catch { /* groups table may not exist yet on first boot */ }
 
   {
-    const repaired = resetWorkingAgentsToIdleAtBoot();
+    const repaired = resetWorkingAgentsToIdleAtBoot(stampedStartMs());
     if (repaired > 0) {
       logger.info(`Reset ${repaired} agent(s) from 'working' to 'idle' after restart`);
     }
