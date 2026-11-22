@@ -312,7 +312,7 @@ describe('a hand-in proof must be real and this task\'s', () => {
     expect(proofFor(TASK)).toEqual([]);
   });
 
-  it('proofFor finds the worker\'s delivery to the asker and a file write, and nothing from before the run', () => {
+  it('proofFor finds the worker\'s delivery to the asker in a turn that served the task and a file write, and nothing from before the run', () => {
     const since = Date.now() - 30_000;
     doneDb().prepare(
       `INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, opened_at, updated_at)
@@ -320,6 +320,9 @@ describe('a hand-in proof must be real and this task\'s', () => {
     ).run(TASK, WORKER, TASK, since, since);
     delivery('d-before', { at: since - 20_000 });
     delivery('d-new');
+    delivery('d-new-elsewhere', { text: 'The plumber comes on Tuesday.' });   // a line of a turn about other work
+    doneDb().prepare("INSERT INTO turns (agent_id, turn_number, root_kind, root_id, started_at, answered) VALUES (?, 1, 'occurrence', 'run-1', datetime('now', '-5 seconds'), 0)").run(WORKER);
+    doneDb().prepare("UPDATE deliveries SET turn_number = 1 WHERE id = 'd-new'").run();   // the run's own turn
     delivery('d-other-agent', { agent: OTHER });
     delivery('d-ack', { tool: 'engine-ack', text: 'On it: the 12-section report.' });
     delivery('d-a2a', { channel: 'a2a', recipient: STRANGER, tool: 'send_to_agent' });

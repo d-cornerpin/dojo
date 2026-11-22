@@ -39,18 +39,22 @@ export function freshBoard(worker = WORKER): void {
   ).run(TASK, worker, TASK, at, at);
 }
 
-/** The worker's own message to the owner, delivered: a proof item. Returns the delivery id. */
+/** The worker's own message to the owner, delivered in a turn that carried the task as its job: a proof item. Returns
+ *  the delivery id. */
 export function deliveredToOwner(agent = WORKER, text = 'The report has 12 sections; the totals are on page 3.'): string {
   const id = `dlv-${++n}`;
   const at = Math.floor(Date.now() / 1000) * 1000;
+  doneDb().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
+    VALUES (?, ?, ?, ?, 'answered', 1)`).run(agent, n, sqlTime(at - 1000), sqlTime(at + 1000));
+  appendWorkEvent(TASK, 'claim_turn', 'engine', { turn_number: n, agent_id: agent, how: 'job' });
   doneDb().prepare(
     `INSERT INTO messages (id, agent_id, lane, role, content, authorized, sent_at, created_at)
      VALUES (?, ?, 'owner', 'assistant', ?, 1, ?, ?)`,
   ).run(`msg-${id}`, agent, text, at, at);
   doneDb().prepare(
-    `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, message_id, outcome, created_at, updated_at)
-     VALUES (?, ?, 'auto-route', 'dashboard', NULL, ?, 'delivered', ?, ?)`,
-  ).run(id, agent, `msg-${id}`, sqlTime(at), sqlTime(at));
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, message_id, outcome, created_at, updated_at)
+     VALUES (?, ?, ?, 'auto-route', 'dashboard', NULL, ?, 'delivered', ?, ?)`,
+  ).run(id, agent, n, `msg-${id}`, sqlTime(at), sqlTime(at));
   return id;
 }
 

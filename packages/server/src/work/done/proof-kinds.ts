@@ -8,7 +8,7 @@ import { measureReadsZero } from '../measure-close-gate.js';
 import { ENGINE_SENT_TOOLS, ENGINE_JOIN_RELAY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlement.js';
 import { START_ACK_ORIGIN_INTENT } from '../../memory/origin-intents.js';
 import { askerOf, deliveredToAsker, type Asker } from './asker.js';
-import { requestsTakenUpBy, servedBy } from '../task-turns.js';
+import { servedBy, takenUp, type Served } from '../task-turns.js';
 import { occurrenceOwesDeliverable } from '../deliverable-declaration.js';
 import { fileFacts } from './file-facts.js';
 
@@ -27,7 +27,11 @@ export interface ProofTask { id: string; title: string | null; openedAt: number;
 /** `byEngine`: the engine files this hand-in for its worker. The delivery it cites may then go to whoever
  *  the work serves (a scheduled run's line to a third party), and may be the engine's own join relay of
  *  the work; every other engine line stays refused. */
-export interface ProofContext { task: ProofTask; asker: Asker; workerId: string; outcome: HandInOutcome; byEngine?: boolean }
+export interface ProofContext {
+  task: ProofTask; asker: Asker; workerId: string; outcome: HandInOutcome; byEngine?: boolean;
+  /** What each turn served, read once per turn within one proof check. */
+  turns?: Map<string, Served[]>;
+}
 export type Resolution = { ok: true; item: ResolvedItem } | { ok: false; why: string };
 
 /** The label every reader shows for each kind. A delivery is the worker's own message, never "the answer". */
@@ -84,15 +88,35 @@ export const openedFloor = (task: ProofTask): number => Math.floor(task.openedAt
 /** `datetime('now')` text for an instant, floored to its second: how the rows below stamp their time. */
 export const sqlFloor = (ms: number): string => new Date(Math.floor(ms / 1000) * 1000).toISOString().replace('T', ' ').slice(0, 19);
 
+/** What `agentId`'s turn served, once per turn and check: about this task and its request alone, or all of it. */
+function servedOf(ctx: ProofContext, agentId: string, turn: number, aboutTask: boolean): Served[] {
+  const key = `${agentId}#${turn}#${aboutTask}`;
+  const seen = (ctx.turns ??= new Map()).get(key);
+  if (seen) return seen;
+  const served = servedBy(agentId, turn, aboutTask ? [ctx.task.id, ctx.task.ask?.id ?? ctx.task.id] : undefined);
+  ctx.turns.set(key, served);
+  return served;
+}
+/** Did `agentId`'s turn serve the task, one of its runs or its request? */
+export const turnServedTask = (ctx: ProofContext, agentId: string, turn: number | null): boolean =>
+  turn !== null && servedOf(ctx, agentId, turn, true).some((s) => s.id === ctx.task.id || s.id === ctx.task.ask?.id);
 type Addressed = { channel: string; recipient_id: string | null; conversation_id: string | null };
 /** Is the record of `agentId`'s turn `turn` tied to the task: `yes` when that turn served the task, one of its runs or
  *  its request; `ambiguous` when a delivery `to` the asker also reaches the asker of another task whose open run the
  *  turn served and which owes a message; else `no`. */
 function tieOf(ctx: ProofContext, agentId: string, turn: number | null, to?: Addressed): 'yes' | 'no' | 'ambiguous' {
-  const served = turn === null ? [] : servedBy(agentId, turn);
-  if (!served.some((s) => s.id === ctx.task.id || s.id === ctx.task.ask?.id)) return 'no';
-  const other = (runId: string): string | null => { const o = occurrenceOwesDeliverable(runId); return o.owes && o.taskId !== ctx.task.id ? o.taskId : null; };
-  return to && served.some((s) => { const t = s.kind === 'occurrence' ? other(s.id) : null; return !!t && deliveredToAsker(askerOf(t), to); }) ? 'ambiguous' : 'yes';
+  if (!turnServedTask(ctx, agentId, turn)) return 'no';
+  if (!to || turn === null) return 'yes';
+  const owingOther = (s: Served): string | null => {
+    if (s.kind !== 'occurrence') return null;
+    const o = occurrenceOwesDeliverable(s.id);
+    return o.owes && o.taskId !== ctx.task.id ? o.taskId : null;
+  };
+  const shared = servedOf(ctx, agentId, turn, false).some((s) => {
+    const other = owingOther(s);
+    return !!other && deliveredToAsker(askerOf(other), to);
+  });
+  return shared ? 'ambiguous' : 'yes';
 }
 const excerpt = (text: string | null | undefined): string => (text ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
 const claim = (ctx: ProofContext, text: string): boolean => isStatusClaimOnly(text, { id: ctx.task.id, title: ctx.task.title });
@@ -141,7 +165,7 @@ const isEngineTool = (tool: string): boolean => ENGINE_SENT_TOOLS.has(tool) || t
 function startLineOfItsTurn(ctx: ProofContext, ref: string, d: { agent_id: string; turn_number: number | null }): boolean {
   const ask = ctx.task.ask;
   if (d.turn_number === null || !ask || ref === ask.receipt
-    || !requestsTakenUpBy(d.agent_id, d.turn_number).includes(ask.id)) return false;
+    || !takenUp(servedOf(ctx, d.agent_id, d.turn_number, true)).includes(ask.id)) return false;
   const db = getDb();
   // The worker's own lines to the asker only: never the engine's, never a tool chip or working note.
   const lines = (db.prepare(

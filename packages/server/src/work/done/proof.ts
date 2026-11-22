@@ -5,7 +5,7 @@
 // Neither judges whether the proof meets the goal: a decider does that after opening it.
 import { getDb } from '../../db/connection.js';
 import { measureReadsZero } from '../measure-close-gate.js';
-import { PROOF_LABELS, resolveItem, sqlFloor, type HandInOutcome, type ProofContext, type ProofItemInput, type ProofKind, type ProofTask, type ResolvedItem } from './proof-kinds.js';
+import { PROOF_LABELS, resolveItem, sqlFloor, turnServedTask, type HandInOutcome, type ProofContext, type ProofItemInput, type ProofKind, type ProofTask, type ResolvedItem } from './proof-kinds.js';
 import { askerOf } from './asker.js';
 
 export type { HandInOutcome, ProofItemInput, ProofKind, ResolvedItem } from './proof-kinds.js';
@@ -66,13 +66,15 @@ export function checkProof(
 }
 
 type Found = 'delivery' | 'file' | 'receipt' | 'measure';
-type Finder = (workId: string, worker: string, floor: string) => ProofItemInput[];
+type Finder = (workId: string, worker: string, floor: string, ctx: ProofContext) => ProofItemInput[];
 
 const FINDERS: Record<Found, Finder> = {
-  delivery: (_w, worker, floor) => (getDb().prepare(
-    `SELECT id FROM deliveries WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack' AND created_at >= ?
+  // Only lines whose turn served the task: each turn is asked once, about this task alone.
+  delivery: (_w, worker, floor, ctx) => (getDb().prepare(
+    `SELECT id, turn_number AS turn FROM deliveries WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack' AND created_at >= ?
       ORDER BY created_at, rowid`,
-  ).all(worker, floor) as Array<{ id: string }>).map((d) => ({ kind: 'delivery', ref: d.id })),
+  ).all(worker, floor) as Array<{ id: string; turn: number | null }>)
+    .filter((d) => turnServedTask(ctx, worker, d.turn)).map((d) => ({ kind: 'delivery', ref: d.id })),
   file: (workId) => (getDb().prepare(
     "SELECT substr(item_key, 6) AS path FROM work_ledger WHERE work_id = ? AND item_key LIKE 'file:%' ORDER BY last_at, item_key",
   ).all(workId) as Array<{ path: string }>).map((f) => ({ kind: 'file', ref: f.path })),
@@ -95,7 +97,7 @@ function found(workId: string, kinds: readonly Found[], byEngine = false, tiedOn
   const ctx: ProofContext = { task, asker: askerOf(workId), workerId: task.worker, outcome: 'finished', byEngine };
   const counts = (i: ResolvedItem): boolean =>
     !(byEngine && NO_PERSON_CHANNELS.has(String(i.facts.channel))) && !(tiedOnly && i.facts.tied === 'no');
-  return kinds.flatMap((k) => FINDERS[k](workId, task.worker, sqlFloor(task.openedAt)))
+  return kinds.flatMap((k) => FINDERS[k](workId, task.worker, sqlFloor(task.openedAt), ctx))
     .flatMap((c) => { const r = resolveItem(ctx, c); return r.ok && counts(r.item) ? [r.item] : []; });
 }
 
