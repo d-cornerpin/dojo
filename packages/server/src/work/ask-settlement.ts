@@ -635,7 +635,7 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     if (ctx.rowid != null && ctx.turnNumber != null) {
       recordServingTurnByRowid({ agentId: ask.agent_id, rowid: ctx.rowid, servedByTurn: ctx.turnNumber });
     }
-    handInCardsOf(ask, evidence.id);
+    handInCardsOf(ask, evidence.id, false);
     return out('closed', `delivered via ${evidence.tool}`, evidence.id);
   }
 
@@ -817,7 +817,7 @@ function settleOnJoin(
   appendWorkEvent(ask.id, 'compile_resolved', actorId, {
     reason, basis, delivery_id: evidence.id, tool: evidence.tool, boundary_at: boundaryMs,
   });
-  handInCardsOf(ask, evidence.id);
+  handInCardsOf(ask, evidence.id, ENGINE_SENT_TOOLS.has(evidence.tool));
   logger.info('join settled: the compiled answer reached the owner', {
     agentId: ask.agent_id, workId: ask.id, deliveryId: evidence.id, tool: evidence.tool,
   }, ask.agent_id);
@@ -867,11 +867,12 @@ function handInOnDelivery(agentId: string, tasks: () => Promise<string[]>, becau
   }).catch((err: unknown) => logger.warn('a delivered job\'s tasks were not handed in', { deliveryId, error: String(err) }, agentId)));
 }
 
-/** On any answer the card a park opened for the request is handed in. */
-function handInCardsOf(ask: AskRow, deliveryId: string): void {
+/** On any answer the card a park opened for the request is handed in; on the Dojo's own delivery of a delegated answer
+ *  the agent's own open cards for it too, since the agent will not finish them. */
+function handInCardsOf(ask: AskRow, deliveryId: string, agentsCards: boolean): void {
   const ids = (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')}
-      AND t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}' AND t.title = '${PARKED_JOB_TITLE}'`)
-    .all(ask.agent_id, ask.root_id) as Array<{ id: string }>).map((r) => r.id);
+      AND ((t.origin_kind = 'model' AND ? = 1) OR (t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}' AND t.title = '${PARKED_JOB_TITLE}'))`)
+    .all(ask.agent_id, ask.root_id, agentsCards ? 1 : 0) as Array<{ id: string }>).map((r) => r.id);
   if (ids.length > 0) handInOnDelivery(ask.agent_id, async () => ids, 'the request this task was opened for was answered', deliveryId);
 }
 

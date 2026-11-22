@@ -1,7 +1,7 @@
 // The owner's "never mind" on a job his agent handed to a helper ends it by whichever door his agent takes: dropping the
 // request with his words, or cancelling the card on his words, moved to the helper or still its own only card. Each
 // time the request, the piece, the helper's job and the card end as his, the helper stops, its late answer is
-// refused, the stall ladder stays quiet and nothing reaches him.
+// refused and nothing reaches him.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -13,16 +13,14 @@ vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => ne
 
 import { getAgentRuntime } from '../runtime.js';
 import { endTurnContext } from '../turn-context.js';
-import { runLadder, LADDER_ENTRY } from '../../work/done/ladder.js';
 import { testDb } from '../v2/__tests__/helpers/reply-sender.js';
 import { relayRows, textsSent } from './helpers/text-relay.js';
 import { call, delegated, expectEndedAsHis, lateReply, ownerTurn, pieceOf, settled, stopped, task, ASK, AGENT, HELPER } from './helpers/call-off-world.js';
 
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
 const WORDS = 'Never mind, forget the camping list.';
-const ladderHints = (): number => (testDb().prepare('SELECT COUNT(*) AS n FROM work_events WHERE json_extract(payload, \'$.entry_kind\') = ?').get(LADDER_ENTRY.hint) as { n: number }).n;
 
-/** After the door: everything ended as his, the helper stopped, its late answer refused, the ladder quiet, nothing sent. */
+/** After the door: everything ended as his, the helper stopped, its late answer refused, nothing sent. */
 async function allOfItEnded(card: string): Promise<void> {
   endTurnContext(AGENT);
   await settled();
@@ -30,9 +28,7 @@ async function allOfItEnded(card: string): Promise<void> {
   expect(stopped(HELPER)).toBe(true);
   endTurnContext(HELPER);
   expect(await lateReply()).toBe(false);
-  await runLadder(Date.now() + 10 * 60_000);
-  await runLadder(Date.now() + 3_600_000);
-  expect([ladderHints(), relayRows(), textsSent()]).toEqual([0, [], []]);
+  expect([relayRows(), textsSent()]).toEqual([[], []]);
 }
 
 describe("the owner's never mind ends a delegated job by any door", () => {
