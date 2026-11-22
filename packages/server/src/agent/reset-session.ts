@@ -74,7 +74,7 @@ export async function resetSession(targetId: string, opts: ResetSessionOptions):
   if (healed) {
     writeAgentStatus(targetId, 'idle', { clearError: true });
     broadcast({ type: 'agent:status', agentId: targetId, status: 'idle' });
-    try { onAgentRecovered(targetId); } catch { /* recovery bookkeeping never fails a reset */ }
+    try { onAgentRecovered(targetId, 'cooldown'); } catch { /* a reset is not a completed turn; never fails a reset */ }
   }
 
   logger.info('Session reset', { callerAgentId: opts.callerAgentId, targetAgentId: targetId, archiveId }, targetId);

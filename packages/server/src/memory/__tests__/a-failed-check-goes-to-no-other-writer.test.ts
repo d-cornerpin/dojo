@@ -36,6 +36,7 @@ import { writeUncondensedPlaceholders, replaceUncondensedPlaceholders, hasUncond
 import { __resetSummaryWriterHealthForTests } from '../writer.js';
 import { STANDARD_DECISION_MODEL } from '../../services/local-standard.js';
 import { generateSummary } from '../summarize.js';
+import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
 
 const AGENT = 'agent-check-walk';
 const db = (): Database.Database => mockDb.current!;
@@ -110,6 +111,20 @@ describe('fix round 2 (ORCHESTRATOR RULING): a span that failed its check', () =
     writers.fine.add('SPAN-B');
     await generateSummary({ ...span, content: rows('SPAN-B'), spanIds: ['msg-9', 'msg-10'], modelId: 'paid-own' });
     expect(refused()).toEqual([`${AGENT}|paid-own|msg-1`, `${AGENT}|paid-own|msg-2`]);
+  });
+
+  it('a model switched away and back does not hand the same writer the span it already failed', async () => {
+    const maxSeq = (db().prepare('SELECT MAX(seq) AS s FROM messages WHERE agent_id = ?').get(AGENT) as { s: number }).s;
+    writeUncondensedPlaceholders(AGENT, maxSeq);
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(writers.calls).toEqual(['paid-own', 'paid-own']);
+    for (const model of ['writer-small', 'paid-own']) {
+      db().prepare('UPDATE agents SET model_id = ? WHERE id = ?').run(model, AGENT);
+      sanitizeMessagesOnModelChange(AGENT);
+    }
+    writers.calls.length = 0;
+    await replaceUncondensedPlaceholders(AGENT);
+    expect(writers.calls).toEqual([]);
   });
 
   it('(iii) never blocks the newer placeholders of the agent: each span is its own', async () => {
