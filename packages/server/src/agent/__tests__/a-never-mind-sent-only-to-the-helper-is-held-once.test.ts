@@ -1,6 +1,6 @@
 // "Never mind" with no model: in a turn on the owner's new message, his main agent's first message (not a new job) to
-// a helper still working another of his requests is held once, naming that request by its id and the one door that
-// ends it with his words, whatever channel he wrote on; sent again, it goes. A contact's message never holds it.
+// a helper still working another of his requests is held once, naming that request by its id, passing it on by a re-send
+// and the door that ends it on his words, whatever channel he wrote on; sent again, it goes. A contact's message never holds it.
 import { describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
@@ -16,7 +16,7 @@ import { turnContext } from '../turn-context.js';
 import { initState } from '../v2/state.js';
 import { runRefusalGates } from '../v2/steps/execute/refusal-gates.js';
 import { buildOpenWorkInjection } from '../../work/obligations.js';
-import { call, delegated, expectEndedAsHis, ownerTurn, pieceOf, settled, ASK, AGENT, HELPER, THREAD } from './helpers/call-off-world.js';
+import { call, delegated, expectEndedAsHis, ownerTurn, pieceOf, settled, stateOf, ASK, AGENT, HELPER, THREAD } from './helpers/call-off-world.js';
 
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
 
@@ -48,6 +48,19 @@ describe('a never mind sent only to the helper is held once', () => {
     const seen = new Set<string>();
     expect(send({ intent: 'FYI', thread_id: THREAD, payload: 'Stand down.' }, seen)).toContain(`[${ASK}]`);
     expect(send({ intent: 'QUESTION', payload: 'And how many towels?' }, seen)).toBeNull();
+  });
+
+  it('an add-on is held as a plain fact with both ways on, and the same send again passes with the request alive', () => {
+    delegated();
+    ownerTurn('m-2', 'Also have her include parking.');
+    const seen = new Set<string>();
+    const addOn = { intent: 'FYI', thread_id: THREAD, payload: 'Also include parking, please.' };
+    const held = send(addOn, seen) ?? '';
+    const resend = held.indexOf('send it again');
+    const close = held.indexOf(`only if he called that request off, end it with work_close_request(id="${ASK}"`);
+    expect([resend > 0, close > resend]).toEqual([true, true]);
+    expect(send(addOn, seen)).toBeNull();
+    expect(stateOf(ASK)).not.toBe('abandoned');
   });
 
   it("a new job for the same helper, or a contact's message, is never held", () => {

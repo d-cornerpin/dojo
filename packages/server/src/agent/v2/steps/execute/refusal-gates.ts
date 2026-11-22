@@ -69,7 +69,7 @@ function repeatSend(agentId: string, tc: ToolCall, turnCtx: TurnContext, refused
 }
 
 /** "Never mind", with no model: in a turn on the owner's new message, the main agent's first message (not a new job)
- *  to a helper still working another of his requests is held once, naming that request and the door that ends it. */
+ *  to a helper still working another of his requests is held once, naming that request and both ways on. */
 function neverMindHold(agentId: string, tc: ToolCall, turnCtx: TurnContext, refusedOnceSigs: Set<string>): PendingToolResult | null {
   const a = (tc.arguments ?? {}) as Record<string, unknown>;
   if (tc.name !== 'send_to_agent' || String(a.intent).toUpperCase() === 'ASSIGN' || !isPrimaryAgent(agentId) || turnCtx.root?.kind !== 'ask'
@@ -81,8 +81,8 @@ function neverMindHold(agentId: string, tc: ToolCall, turnCtx: TurnContext, refu
     .all(`ask:${turnCtx.root.id}`, agentId, helper.id) as Array<Parameters<typeof ownerWords>[0] & { id: string; title: string | null }>).find((r) => ownerWords(r, 0) !== null) : undefined;
   if (!other) return null;
   refusedOnceSigs.add('never-mind');
-  return { toolCallId: tc.id, name: tc.name, isError: true, content: `[Engine: not sent yet] ${String(a.agent)} is working on his earlier request ${other.title ? `"${other.title}" ` : ''}[${other.id}]. If his message calls it off, end it with `
-    + `work_close_request(id="${other.id}", disposition="dropped", note=<his exact words>): the Dojo stops the job and nothing more comes back. If not, send your message again; it will go.` };
+  return { toolCallId: tc.id, name: tc.name, isError: true, content: `[Engine: not sent yet] ${String(a.agent)} is still working on his earlier request ${other.title ? `"${other.title}" ` : ''}[${other.id}]. `
+    + `To pass your message on, send it again and it will go; only if he called that request off, end it with work_close_request(id="${other.id}", disposition="dropped", note=<his exact words>).` };
 }
 
 /** `refusal` non-null means the call does NOT run and this is its result. */
