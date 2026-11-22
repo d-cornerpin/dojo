@@ -13,13 +13,13 @@ import { stopByOwner } from '../runtime.js';
 import { openTurnContext, endTurnContext, type TurnRoot } from '../turn-context.js';
 import { insertEngineEventIfAbsent } from '../../memory/message-store.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
+import { liveTurn } from '../v2/__tests__/helpers/live-turn.js';
 import { delegatedTextRequest, requestState, THREAD, ASK } from './helpers/text-relay.js';
 
 beforeEach(() => delegatedTextRequest());
 
 function stopDuring(root: TurnRoot): void {
-  const bag = openTurnContext(AGENT);
-  Object.assign(bag, { turnNumber: 2, root });
+  liveTurn(AGENT, { turnNumber: 2, root });
   expect(stopByOwner(AGENT)).toMatchObject({ ended: 1 });
   endTurnContext(AGENT);
 }

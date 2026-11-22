@@ -78,6 +78,7 @@ import { contextWindowPolicy, estimateTokens } from '../../../memory/budget.js';
 import { resultReadHandlers } from '../../tools/cat/result-read.js';
 import { compactionFailureReason } from '../../../memory/compaction-defect.js';
 import { openTurnContext, endTurnContext } from '../../turn-context.js';
+import { liveTurn } from './helpers/live-turn.js';
 import * as coldImport1 from '../../../memory/window-starvation-card.js';
 import * as coldImport2 from '../full-context-wait.js';
 
@@ -155,9 +156,7 @@ const jobPickedUp = (): void => { db().prepare("UPDATE work SET next_attempt_at 
 /** One turn's recovery: the turn serves the owner's latest request, so its park has a task to date. */
 async function recover(err: unknown, turnNumber: number): Promise<void> {
   const ask = (db().prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1").get(AGENT) as { id: string }).id;
-  const bag = openTurnContext(AGENT);
-  bag.turnNumber = turnNumber;
-  bag.root = { kind: 'ask', id: ask, sourceMessageId: ask };
+  const bag = liveTurn(AGENT, { turnNumber: turnNumber, root: { kind: 'ask', id: ask, sourceMessageId: ask } });
   try { await recoverWith(err, turnNumber); } finally { endTurnContext(AGENT); }
 }
 

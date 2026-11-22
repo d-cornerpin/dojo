@@ -56,16 +56,16 @@ export function clearAgentLastError(agentId: string): void {
   `).run(agentId);
 }
 
-// Boot sweep: a dead process leaves rows 'working'; restart is the only thing that can know that.
-// No updated_at bump (the 75-minute reaper reads it); the read happens BEFORE the update because
-// after it no row reads working and the loop closes nothing. Turn rows are closed here: a row set
-// idle is never revisited by the 75-minute reaper.
-export function resetWorkingAgentsToIdleAtBoot(): number {
-  const crashed = getDb()
-    .prepare("SELECT id FROM agents WHERE status = 'working'")
-    .all() as Array<{ id: string }>;
+// Boot sweep: no turn survives a restart (no updated_at bump: the 75-minute reaper reads it). A turn an older process
+// left (started before `previousStartMs`; with no stamp, any but a working agent's newest) closes at its own start.
+export function resetWorkingAgentsToIdleAtBoot(previousStartMs: number | null = null): number {
+  getDb().prepare(`UPDATE turns SET ended_at = started_at, exit_reason = 'terminated', answered = 0 WHERE ended_at IS NULL
+    AND (unixepoch(started_at) < @prev OR (@prev IS NULL AND (agent_id NOT IN (SELECT id FROM agents WHERE status = 'working')
+      OR turn_number < (SELECT MAX(o.turn_number) FROM turns o WHERE o.agent_id = turns.agent_id AND o.ended_at IS NULL))))`)
+    .run({ prev: previousStartMs === null ? null : Math.floor(previousStartMs / 1000) });
+  const open = getDb().prepare('SELECT DISTINCT agent_id AS id FROM turns WHERE ended_at IS NULL').all() as Array<{ id: string }>;
   let turnsClosed = 0;
-  for (const c of crashed) turnsClosed += markTurnsTerminated(c.id);
+  for (const c of open) turnsClosed += markTurnsTerminated(c.id);
   if (turnsClosed > 0) {
     logger.info(`Closed ${turnsClosed} turn record(s) left open by a run that died mid-turn, as 'terminated'`);
   }

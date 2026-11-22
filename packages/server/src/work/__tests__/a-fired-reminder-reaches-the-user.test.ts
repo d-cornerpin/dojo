@@ -53,6 +53,8 @@ import {
 import { declareDeliverableOnSchedule } from '../deliverable-declaration.js';
 import { seedTrackerTask } from './work-fixture.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
+import { liveTurn } from '../../agent/v2/__tests__/helpers/live-turn.js';
+import { endTurnContext } from '../../agent/turn-context.js';
 
 const AGENT = FXID.n4;
 const CONV = 'conv-1';
@@ -259,7 +261,7 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
 
   it('an UNSTEERED run with a real delivery is ready to close (the driven repro)', () => {
     const run = claim();
-    seedTurn(4621);
+    seedTurn(4621, { root_id: run });
     deliverInRun('d-real', 'agent-text', 4621, run);
     const ready = runsReadyToCloseOnDelivery();
     expect(ready.map((r) => r.occurrenceId)).toContain(run);
@@ -273,7 +275,7 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
 
   it('CONTROL: an unsteered run whose only receipts are chips is left alone', () => {
     const run = claim();
-    seedTurn(4621);
+    seedTurn(4621, { root_id: run });
     deliverInRun('d-chip', 'tool-turn', 4621, run);
     expect(runsReadyToCloseOnDelivery()).toEqual([]);
   });
@@ -281,8 +283,10 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
   it('a run whose own turn is still RUNNING is not closed out from under it', () => {
     const run = claim();
     seedTurn(4621, { ended_at: null, exit_reason: null, root_id: run });
+    liveTurn(AGENT, { turnNumber: 4621 });   // the worker is running it now
     deliverInRun('d-real', 'agent-text', 4621, run);
     expect(runsReadyToCloseOnDelivery().map((r) => r.occurrenceId)).not.toContain(run);
+    endTurnContext(AGENT);
   });
 
   // ⚠ THE DRIVEN CATCH, PINNED. The first draft of the in-flight guard asked "does this AGENT
@@ -293,7 +297,7 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
     const run = claim();
     // a stranded row from some other work, months old, never ended
     seedTurn(1234, { ended_at: null, exit_reason: null, root_kind: 'ask', root_id: null });
-    seedTurn(4621);
+    seedTurn(4621, { root_id: run });
     deliverInRun('d-real', 'agent-text', 4621, run);
     expect(runsReadyToCloseOnDelivery().map((r) => r.occurrenceId)).toContain(run);
   });
@@ -301,7 +305,7 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
   it('CONTROL: a task that owes nobody a message is never swept by this arm', () => {
     seedSchedule('sched-backup', null);
     const run = claim('sched-backup');
-    seedTurn(4621);
+    seedTurn(4621, { root_id: run });
     deliverInRun('d-real', 'agent-text', 4621, run);
     expect(runsReadyToCloseOnDelivery().map((r) => r.occurrenceId)).not.toContain(run);
   });

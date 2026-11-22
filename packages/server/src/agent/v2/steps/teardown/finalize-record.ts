@@ -259,14 +259,12 @@ export async function finalizeTurnRecord(
         } catch { /* best effort, like every arm of this boundary */ }
       }
     }
-    // The one task-stamping point: what the engine observed goes onto every task this root touched.
+    // The one task-stamping point: what the engine observed goes onto every task this turn served.
     try {
       const { stampTasksAtTurnFinalize } = await import('../../../../tracker/task-stamps.js');
-      const stampRoot = turnCtx.root;
       stampTasksAtTurnFinalize({
         agentId, turnNumber, outcome,
         answerMessageId: answerRow?.id ?? null,
-        rootSourceMessageId: stampRoot?.sourceMessageId ?? null,
         convKey: chosenConvKey ?? null,
         servedTaskId: turnCtx.servedWork?.taskId ?? null,
       });

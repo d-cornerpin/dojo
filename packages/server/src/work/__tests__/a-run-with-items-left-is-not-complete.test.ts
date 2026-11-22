@@ -134,8 +134,9 @@ const stateOf = (id: string): string =>
   (db().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string }).state;
 
 
-/** A delivery INSIDE the run's window, pointing at a row of the given display kind. */
+/** A delivery INSIDE the run's window, made in the run's own turn, pointing at a row of the given display kind. */
 function deliverInRun(id: string, displayKind: string, turnNumber: number, run: string): void {
+  db().prepare('UPDATE turns SET root_id = ? WHERE agent_id = ? AND turn_number = ?').run(run, AGENT, turnNumber);
   const msg = seedMessage(`m-${id}`, displayKind);
   seedDelivery(id, { message_id: msg, turn_number: turnNumber, root_kind: 'occurrence', root_id: run });
 }

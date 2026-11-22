@@ -24,19 +24,16 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { listTaskLog, writeTaskLog } from '../../tracker/task-log.js';
 import { noteEngineCheckpoint } from '../engine-checkpoint-note.js';
-import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { endTurnContext } from '../../agent/turn-context.js';
+import { liveTurn } from '../../agent/v2/__tests__/helpers/live-turn.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 /** t143 round 2: a park happens INSIDE a turn, and touches only the work that turn's trigger names.
  *  Here the trigger is the owner's ask `msg-job`, which opened the job's task (or project). */
 function park(reason: 'turn-budget', turnNumber = 5, ask: string | null = 'msg-job'): number {
-  const tc = openTurnContext(AGENT);
-  tc.turnNumber = turnNumber;
-  tc.root = ask ? { kind: 'ask', id: ask, sourceMessageId: ask } : null;
-  if (!ask) {   // a trigger-less park here is the job's own turn, started from its task
-    tc.servedJob = 'w-job';
-    tc.servedWork = { taskId: 'w-job', runId: null, taskKind: null, originConvKey: null };
-  }
+  // A trigger-less park here is the job's own turn, started from its task.
+  liveTurn(AGENT, ask ? { turnNumber, root: { kind: 'ask', id: ask, sourceMessageId: ask } }
+    : { turnNumber, root: null, servedJob: 'w-job', servedWork: { taskId: 'w-job', runId: null, taskKind: null, originConvKey: null } });
   try { return noteEngineCheckpoint(AGENT, reason); } finally { endTurnContext(AGENT); }
 }
 
@@ -47,7 +44,7 @@ const T = 1_700_000_000_000;
 function seedWork(id: string, over: Record<string, unknown> = {}): void {
   const row: Record<string, unknown> = {
     id, kind: 'task', parent_id: null, agent_id: AGENT, assignee_agent: null,
-    requester: 'owner', requester_id: 'owner', conversation_id: null,
+    requester: 'agent', requester_id: AGENT, conversation_id: null,
     root_kind: 'tracker', root_id: id, state: 'claimed', claimed_by_turn: null,
     result_delivery_id: null, intent: 'do-it', wakes: 1, closes_thread: 0,
     hop_count: 0, superseded_by: null, title: 'a thing', goal: null, priority: 'normal',
@@ -109,9 +106,8 @@ describe('an engine checkpoint carries the job and notes it, without moving it',
     expect(park('turn-budget', 7)).toBe(1);
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
     const { stampTasksAtTurnFinalize } = await import('../../tracker/task-stamps.js');
-    const tc = openTurnContext(AGENT);   // an unrelated wake: no root, no served work, and it does not park
-    tc.turnNumber = 8;
-    stampTasksAtTurnFinalize({ agentId: AGENT, turnNumber: 8, outcome: 'answered', answerMessageId: null, rootSourceMessageId: null, convKey: null, servedTaskId: null });
+    liveTurn(AGENT, { turnNumber: 8, root: null });   // an unrelated wake: no root, no served work, and it does not park
+    stampTasksAtTurnFinalize({ agentId: AGENT, turnNumber: 8, outcome: 'answered', answerMessageId: null, convKey: null, servedTaskId: null });
     endTurnContext(AGENT);
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
     expect(park('turn-budget', 9, null)).toBe(1); // the job's own turn still names the job

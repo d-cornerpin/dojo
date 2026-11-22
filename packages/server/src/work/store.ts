@@ -19,7 +19,7 @@ import { isPrimaryAgent } from '../config/platform.js';
 import type { WorkEventKind } from './event-kinds.js';
 import { noSuchWorkDetail } from './outcome.js';
 import { retireObligationMemory } from './obligation-memory.js';
-import { notifyTaskEnded } from './task-ended.js';
+import { notifyPieceEnded, notifyTaskEnded } from './task-ended.js';
 import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
 import type { TransitionApplied, WorkOutcome } from './outcome.js';
 import { heldByOwnerSql } from './tracker-view.js';
@@ -232,19 +232,23 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   const at = now();
 
   withUnit(() => {
-    // A request that ends ends its open pieces with it: called off, they are abandoned and their helpers' work stopped;
-    // failed, they fail, nobody is told, and a late answer takes the late road.
-    const ends = row.kind === 'ask' && (input.to === 'abandoned' || input.to === 'failed') && !isTerminal(from);
-    const pieces = ends ? db.prepare(`SELECT id, assignee_agent AS helper, root_id AS thread, agent_id AS asker FROM work
-      WHERE parent_id = ? AND kind = 'task' AND state IN ${CHILD_OPEN_STATES}`).all(workId) as Array<{ id: string; helper: string | null; thread: string; asker: string }> : [];
-    const ended = pieces.filter((p) => transition(p.id, {
-      to: input.to, by: input.by, actorId, evidenceRef: input.evidenceRef,
-      reason: input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',
-    }).kind === 'applied');
-    if (ended.length > 0 && input.to === 'abandoned') {
+    // Work that ends ends its open pieces with it, at any depth: called off, they are abandoned; failed, they fail,
+    // nobody is told, and a late answer takes the late road. A board task finished leaves nothing it handed on open.
+    const ends = (input.to === 'abandoned' || input.to === 'failed') && !isTerminal(from);
+    const finished = input.to === 'done' && row.kind === 'task' && row.root_kind !== 'a2a_thread' && !isTerminal(from);
+    const pieces = ends || finished ? db.prepare(`SELECT id FROM work WHERE parent_id = ? AND root_kind = 'a2a_thread' AND state IN ${CHILD_OPEN_STATES}`).all(workId) as Array<{ id: string }> : [];
+    for (const p of pieces) {
+      transition(p.id, {
+        to: finished ? 'abandoned' : input.to, by: input.by, actorId, evidenceRef: input.evidenceRef,
+        reason: finished ? 'the work it was for is finished' : input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',
+      });
+    }
+    // Called off (not given up by the engine, which keeps the late road): the work under it stops with it.
+    const calledOff = ends && input.to === 'abandoned' && input.by !== 'scheduler';
+    if (calledOff && (row.kind === 'ask' || row.root_kind === 'a2a_thread')) {
       afterCommit(() => void import('../agent/a2a-transport.js')
-        .then((m) => m.tellHelpersTheRequestEnded(ended, input.by === 'owner'))
-        .catch((err: unknown) => logger.warn('the helpers of an ended request were not told', { workId, error: String(err) })));
+        .then((m) => m.endTheWorkUnder(workId, input.by === 'owner', actorId))
+        .catch((err: unknown) => logger.warn('the work under an ended request was not ended', { workId, error: String(err) })));
     }
 
     db.prepare(
@@ -282,6 +286,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       claim: input.claim ?? null,
       note: input.note ?? null,
     }, at);
+    // A piece called off takes its helper's job with it, in this unit (`work/done/decide.ts`).
+    if (calledOff && row.root_kind === 'a2a_thread') notifyPieceEnded(workId, input.by === 'owner');
 
     // EFFECT: a child settling decrements its parent's countdown in the same transaction as its own state
     // change, guarded at zero so a double-settle cannot drive it negative.
@@ -325,7 +331,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   }
 
   // A task ended or handed in may settle its owner's request; one ended undone also judges the request on its thread.
-  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal && input.to !== 'done' ? row.a2a_thread_id : null, input.by === 'owner');
+  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal && input.to !== 'done' ? row.a2a_thread_id : null);
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
   return { kind: 'applied', value };
@@ -407,7 +413,7 @@ export function stampClaimingTurn(workId: string, turnNumber: number): number {
 export function claimingTurnOf(workId: string): number | null {
   const r = getDb().prepare(
     `SELECT json_extract(payload, '$.turn_number') AS t FROM work_events
-      WHERE work_id = ? AND kind = 'claim_turn' ORDER BY id DESC LIMIT 1`,
+      WHERE work_id = ? AND kind = 'claim_turn' AND json_extract(payload, '$.how') IS NULL ORDER BY id DESC LIMIT 1`,
   ).get(workId) as { t: number | null } | undefined;
   return r?.t ?? null;
 }
@@ -417,6 +423,18 @@ export function firstServedAt(workId: string): number | null {
   return (getDb().prepare(`SELECT MIN(created_at) AS at FROM work_events WHERE work_id = ? AND kind = 'claim_turn'`)
     .get(workId) as { at: number | null }).at;
 }
+
+/** SQL: row `w` was moved to abandoned by `by` (owner, scheduler, ...), by its own record. */
+export const abandonedBySql = (w: string, by: string): string => `EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = ${w}.id
+  AND e.kind = 'transition' AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = '${by}')`;
+
+/** SQL: task `t` is the helper's own job on piece `p` (its board task on the piece's thread). */
+export const jobOfPieceSql = (t: string, p: string): string => `${t}.kind = 'task' AND ${t}.root_kind <> 'a2a_thread'
+  AND ${t}.agent_id = ${p}.assignee_agent AND ${t}.a2a_thread_id = ${p}.root_id`;
+
+/** SQL: a helper still works on a piece of request `w`; the engine's reaps never end such a request. */
+export const helperWorksOnSql = (w: string): string => `EXISTS (SELECT 1 FROM work x WHERE x.parent_id = ${w}.id
+  AND x.root_kind = 'a2a_thread' AND x.state IN ('open', 'claimed', 'blocked'))`;
 
 /** Asks nobody can ever serve or close get an honest terminal state (`abandoned`), in five structural
  *  classes: no conversation identity, root message gone, sender ignored, agent terminated, below its
@@ -444,7 +462,7 @@ const UNSERVABLE_OPEN_ASK_SELECT = `
          OR a.status = 'terminated'
          OR (a.session_started_at IS NOT NULL
              AND w.opened_at < (unixepoch(a.session_started_at) * 1000))
-       )`;
+       ) AND NOT ${helperWorksOnSql('w')}`;
 
 const UNSERVABLE_REASON: Readonly<Record<string, string>> = {
   'no-identity':
@@ -641,10 +659,11 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
         attempted: ids.length, counted: landed.length,
       }, p.agentId);
     }
+    // Only a request counts down and is answered; pieces under a task are a record of the work it handed on.
     db.prepare(
       `UPDATE work SET remaining_children = ?, ttl_at = ?, reply_conversation_id = ?,
                        compile_pending = 0, updated_at = ?
-        WHERE id = ?`,
+        WHERE id = ? AND kind = 'ask'`,
     ).run(landed.length, p.ttlAt, replyConversationId, at, p.parentWorkId);
     appendEvent(p.parentWorkId, 'join_opened', p.agentId, {
       children: landed.length, threads: threads.map((t) => t.threadId), ttl_at: p.ttlAt,
@@ -665,7 +684,6 @@ export function findJoinChildByThread(agentId: string, threadId: string): JoinCh
       FROM work
      WHERE agent_id = ? AND kind = 'task' AND root_kind = 'a2a_thread' AND root_id = ?
        AND parent_id IS NOT NULL AND state IN ${CHILD_OPEN_STATES}
-       AND NOT EXISTS (SELECT 1 FROM work p WHERE p.id = work.parent_id AND p.state = 'failed')
      ORDER BY opened_at DESC LIMIT 1
   `).get(agentId, threadId) as
     | { id: string; parent_id: string; agent_id: string; root_id: string; state: WorkState;

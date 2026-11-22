@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { claimEngineEventByRowid, markServedByRowid } from '../../../../memory/message-store.js';
-import { askIdForMessage, firstServedAt, stampClaimingTurn } from '../../../../work/store.js';
+import { appendWorkEvent, askIdForMessage, firstServedAt, stampClaimingTurn } from '../../../../work/store.js';
 import { liftStandDowns } from '../../../../work/ask-settlement.js';
 import { originOfTasks } from '../../../../work/job-origin.js';
 import { turnBoundary } from '../../../turn-state.js';
@@ -129,21 +129,17 @@ export async function runCounterpartyAndRecord(
   // Independent of `runtime.ts`'s identity check on this marker (see its doc in `shared-state.ts`):
   // every new turn starts with no declared-patience marker.
   declaredPatienceHonestFailTurn.delete(agentId);
-  // Restart rehydration of session tools, once per agent per process, at the turn and never in the
-  // assembly read path, where a mutation would break the cached tools prefix.
-  try {
-    const { rehydrateSessionToolsFromHistory } = await import('../../../../tools/tool-docs.js');
-    rehydrateSessionToolsFromHistory(agentId);
-  } catch { /* best effort; never break a turn over a cache warm-up */ }
   // Forward links: the work item's `claimed_by_turn` (read by delivery close and boot reconciliation)
-  // and the message's `served_by_turn`. Stamped here, not at the claim, since the number exists only now.
+  // and the message's `served_by_turn`. Stamped here, not at the claim, since the number exists only now, and with
+  // no await since the number was published, so a Stop never sees the turn without what it took up.
   try {
     if (triggerWorkId) {
       const wroteAgain = firstServedAt(triggerWorkId) === null;
       stampClaimingTurn(triggerWorkId, turnNumber);
       if (wroteAgain) liftStandDowns(agentId, triggerWorkId, turnNumber);   // a request of theirs that stood down is served with it
     }
-    // A turn serving a job holds the request its job started from, claimed at its pickup.
+    // A turn serving a job marks the job's task, and holds the request its job started from, claimed at its pickup.
+    if (turnCtx.servedJob) appendWorkEvent(turnCtx.servedJob, 'claim_turn', 'engine', { turn_number: turnNumber, agent_id: agentId, how: 'job' });
     const jobOrigin = turnCtx.servedJob ? originOfTasks(agentId, [turnCtx.servedJob]) : null;
     if (jobOrigin?.kind === 'ask') stampClaimingTurn(askIdForMessage(jobOrigin.messageId), turnNumber);
     if (triggerRow) {
@@ -167,6 +163,12 @@ export async function runCounterpartyAndRecord(
       markServedByRowid(terminalWakeA2A.rowid, turnNumber);
     }
   } catch { /* best effort */ }
+  // Restart rehydration of session tools, once per agent per process, at the turn and never in the
+  // assembly read path, where a mutation would break the cached tools prefix.
+  try {
+    const { rehydrateSessionToolsFromHistory } = await import('../../../../tools/tool-docs.js');
+    rehydrateSessionToolsFromHistory(agentId);
+  } catch { /* best effort; never break a turn over a cache warm-up */ }
 
   // Snapshot turn boundary so context assembly excludes mid-run user messages
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');

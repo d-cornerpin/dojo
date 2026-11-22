@@ -20,8 +20,9 @@ vi.mock('../../../work/store.js', async (orig) => {
 
 import { runMigrations } from '../../../db/migrations.js';
 import { routeTerminalReply } from '../steps/finalize/route-reply.js';
-import { freshReplyDb, personTurn, replyRows, testDb, AGENT, PERSON, T0 } from './helpers/reply-sender.js';
+import { freshReplyDb, personTurn, replyRows, AGENT, PERSON, T0 } from './helpers/reply-sender.js';
 import { askState, claimedAsk, pressStop } from './helpers/owner-stop.js';
+import { stoppedAgents } from '../../shared-state.js';
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
@@ -37,8 +38,7 @@ describe('Stop stops even when calling off a request fails', () => {
     const { status, body } = await pressStop();
     expect(status).toBe(200);
     expect(body.data?.repliesNotSent).toBe(0);
-    const config = JSON.parse((testDb().prepare('SELECT config FROM agents WHERE id = ?').get(AGENT) as { config: string }).config ?? '{}');
-    expect(config.stopMarkerPending).toBe(true);
+    expect(stoppedAgents.has(AGENT)).toBe(true);
     expect(replyRows()[0].outcome).toBe('pending');
     expect(askState(ask)).toBe('claimed');
   });

@@ -24,7 +24,7 @@ import { finishedScheduleRefusal, setsASchedule } from './finished-task-schedule
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { declareDeliverableOnSchedule, declaredDeliverableShape, findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS } from '../work/deliverable-declaration.js';
-import { calculateNextRun, scheduledTaskFromRow, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type WallClock } from '../scheduler/engine.js';
+import { calculateNextRun, scheduledTaskFromRow, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type WallClock, type ScheduledTask } from '../scheduler/engine.js';
 import { broadcast } from '../gateway/ws.js';
 import { isPMAgent, isPrimaryAgent } from '../config/platform.js';
 import { taskWriteRefusal, standardEditRefusal, escalationPointer } from '../work/row-authority.js';
@@ -32,6 +32,8 @@ import { turnContext, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 import { setHold, clearHold, ownerAskedToLift, holdOf, workingExpr } from '../work/done/hold.js';
+import { delegatedTaskOf } from '../work/done/who-decides.js';
+import { requestOfTurn } from '../work/job-continuation.js';
 
 const logger = createLogger('tracker-tools');
 
@@ -180,130 +182,51 @@ export function groupMember(groupId: string): { ok: true; id: string } | { ok: f
 
 // ── trackerCreateProject ──
 
-// Low-information words that must not drive a near-duplicate match on their own.
-const STOPWORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'with',
-  'by', 'from', 'is', 'as', 'at', 'be', 'this', 'that', 'these', 'those',
-  'project', 'task', 'work', 'plan', 'review', 'new',
-]);
-
-function normalizeTitle(t: string): string[] {
-  return t
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-    .split(/\s+/)
-    .map(w => w.trim())
-    .filter(w => w.length > 2 && !STOPWORDS.has(w));
-}
-
 interface DuplicateMatch {
   id: string;
   title: string;
-  createdMinutesAgo: number;
-  /** True when the existing project was opened by the engine on the agent's most recent user turn (not by the
-   * agent calling work_open(kind="project") themselves). */
-  engineAutoCreated: boolean;
-  /** First in_progress / on_deck task on the existing project, if any, 
-   * the natural target for work_update(action="edit"). */
+  /** First in_progress / on_deck task on the existing project, if any, the natural target for work_update(action="edit"). */
   firstOpenTask: { id: string; title: string } | null;
 }
 
 /**
- * Near-duplicate guard with two prongs: (a) an engine-opened scaffold row for the same ask (same source
- * message, else created in the last 5 minutes), which the agent should edit rather than parallel whatever
- * the title similarity; (b) a token-Jaccard fallback for agent-vs-agent duplicates (>= 0.6 overlap, >= 2
- * shared content tokens, last 60 minutes).
+ * The engine scaffold row opened for the same ask (same source message, else created in the last 5 minutes),
+ * which the agent should edit rather than parallel.
  */
-function findRecentNearDuplicateProject(
-  creatorId: string,
-  title: string,
-): DuplicateMatch | null {
+function findRecentNearDuplicateProject(creatorId: string): DuplicateMatch | null {
   const db = getDb();
 
   // (a) An engine scaffold born from the same ask as the creating agent's current turn is the duplicate by
   //     identity (source_message_id); the 5-minute window below is only the fallback for rootless rows.
   const turnRoot = turnContext(creatorId)?.root ?? null;
   const rootMatch = turnRoot?.sourceMessageId ? db.prepare(`
-    SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
+    SELECT w.id AS id, w.title AS title FROM work w
     WHERE ${projectScope('w')} AND w.requester_id = ?
       AND w.state = 'open'
       AND w.origin_kind = 'engine_scaffold'
       AND w.source_message_id = ?
     ORDER BY w.opened_at DESC
     LIMIT 1
-  `).get(creatorId, turnRoot.sourceMessageId) as { id: string; title: string; created_at: string } | undefined : undefined;
+  `).get(creatorId, turnRoot.sourceMessageId) as { id: string; title: string } | undefined : undefined;
   // The fallback reads the row's own root_kind and covers parentless tasks too: the engine floor opens a
   // task, and a project opened right after it is the parallel work this prong steers away from.
   const engineAuto = rootMatch ?? db.prepare(`
-    SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
+    SELECT w.id AS id, w.title AS title FROM work w
     WHERE ${engineScaffoldScope('w')} AND w.requester_id = ?
       AND ${workingExpr('w', true)}
       AND w.opened_at >= ?
     ORDER BY w.opened_at DESC
     LIMIT 1
-  `).get(creatorId, Date.now() - 5 * 60_000) as { id: string; title: string; created_at: string } | undefined;
+  `).get(creatorId, Date.now() - 5 * 60_000) as { id: string; title: string } | undefined;
 
-  if (engineAuto) {
-    const createdMs = new Date(engineAuto.created_at.includes('Z') ? engineAuto.created_at : engineAuto.created_at + 'Z').getTime();
-    const firstOpen = db.prepare(`
-      SELECT w.id AS id, w.title AS title FROM work w
-      WHERE ${taskScope('w')} AND w.parent_id = ? AND ${workingExpr('w', true)}
-      ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
-      LIMIT 1
-    `).get(engineAuto.id) as { id: string; title: string } | undefined;
-    return {
-      id: engineAuto.id,
-      title: engineAuto.title,
-      createdMinutesAgo: Math.max(1, Math.round((Date.now() - createdMs) / 60000)),
-      engineAutoCreated: true,
-      firstOpenTask: firstOpen ?? null,
-    };
-  }
-
-  // (b) Jaccard fallback for agent-created near-dups.
-  const recent = db.prepare(`
-    SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
-    WHERE ${projectScope('w')} AND w.requester_id = ?
-      AND w.state = 'open'
-      AND w.opened_at >= ?
-    ORDER BY w.opened_at DESC
-    LIMIT 20
-  `).all(creatorId, Date.now() - 60 * 60_000) as Array<{ id: string; title: string; created_at: string }>;
-
-  if (recent.length === 0) return null;
-
-  const newTokens = normalizeTitle(title);
-  if (newTokens.length === 0) return null;
-  const newSet = new Set(newTokens);
-
-  for (const row of recent) {
-    const oldTokens = normalizeTitle(row.title);
-    if (oldTokens.length === 0) continue;
-    const oldSet = new Set(oldTokens);
-
-    const intersection = new Set([...newSet].filter(w => oldSet.has(w)));
-    if (intersection.size < 2) continue;
-
-    const union = new Set([...newSet, ...oldSet]);
-    const jaccard = intersection.size / union.size;
-    if (jaccard >= 0.6) {
-      const createdMs = new Date(row.created_at.includes('Z') ? row.created_at : row.created_at + 'Z').getTime();
-      const firstOpen = db.prepare(`
-        SELECT w.id AS id, w.title AS title FROM work w
-        WHERE ${taskScope('w')} AND w.parent_id = ? AND ${workingExpr('w', true)}
-        ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
-        LIMIT 1
-      `).get(row.id) as { id: string; title: string } | undefined;
-      return {
-        id: row.id,
-        title: row.title,
-        createdMinutesAgo: Math.max(1, Math.round((Date.now() - createdMs) / 60000)),
-        engineAutoCreated: false,
-        firstOpenTask: firstOpen ?? null,
-      };
-    }
-  }
-  return null;
+  if (!engineAuto) return null;
+  const firstOpen = db.prepare(`
+    SELECT w.id AS id, w.title AS title FROM work w
+    WHERE ${taskScope('w')} AND w.parent_id = ? AND ${workingExpr('w', true)}
+    ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
+    LIMIT 1
+  `).get(engineAuto.id) as { id: string; title: string } | undefined;
+  return { id: engineAuto.id, title: engineAuto.title, firstOpenTask: firstOpen ?? null };
 }
 
 export function trackerCreateProject(agentId: string, args: Record<string, unknown>, opts: { taskMeasures?: Array<MeasureReading | undefined>; scaleFacts?: string } = {}): string {
@@ -348,27 +271,19 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     // allow_duplicate=true overrides it (genuinely independent re-runs).
     const allowDuplicate = args.allow_duplicate === true;
     if (!allowDuplicate) {
-      const dup = findRecentNearDuplicateProject(agentId, title);
+      const dup = findRecentNearDuplicateProject(agentId);
       if (dup) {
         const shortPid = dup.id.slice(0, 8);
         const firstTaskHint = dup.firstOpenTask
           ? ` First open task: "${dup.firstOpenTask.title}" (id=${dup.firstOpenTask.id.slice(0, 8)}).`
           : '';
-        if (dup.engineAutoCreated) {
-          // The engine auto-opened this project for the current user turn, so the agent's own create
-          // duplicates it. Answer with an OK-shaped no-op naming the existing project and its first task,
-          // so the agent continues in it instead of being refused.
-          return (
-            `[OK] Already tracked, no new project created. The engine auto-opened project "${dup.title}" (id=${shortPid}) for this request, so you don't need to create one, keep going in it.${firstTaskHint} ` +
-            `Continue inside it: work_update(action="edit", task_id=<id>, title=..., description=...) to refine the first task, ` +
-            `work_open(kind="task", project_id="${shortPid}", title=..., step_number=..., assigned_to=...) to add more steps. ` +
-            `(If you genuinely need a separate, unrelated project, retry with allow_duplicate=true.)`
-          );
-        }
+        // The engine auto-opened this project for the current user turn, so the agent's own create duplicates it:
+        // an OK-shaped no-op names it and its first task, so the agent continues in it instead of being refused.
         return (
-          `Refused: project "${dup.title}" (id=${shortPid}) was already created by you ${dup.createdMinutesAgo} minute(s) ago and is still active, the new title "${title}" looks like a near-duplicate.${firstTaskHint} ` +
-          `Use the existing project: work_update(action="get", id="${shortPid}") to see current tasks, work_update(action="edit") to rename/rescope a task, work_open(kind="task", project_id="${shortPid}", ...) to add new steps. ` +
-          `If this really is unrelated work that happens to share keywords, retry with allow_duplicate=true.`
+          `[OK] Already tracked, no new project created. The engine auto-opened project "${dup.title}" (id=${shortPid}) for this request, so you don't need to create one, keep going in it.${firstTaskHint} ` +
+          `Continue inside it: work_update(action="edit", task_id=<id>, title=..., description=...) to refine the first task, ` +
+          `work_open(kind="task", project_id="${shortPid}", title=..., step_number=..., assigned_to=...) to add more steps. ` +
+          `(If you genuinely need a separate, unrelated project, retry with allow_duplicate=true.)`
         );
       }
     }
@@ -509,11 +424,12 @@ export async function trackerCreateTask(agentId: string, args: Record<string, un
       assignedTo = member.id;
     }
 
-    // Near-duplicate guard for tool-error loops that re-create the same task. Both prongs use a 5-minute
-    // window: (a) exact title by the same creator and assignee; (b) Jaccard >= 0.6 on normalised content
-    // tokens with at least 2 shared. allow_duplicate=true overrides a false positive.
+    // Duplicate guard: the request this turn serves is already a helper's task, or a tool-error loop re-creates a
+    // task with the exact title by the same creator and assignee within 5 minutes. allow_duplicate=true overrides it.
     const allowDuplicate = (args.allow_duplicate as boolean) ?? false;
     if (!allowDuplicate) {
+      const delegated = args.kind === 'reminder' ? null : delegatedTaskOf(agentId, requestOfTurn(agentId));
+      if (delegated) return `Error: this request is already task ${delegated.id.slice(0, 8)}, held by ${delegated.holder}; nothing opened. If this is separate work, re-call with allow_duplicate=true.`;
       const db = getDb();
       const exact = db.prepare(`
         SELECT w.id AS id, substr(w.id, 1, 8) as id8 FROM work w
@@ -531,35 +447,6 @@ export async function trackerCreateTask(agentId: string, args: Record<string, un
           `If you meant to update that task, call work_update(action="status") / work_update(action="edit") on id=${exact.id8}. ` +
           `If this is genuinely separate work that happens to share a title, re-call with allow_duplicate=true.`
         );
-      }
-
-      const newTokens = normalizeTitle(title);
-      if (newTokens.length >= 2) {
-        const newSet = new Set(newTokens);
-        const recent = db.prepare(`
-          SELECT w.id AS id, w.title AS title, substr(w.id, 1, 8) as id8 FROM work w
-          WHERE ${taskScope('w')} AND w.requester_id = ?
-            AND ${workingExpr('w', true)}
-            AND w.opened_at >= ?
-          ORDER BY w.opened_at DESC
-          LIMIT 20
-        `).all(agentId, Date.now() - 5 * 60_000) as Array<{ id: string; title: string; id8: string }>;
-        for (const row of recent) {
-          const oldTokens = normalizeTitle(row.title);
-          if (oldTokens.length < 2) continue;
-          const oldSet = new Set(oldTokens);
-          const intersection = new Set([...newSet].filter(w => oldSet.has(w)));
-          if (intersection.size < 2) continue;
-          const union = new Set([...newSet, ...oldSet]);
-          const jaccard = intersection.size / union.size;
-          if (jaccard >= 0.6) {
-            return (
-              `Error: a near-duplicate task "${row.title}" (id=${row.id8}) was created by you in the last 5 minutes (token-overlap ${(jaccard * 100).toFixed(0)}%). ` +
-              `If you meant to update that task, call work_update(action="status") / work_update(action="edit") on id=${row.id8}. ` +
-              `If this is genuinely separate work, re-call with allow_duplicate=true.`
-            );
-          }
-        }
       }
     }
 
@@ -1029,6 +916,21 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
 }
 
 
+/** When a schedule fires next after an edit: its stored fields overlaid with `edited`, counting a run in flight, which
+ *  keeps its `running` status for its own close to move on (else the status becomes `waiting`). Null with no such task. */
+export function nextRunAfterEdit(taskId: string, edited: Partial<ScheduledTask> = {}):
+  { at: string | null; scheduledStart: string | null; alongside: { schedule_status?: 'waiting' } } | null {
+  const row = getDb().prepare(`
+    SELECT id, ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value,
+           repeat_days_of_week, anchor_local AS anchor_time, tz, is_paused, ${msToText('last_run_at')} AS last_run_at,
+           ${msToText('next_run_at')} AS next_run_at, schedule_status,
+           attempts + EXISTS (SELECT 1 FROM work o WHERE o.parent_id = work.id AND o.kind = 'occurrence' AND o.state = 'open') AS run_count
+      FROM work WHERE id = ?`).get(taskId) as ScheduledTask | undefined;
+  if (!row) return null;
+  const task = { ...row, ...edited };
+  return { at: calculateNextRun(task), scheduledStart: task.scheduled_start, alongside: row.schedule_status === 'running' ? {} : { schedule_status: 'waiting' } };
+}
+
 // Edits any structural field on a task: title, description, dependencies, step order, schedule. Status
 // changes stay on trackerUpdateStatus (completion has notification and project-rollup side effects) and
 // schedule pause/resume on trackerPauseSchedule / trackerResumeSchedule (they write a reason and notify the
@@ -1235,46 +1137,18 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     }
     if (scheduleChanged) {
       try {
-        const db = getDb();
-        const row = db.prepare(`
-          SELECT id, ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, repeat_unit,
-                 repeat_end_type, repeat_end_value, repeat_days_of_week,
-                 anchor_local AS anchor_time, tz,
-                 attempts AS run_count, is_paused, ${msToText('last_run_at')} AS last_run_at,
-                 ${msToText('next_run_at')} AS next_run_at, schedule_status
-          FROM work WHERE id = ?
-        `).get(taskId) as {
-          id: string;
-          scheduled_start: string | null;
-          repeat_interval: number | null;
-          repeat_unit: string | null;
-          repeat_end_type: string | null;
-          repeat_end_value: string | null;
-          repeat_days_of_week: string | null;
-          anchor_time: string | null;
-          tz: string | null;
-          run_count: number;
-          is_paused: number;
-          last_run_at: string | null;
-          next_run_at: string | null;
-          schedule_status: string;
-        } | undefined;
-        if (row) {
-          const nextRun = calculateNextRun(row);
-          // Only set schedule_status to 'waiting' when there is a future run: calculateNextRun returns null
-          // for completed or non-recurring tasks that already fired, and their status stays as it was.
-          if (nextRun) {
-            noteUnsettled(setNextRun(taskId, {
-              at: tsToMs(nextRun), alongside: { schedule_status: 'waiting' },
-              reason: 'a schedule field was edited, so the next fire time was recomputed',
-            }), 'trackerEditTask: next run recomputed', { taskId });
-          } else if (row.scheduled_start === null) {
-            // Schedule was cleared entirely, drop next_run_at too.
-            noteUnsettled(setNextRun(taskId, {
-              at: null, alongside: { schedule_status: 'idle' },
-              reason: 'the schedule was cleared, so there is no next fire time',
-            }), 'trackerEditTask: schedule cleared', { taskId });
-          }
+        // With no future run (a completed or one-time task that already fired) the status stays as it was.
+        const next = nextRunAfterEdit(taskId);
+        if (next?.at) {
+          noteUnsettled(setNextRun(taskId, {
+            at: tsToMs(next.at), alongside: next.alongside,
+            reason: 'a schedule field was edited, so the next fire time was recomputed',
+          }), 'trackerEditTask: next run recomputed', { taskId });
+        } else if (next && next.scheduledStart === null) {
+          noteUnsettled(setNextRun(taskId, {
+            at: null, alongside: { schedule_status: 'idle' },
+            reason: 'the schedule was cleared, so there is no next fire time',
+          }), 'trackerEditTask: schedule cleared', { taskId });
         }
       } catch (recalcErr) {
         // Non-fatal: the row update succeeded and only the recompute failed, so log it and keep the edit.

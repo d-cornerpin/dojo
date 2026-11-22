@@ -14,6 +14,7 @@ import { engineHandIn } from '../work/done/hand-in.js';
 import { clearHold, heldExpr } from '../work/done/hold.js';
 import { setNextRun, clearLiveSchedule } from '../work/next-run.js';
 import { noteUnsettled } from '../work/store.js';
+import { RUN_STATUS_INCOMPLETE } from '../work/measure-close-gate.js';
 import {
   claimOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
   assignOccurrence, skipOpenOccurrences, sweepOrphanedOccurrences,
@@ -389,14 +390,16 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   }
 
   // The run is handed in for its worker: a run of a live schedule with scope `run` (the next run is never
-  // held for a decision), the last run with scope `schedule`. A final run that failed is handed in as
-  // can't be done, and the owner is told at once through the primary.
+  // held for a decision), the last run with scope `schedule`, in the words the run was recorded with. A run left
+  // incomplete is handed in as can't be done on its count; a failed final run too, and the owner is told at once.
   const failedFinalRun = !nextRun && status === 'failed';
+  const incomplete = settled.runStatusRecorded === RUN_STATUS_INCOMPLETE;
+  const ran = incomplete ? `${RUN_STATUS_INCOMPLETE}: ${settled.detail}` : settled.runStatusRecorded;
   const because = nextRun
-    ? `scheduled run #${task.run_count as number} finished (${status}); the next run is at ${nextRun}`
-    : `the final scheduled run #${task.run_count as number} ${failedFinalRun ? 'failed' : `finished (${status})`}${summary ? `: ${summary.slice(0, 200)}` : ''}`;
+    ? `scheduled run #${task.run_count as number} finished (${ran}); the next run is at ${nextRun}`
+    : `the final scheduled run #${task.run_count as number} ${failedFinalRun ? 'failed' : `finished (${ran})`}${summary ? `: ${summary.slice(0, 200)}` : ''}`;
   const handed = engineHandIn(taskId, because, {
-    scope: nextRun ? 'run' : 'schedule', outcome: failedFinalRun ? 'cant_be_done' : undefined,
+    scope: nextRun ? 'run' : 'schedule', outcome: failedFinalRun || incomplete ? 'cant_be_done' : undefined,
     items: delivered && status !== 'failed' ? [{ kind: 'delivery', ref: delivered }] : undefined,
   });
   if (handed.kind === 'handed_in') {

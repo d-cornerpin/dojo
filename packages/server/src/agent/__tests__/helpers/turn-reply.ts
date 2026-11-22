@@ -1,10 +1,12 @@
-// A turn's reply for the relay tests: a delivered iMessage reply stamped with the turn and the request it serves.
+// A turn's reply for the relay tests: the turn's record, and a delivered iMessage reply stamped with the turn and the request it serves.
 import { asTurn } from '../../turn-context.js';
 import { recordDelivery } from '../../v2/deliveries.js';
 import { AGENT } from '../../v2/__tests__/helpers/reply-sender.js';
 import { CONV } from './text-relay.js';
+import { turnRow } from '../../v2/__tests__/helpers/live-turn.js';
 
 export function turnReplies(turn: number, rootMessageId: string): void {
+  turnRow(AGENT, turn, { kind: 'ask', id: rootMessageId });
   asTurn(AGENT, { turnNumber: turn, root: { kind: 'ask', id: rootMessageId, sourceMessageId: rootMessageId, conversationId: CONV }, convKey: null }, () => {
     recordDelivery({ agentId: AGENT, tool: 'imessage_send', channel: 'imessage', conversationId: CONV, outcome: 'delivered' });
   });

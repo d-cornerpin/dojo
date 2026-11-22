@@ -2806,21 +2806,6 @@ describe('PHASE-6 T1: the turn owns its facts and clears them in its finally', (
     });
   };
 
-  it('THE ORDINARY TURN: the one stamping point receives THIS turn\'s root, not null', async () => {
-    answerOnce();
-    await runV2Turn('primary');
-
-    // POSITIVE CONTROL: teardown reached the stamping point at all. Without this a
-    // green below could mean "finalize never ran", which is the opposite finding.
-    expect(stampTasksSpy).toHaveBeenCalledTimes(1);
-    const input = stampTasksSpy.mock.calls[0][0] as { rootSourceMessageId: string | null; servedTaskId: string | null; convKey: string | null };
-
-    // THE CLAUSE. `rootSourceMessageId` is the ask this turn is serving. It was `null`
-    // on every turn the engine has ever run, which made `w.source_message_id = ''` —
-    // one of the four ways a ticket ties to its turn — permanently unmatched.
-    expect(input.rootSourceMessageId).toBe('msg-user-1');
-  });
-
   it('THE ORDINARY TURN: a ticket tied ONLY by its source message IS stamped', async () => {
     // The end-to-end shape of the clause above, through the real query. This ticket
     // shares no conv_key, no origin_turn and no id with the turn — its only tie is the
@@ -2895,8 +2880,6 @@ describe('PHASE-6 T1: the turn owns its facts and clears them in its finally', (
 
     expect(callModelSpy).toHaveBeenCalledTimes(1);   // positive control: the break fired
     expect(stampTasksSpy).toHaveBeenCalledTimes(1);  // positive control: teardown ran
-    const input = stampTasksSpy.mock.calls[0][0] as { rootSourceMessageId: string | null };
-    expect(input.rootSourceMessageId).toBe('msg-user-1');
   });
 
   it('A `return` EXIT INSIDE THE MAIN `try` RUNS TEARDOWN — and it too must see the root', async () => {
@@ -2915,8 +2898,6 @@ describe('PHASE-6 T1: the turn owns its facts and clears them in its finally', (
 
     // POSITIVE CONTROL: teardown ran on a path the plan said never reaches it.
     expect(stampTasksSpy).toHaveBeenCalledTimes(1);
-    const input = stampTasksSpy.mock.calls[0][0] as { rootSourceMessageId: string | null };
-    expect(input.rootSourceMessageId).toBe('msg-user-1');
   });
 
   it('NO LEAK: a turn that THREW leaves nothing of itself behind', async () => {

@@ -54,13 +54,17 @@ const pmDecides = (id: string, verdict: 'approve' | 'send_back') => {
   expect(r.kind, r.text).toBe('decided');
   return r;
 };
-/** A result that reached the person — what a close points at (`deliveryForTaskClose`). */
-const seedDelivery = (): void => {
+/** A result that reached the person, in the run's own turn — what a close points at (`deliveryForTaskClose`). */
+let turns = 0;
+const seedDelivery = (task: string): void => {
   const id = `d-${Math.random()}`;
+  const run = (db().prepare("SELECT id FROM work WHERE kind = 'occurrence' AND parent_id = ? ORDER BY sequence DESC LIMIT 1").get(task) as { id: string }).id;
+  db().prepare("INSERT INTO turns (agent_id, turn_number, root_kind, root_id, started_at, answered) VALUES (?, ?, 'occurrence', ?, datetime('now', '-1 second'), 0)")
+    .run(AGENT, ++turns, run);
   db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, created_at, sent_at) VALUES (?, ?, 'owner', 'assistant', 'The labelled messages are listed in the summary.', ?, ?)`)
     .run(`m-${id}`, AGENT, Date.now(), Date.now());
   db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
-    VALUES (?, ?, NULL, 'dashboard', 'dashboard', 'conv-owner', ?, 'delivered', datetime('now', '+1 second'))`).run(id, AGENT, `m-${id}`);
+    VALUES (?, ?, ?, 'dashboard', 'dashboard', 'conv-owner', ?, 'delivered', datetime('now', '+1 second'))`).run(id, AGENT, turns, `m-${id}`);
 };
 const settle = async (): Promise<void> => { for (let i = 0; i < 30; i++) await new Promise((r) => setTimeout(r, 0)); };   // eslint-disable-line no-await-in-loop
 
@@ -99,7 +103,7 @@ describe('a recurring task keeps its schedule through a run the PM decides', () 
   it('a non-final run: the worker\'s hand-in is a run hand-in, the schedule advances at once, and the decision returns the row to Open', async () => {
     const id = await recurringInFlight();
     const before = row(id);
-    seedDelivery();
+    seedDelivery(id);
     const fin = await call('work_update:hand_in', { task_id: id, ...HAND_IN });
     await settle();
     expect(fin.isError, fin.content).toBe(false);
@@ -117,10 +121,10 @@ describe('a recurring task keeps its schedule through a run the PM decides', () 
   it('a final run (no further occurrence): its approval ends the row done and stops the schedule', async () => {
     const id = await recurringInFlight({ repeat_end_type: 'after_count', repeat_end_value: '1' });
     db().prepare('UPDATE work SET next_run_at = NULL WHERE id = ?').run(id);
-    seedDelivery();
+    seedDelivery(id);
     const fin = await call('work_update:hand_in', { task_id: id, ...HAND_IN });
     expect(fin.isError, fin.content).toBe(false);
-    expect(scopeOf(id)).toBeNull();
+    expect(scopeOf(id), 'a run in flight with no next run is the final run: the whole schedule is handed in').toBe('schedule');
     expect(pmDecides(id, 'approve').kind).toBe('decided');
     await settle();
     const r = row(id);
@@ -142,10 +146,10 @@ describe('a recurring task keeps its schedule through a run the PM decides', () 
   it('N1: a row with a repeat interval but no live schedule is handed in whole, and decided done', async () => {
     const id = await recurringInFlight();
     db().prepare("UPDATE work SET schedule_status = 'unscheduled', state = 'claimed' WHERE id = ?").run(id);
-    seedDelivery();
+    seedDelivery(id);
     const fin = await call('work_update:hand_in', { task_id: id, ...HAND_IN });
     expect(fin.isError, fin.content).toBe(false);
-    expect(scopeOf(id)).toBeNull();
+    expect(scopeOf(id), 'its run in flight is its last').toBe('schedule');
     expect(pmDecides(id, 'approve').kind).toBe('decided');
     expect(row(id).state).toBe('done');
   });

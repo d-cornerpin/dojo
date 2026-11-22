@@ -9,14 +9,13 @@ import { patchAssignments } from '../db/patch.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
-import { clearReferencesToWork } from './work-refs.js';
-import { notifyTaskEnded } from './task-ended.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, type WorkPatchOutcome } from './outcome.js';
 import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from './store.js';
 import { statusToState, TRACKER_ROOT_KIND, SERVICE_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
 import { takeoverRefusal, rowFacts, rehome, workerOfRecord } from './row-authority.js';
 import { planJson, type Plan } from './plan-json.js';
+import { requestsTakenUpBy } from './task-turns.js';
 import { isSystemServiceAgent, isPrimaryAgent } from '../config/platform.js';
 
 const logger = createLogger('tracker-store');
@@ -158,18 +157,13 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
   return id;
 }
 
-/** The source message of the ask the creating turn is serving, so the task links to its request.
- *  Only fills a gap: a caller-stated origin wins. */
+/** The source message of the one request the creating turn took up, so the task links to it; none when it took up
+ *  two. Only fills a gap: a caller-stated origin wins. */
 function askSourceMessageForCreatingTurn(agentId: string): string | null {
   try {
     const turn = currentTurnNumber(agentId);
-    if (!turn) return null;
-    const r = getDb().prepare(
-      `SELECT root_id FROM work
-        WHERE kind = 'ask' AND agent_id = ? AND state = 'claimed' AND claimed_by_turn = ?
-        ORDER BY opened_at DESC LIMIT 1`,
-    ).get(agentId, turn) as { root_id: string } | undefined;
-    return r?.root_id ?? null;
+    const asks = turn ? requestsTakenUpBy(agentId, turn) : [];
+    return asks.length === 1 ? asks[0]!.slice('ask:'.length) : null;
   } catch (err) {
     // A missing link must not fail task creation.
     logger.warn('task create: could not resolve the creating turn\'s ask; the task is opened without the edge', {
@@ -289,28 +283,6 @@ export function patchWorkWhere(
 export function bumpWorkAttempts(id: string): number {
   return getDb().prepare('UPDATE work SET attempts = attempts + 1, updated_at = ? WHERE id = ?')
     .run(now(), id).changes;
-}
-
-/**
- * The owner deletes a tracker row and its children (deeper descendants are detached), so a helper's work on them
- * is called off as his. The helper runs twice, children first, because it nulls `parent_id` on everything pointing
- * into its set: one call for both would leave the `WHERE parent_id = ?` delete matching nothing.
- */
-export function deleteTrackerRow(id: string): number {
-  const db = getDb();
-  let changes = 0;
-  const ended = db.prepare("SELECT agent_id, source_message_id, a2a_thread_id FROM work WHERE kind = 'task' AND (id = ? OR parent_id = ?)")
-    .all(id, id) as Array<{ agent_id: string; source_message_id: string | null; a2a_thread_id: string | null }>;
-  withUnit(() => {
-    const children = (db.prepare('SELECT id FROM work WHERE parent_id = ?').all(id) as
-      Array<{ id: string }>).map(r => r.id);
-    clearReferencesToWork(children);         // every reference, for the children
-    db.prepare('DELETE FROM work WHERE parent_id = ?').run(id);
-    clearReferencesToWork([id]);             // every reference, for the row itself
-    changes = db.prepare('DELETE FROM work WHERE id = ?').run(id).changes;
-  });
-  for (const t of ended) notifyTaskEnded(t.agent_id, t.source_message_id, t.a2a_thread_id, true);
-  return changes;
 }
 
 /** Detach children without deleting them (the memory route's "unfile these tasks"). */

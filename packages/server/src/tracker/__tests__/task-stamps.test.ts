@@ -21,7 +21,10 @@ beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE turn_artifacts (agent_id TEXT, turn_number INTEGER, kind TEXT, path TEXT, payload_json TEXT, delivered_at TEXT);
-    CREATE TABLE deliveries (agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
+    CREATE TABLE deliveries (id TEXT, agent_id TEXT, turn_number INTEGER, tool TEXT, channel TEXT, outcome TEXT, message_id TEXT,
+      created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE turns (agent_id TEXT, turn_number INTEGER, root_kind TEXT, root_id TEXT, started_at TEXT, ended_at TEXT);
+    CREATE TABLE messages (id TEXT, task_id TEXT, run_id TEXT, root_kind TEXT, root_id TEXT, a2a_thread_id TEXT);
   `);
   createWorkTable(db);
   const UPDATED = ms('2026-07-22 07:00:00')!;
@@ -42,10 +45,10 @@ const stampsOf = (id: string): Record<string, unknown> =>
 
 describe('stampTasksAtTurnFinalize', () => {
   it('stamps the origin-tied own ticket and ONLY it; never touches updated_at', () => {
-    mockDb.current!.prepare(`INSERT INTO deliveries VALUES ('a1', 100, 'imessage', 'delivered')`).run();
+    mockDb.current!.prepare(`INSERT INTO deliveries (agent_id, turn_number, channel, outcome) VALUES ('a1', 100, 'imessage', 'delivered')`).run();
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: 100, outcome: 'answered', answerMessageId: 'ans-1',
-      rootSourceMessageId: 'ask-1', convKey: 'owner', servedTaskId: null,
+      convKey: 'owner', servedTaskId: null,
     });
     const t1 = stampsOf('t1');
     expect(t1.last_activity_turn).toBe(100);
@@ -70,11 +73,13 @@ describe('stampTasksAtTurnFinalize', () => {
   it('a non-answered later turn updates activity but keeps the answered stamps (COALESCE)', () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: 100, outcome: 'answered', answerMessageId: 'ans-1',
-      rootSourceMessageId: 'ask-1', convKey: 'owner', servedTaskId: null,
+      convKey: 'owner', servedTaskId: null,
     });
+    // Turn 101 is a later turn on the same request.
+    mockDb.current!.prepare("INSERT INTO turns (agent_id, turn_number, root_kind, root_id, started_at) VALUES ('a1', 101, 'ask', 'ask-1', datetime('now'))").run();
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: 101, outcome: 'no_reply', answerMessageId: null,
-      rootSourceMessageId: 'ask-1', convKey: 'owner', servedTaskId: null,
+      convKey: 'owner', servedTaskId: null,
     });
     const t1 = stampsOf('t1');
     expect(t1.last_activity_turn).toBe(101);
@@ -86,14 +91,14 @@ describe('stampTasksAtTurnFinalize', () => {
   it('served-task tie works without origin match, and never throws without a DB', () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: 200, outcome: 'answered', answerMessageId: null,
-      rootSourceMessageId: null, convKey: null, servedTaskId: 't2',
+      convKey: null, servedTaskId: 't2',
     });
     const t2 = stampsOf('t2');
     expect(t2.last_activity_turn).toBe(200);
     mockDb.current = null;
     expect(() => stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: 1, outcome: 'answered', answerMessageId: null,
-      rootSourceMessageId: 'x', convKey: null, servedTaskId: null,
+      convKey: null, servedTaskId: null,
     })).not.toThrow();
   });
 });

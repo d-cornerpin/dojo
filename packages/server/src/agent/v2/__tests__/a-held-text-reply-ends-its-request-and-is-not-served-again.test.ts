@@ -13,7 +13,7 @@ vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRo
 import { runMigrations } from '../../../db/migrations.js';
 import { freshReplyDb, imessage, testDb } from './helpers/reply-sender.js';
 import { claimedAsk } from './helpers/owner-stop.js';
-import { CONV, askRow, endTurn } from './helpers/text-request.js';
+import { CONV, askRow, endTurn, turnRow } from './helpers/text-request.js';
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
@@ -24,6 +24,7 @@ beforeEach(() => {
 describe('a held text reply ends its request and is not served again', () => {
   it('the request is failed with the hold\'s reason, and nothing was sent', async () => {
     const ask = claimedAsk('msg-1', CONV, 1);
+    turnRow(1);
     await endTurn(1, 'the table is booked for eight');
     expect(imessage.send).not.toHaveBeenCalled();
     expect(askRow(ask).state).toBe('failed');

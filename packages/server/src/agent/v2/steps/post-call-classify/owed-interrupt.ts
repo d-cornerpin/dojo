@@ -10,6 +10,7 @@ import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { turnWindow } from './job-turn-end.js';
 import { userWords } from '../../turn-address.js';
+import { requestsTakenUpBy } from '../../../../work/task-turns.js';
 
 const logger = createLogger('v2-loop');
 
@@ -70,8 +71,9 @@ export async function runOwedInterrupt(
         `If what they sent CANCELS or CHANGES work you are still doing, stop that work now and record it; otherwise finish this turn without adding anything.`
       );
       // In-flight form: nothing has reached the person yet, so finish or abort the turn's own work.
-      // The serving ask's id is supplied because OPEN WORK does not list a claimed ask.
-      const servingAskId = turnCtx.root?.kind === 'ask' && turnCtx.root.id ? `ask:${turnCtx.root.id}` : null;
+      // The serving ask's id is supplied because OPEN WORK does not list a claimed ask: the one request the turn took up.
+      const taken = requestsTakenUpBy(agentId, turnNumber);
+      const servingAskId = taken.length === 1 ? taken[0] : null;
       const inFlightPrompt = (
         `[System] While you are working, ${userWords(turnCtx.address)} also sent: ${quoted}. ` +
         `Nothing has reached them yet this turn. Do NOT answer ${itThem} in this turn — ${isAre} queued and will be served on ${itsTheir} own turn next.${laterTurnRelease} ` +

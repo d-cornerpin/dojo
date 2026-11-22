@@ -5,8 +5,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope } from '../work/tracker-view.js';
 import { stampTicket } from '../work/tracker-store.js';
-import { turnWorkIds, servedByNotice } from '../work/task-freshness.js';
-import { recordTurnOnTasks } from '../work/task-turns.js';
+import { servedByNotice } from '../work/task-freshness.js';
+import { recordTurnOnTasks, requestsTakenUpBy, tasksServedBy } from '../work/task-turns.js';
 import { relAgoFromNow, absInstant } from './task-stamp-time.js';
 // The declared set of bubbles ruled not-an-answer: read, never retyped (see `work/occurrences.ts`).
 import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
@@ -116,7 +116,6 @@ export function stampTasksAtTurnFinalize(input: {
   turnNumber: number;
   outcome: string;
   answerMessageId: string | null;
-  rootSourceMessageId: string | null;
   convKey: string | null;
   servedTaskId: string | null;
 }): void {
@@ -130,7 +129,8 @@ export function stampTasksAtTurnFinalize(input: {
     // tangible deliverable or an effectful call the turn's record counts (`turns.effectful_calls`) re-arms the ladder.
     const worked = isTangibleDeliverySummary(deliverySummary) || turnMadeEffectfulCall(db, input.agentId, input.turnNumber, input.servedTaskId);
     const woken = !worked && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? input.servedTaskId : null;
-    const carried = turnWorkIds(input.agentId).filter((id) => id !== woken);
+    const carried = tasksServedBy(input.agentId, input.turnNumber).filter((id) => id !== woken);
+    const requests = requestsTakenUpBy(input.agentId, input.turnNumber).map((a) => a.slice(4));
     recordTurnOnTasks(input.agentId, input.turnNumber, [...carried, ...(woken || !input.servedTaskId ? [] : [input.servedTaskId])]);
     const tied = db.prepare(
       `SELECT w.id AS id FROM work w
@@ -138,7 +138,7 @@ export function stampTasksAtTurnFinalize(input: {
           AND w.agent_id = ?
           AND ${workingExpr('w', true)}
           AND (
-            (w.source_message_id IS NOT NULL AND w.source_message_id = ?)
+            w.source_message_id IN (${requests.map(() => '?').join(', ') || 'NULL'})
             OR w.origin_turn = ?
             OR w.id = ?
             OR w.id IN (${carried.map(() => '?').join(', ') || 'NULL'})
@@ -146,7 +146,7 @@ export function stampTasksAtTurnFinalize(input: {
         LIMIT 20`,
     ).all(
       input.agentId,
-      input.rootSourceMessageId ?? '',
+      ...requests,
       input.turnNumber,
       woken ? '' : (input.servedTaskId ?? ''),
       ...carried,

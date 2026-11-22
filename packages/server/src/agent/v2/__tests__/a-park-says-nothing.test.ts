@@ -434,7 +434,8 @@ beforeEach(() => {
 import { queueCanvasDoc } from '../../pending-attachments.js';
 import { turnParkedTheJob } from '../engine-exit.js';
 import { parkJob } from '../../../work/job-continuation.js';
-import { openTurnContext, endTurnContext } from '../../turn-context.js';
+import { endTurnContext } from '../../turn-context.js';
+import { liveTurn } from './helpers/live-turn.js';
 
 const TURN_BUDGET_MS = 15 * 60 * 1000;
 const FILE = '/uploads/primary/ledger-audit-notes.txt';
@@ -597,9 +598,7 @@ describe('t159 G (iii): a turn that ends (no park) with queued files and no repl
 describe('t159 G2: turnParkedTheJob reads only what parkJob recorded, and the stop fence', () => {
   it('false until parkJob runs on the turn; true after, by either wait; false for a stop; false on the next turn', () => {
     const serving = (): void => {
-      const bag = openTurnContext('primary');
-      bag.turnNumber = 1;
-      bag.root = { kind: 'ask', id: 'msg-user-1', sourceMessageId: 'msg-user-1' };
+      const bag = liveTurn('primary', { turnNumber: 1, root: { kind: 'ask', id: 'msg-user-1', sourceMessageId: 'msg-user-1' } });
     };
     serving();
     expect(turnParkedTheJob('primary')).toBe(false);

@@ -64,6 +64,7 @@ const turnCtx = (over: Record<string, unknown> = {}): PostCallClassifyContext['t
   startAckSteerRequested: false,
   startAckSteerArmedThisTurn: false,
   engineStartAckDeliveredThisTurn: false,
+  address: { kind: 'person', name: 'the owner' },
   ...over,
 } as unknown as PostCallClassifyContext['turnCtx']);
 

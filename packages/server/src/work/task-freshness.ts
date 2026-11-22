@@ -4,7 +4,6 @@
 
 import { getDb } from '../db/connection.js';
 import { taskScope } from './tracker-view.js';
-import { turnContext } from '../agent/turn-context.js';
 
 const PM_ID_SQL = `COALESCE((SELECT value FROM config WHERE key = 'pm_agent_id'), 'pm')`;
 
@@ -35,18 +34,3 @@ export function servedByNotice(agentId: string, turnNumber: number, taskId: stri
       AND lane = 'events' AND origin_intent = 'tracker' AND task_id = ? LIMIT 1`).get(agentId, turnNumber, taskId);
   } catch { return false; /* unreadable: the served task is tied as before */ }
 }
-
-export function turnWorkIds(agentId: string): string[] {
-  const ctx = turnContext(agentId);
-  if (!ctx || ctx.turnNumber === undefined) return [];
-  const named = ctx.servedWork?.taskId ? [ctx.servedWork.taskId] : [];   // the served task IS the job, whatever woke the turn
-  const ask = ctx.root?.kind === 'ask' ? ctx.root.sourceMessageId : null;
-  const thread = ctx.root?.kind === 'a2a' ? ctx.root.id : null;
-  const list = named.length > 0 ? named.map(() => '?').join(', ') : 'NULL';
-  const rows = getDb().prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND (
-      w.id IN (${list}) OR w.source_message_id = ? OR w.a2a_thread_id = ? OR w.origin_turn = ?
-      OR w.parent_id IN (SELECT p.id FROM work p WHERE p.id IN (${list}) OR p.source_message_id = ?))`)
-    .all(agentId, ...named, ask, thread, ctx.turnNumber, ...named, ask) as Array<{ id: string }>;
-  return rows.map((r) => r.id);
-}
-

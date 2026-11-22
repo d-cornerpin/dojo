@@ -90,6 +90,7 @@ describe('a measured run at zero is decided by the engine', () => {
 
   it('a run that owed a message and delivered none goes to the manager, even at 0', async () => {
     aCountedRun(MAIN, { setBy: MAIN });
+    doneDb().prepare("DELETE FROM work_events WHERE work_id = ? AND kind = 'claim_turn'").run(TASK);   // the line on record is about other work
     doneDb().prepare("UPDATE work SET task_kind = 'report' WHERE id = ?").run(TASK);
     await runFinishes(0);
     expect(stateOf()).toBe('handed_in');

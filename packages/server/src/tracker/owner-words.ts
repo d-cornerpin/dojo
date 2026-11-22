@@ -57,7 +57,7 @@ const quotableUnits = (words: string, whole: boolean): string[] => {
   return units.map(normalizeQuote).filter((u) => u.length > 0);
 };
 
-const ROW_COLS = `content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
+export const ROW_COLS = `content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
             inbound_meta, origin_intent, sender_id`;
 const PERSON_INBOUND = "role = 'user' AND channel IS NOT NULL AND source_agent_id IS NULL";
 

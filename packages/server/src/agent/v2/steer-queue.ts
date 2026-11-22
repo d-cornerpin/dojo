@@ -81,10 +81,10 @@ export interface SteerEntry {
   /** `state.loopCount` at enqueue. The start-ack reminder's gate reads it off the entry. */
   readonly atLoop: number;
   readonly attempts: number;
-  readonly shown?: SteerShown;
+  readonly shown?: readonly SteerShown[];
 }
 
-/** The request and put-back event a steer hands a turn, recorded as shown once the steer is delivered. */
+/** A request and put-back event a steer hands a turn, recorded as shown once the steer is delivered. */
 export interface SteerShown { readonly askId: string; readonly putBackId: number }
 
 export interface SteerQueue {
@@ -121,7 +121,7 @@ export interface SteerRequest {
   readonly content: string;
   readonly key?: string;
   readonly atLoop: number;
-  readonly shown?: SteerShown;
+  readonly shown?: readonly SteerShown[];
 }
 
 /** Enqueue a steer unless this floor (same key) already fired this turn; pending peers survive. */

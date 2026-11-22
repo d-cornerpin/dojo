@@ -48,7 +48,10 @@ beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE turn_artifacts (agent_id TEXT, turn_number INTEGER, kind TEXT, path TEXT, payload_json TEXT, delivered_at TEXT);
-    CREATE TABLE deliveries (agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
+    CREATE TABLE deliveries (id TEXT, agent_id TEXT, turn_number INTEGER, tool TEXT, channel TEXT, outcome TEXT, message_id TEXT,
+      created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE turns (agent_id TEXT, turn_number INTEGER, root_kind TEXT, root_id TEXT, started_at TEXT, ended_at TEXT);
+    CREATE TABLE messages (id TEXT, task_id TEXT, run_id TEXT, root_kind TEXT, root_id TEXT, a2a_thread_id TEXT);
   `);
   createWorkTable(db);
   seedTrackerTask(db, {
@@ -58,7 +61,7 @@ beforeEach(() => {
   // The turn genuinely produced a channel delivery AND an artifact. This is the
   // hard case: the engine has real receipts for the turn, and the ONLY thing
   // that makes them not-a-delivery-of-this-ticket is that the reply was coerced.
-  db.prepare(`INSERT INTO deliveries VALUES (?, ?, 'imessage', 'delivered')`).run(AGENT, TURN);
+  db.prepare(`INSERT INTO deliveries (agent_id, turn_number, channel, outcome) VALUES (?, ?, 'imessage', 'delivered')`).run(AGENT, TURN);
   db.prepare(
     `INSERT INTO turn_artifacts VALUES (?, ?, 'file', '/tmp/report.md', NULL, '2026-07-28 08:00:00')`,
   ).run(AGENT, TURN);
@@ -81,7 +84,7 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
   it("outcome 'brake' records ACTIVITY but never an ANSWER stamp", () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN, outcome: 'brake',
-      answerMessageId: 'msg-the-coerced-reply', rootSourceMessageId: null,
+      answerMessageId: 'msg-the-coerced-reply', 
       convKey: null, servedTaskId: null,
     });
     const t = ticket();
@@ -112,7 +115,7 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
   it('a braked turn can record a handover receipt but can NEVER satisfy the finished-work predicate', () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN, outcome: 'brake',
-      answerMessageId: 'msg-the-coerced-reply', rootSourceMessageId: null,
+      answerMessageId: 'msg-the-coerced-reply', 
       convKey: null, servedTaskId: null,
     });
     const t = ticket();
@@ -126,7 +129,7 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
   it("the SAME turn under outcome 'answered' does stamp — so the brake is what withholds it", () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN, outcome: 'answered',
-      answerMessageId: 'msg-a-real-answer', rootSourceMessageId: null,
+      answerMessageId: 'msg-a-real-answer', 
       convKey: null, servedTaskId: null,
     });
     const t = ticket();
@@ -137,12 +140,12 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
   it('a brake NEVER erases an earlier honest delivery stamp (COALESCE, not overwrite)', () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN, outcome: 'answered',
-      answerMessageId: 'msg-a-real-answer', rootSourceMessageId: null,
+      answerMessageId: 'msg-a-real-answer', 
       convKey: null, servedTaskId: null,
     });
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN + 1, outcome: 'brake',
-      answerMessageId: 'msg-the-coerced-reply', rootSourceMessageId: null,
+      answerMessageId: 'msg-the-coerced-reply', 
       // tied by served ticket: TURN+1 is a different turn, so origin_turn no
       // longer matches and the stamper would otherwise skip the ticket entirely.
       convKey: null, servedTaskId: 't-braked',

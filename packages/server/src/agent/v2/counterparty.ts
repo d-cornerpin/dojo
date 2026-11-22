@@ -14,7 +14,7 @@ import {
 } from '../../memory/message-store.js';
 import { conversationIdentityOf, type ConversationIdentity } from '../../memory/conversations.js';
 import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
-import { askIdForMessage } from '../../work/store.js';
+import { abandonedBySql, askIdForMessage, jobOfPieceSql } from '../../work/store.js';
 import { spentRun, spentTask, spentWakeAsk } from './work-lineage.js';
 import { postAgentNotice } from '../agent-notice.js';
 import { spendServe } from './serve-later.js';
@@ -260,8 +260,11 @@ function retireOneEngineEvent(
 }
 
 type EventReferent = { run_id: string | null; task_id: string | null; origin_intent: string | null; root_kind: string | null; root_id: string | null };
-const spentReferent = (ev: EventReferent): ReturnType<typeof spentRun> =>
-  (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.task_id ? spentTask(ev.task_id) : null) ?? spentWakeAsk(ev);
+/** A run's prompt is spent by its run, or by its task ending or pausing, never by the task's hand-in. */
+const spentReferent = (ev: EventReferent): ReturnType<typeof spentRun> => {
+  const task = ev.task_id ? spentTask(ev.task_id) : null;
+  return (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.run_id && task?.reason === 'task_handed_in' ? null : task) ?? spentWakeAsk(ev);
+};
 
 export function retireSpentEngineEvents(agentId: string): number {
   let retired = 0;
@@ -388,12 +391,13 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
 /** How long a helper's result, or another agent's request once served, stays owed. */
 export const TERMINAL_WAKE_WINDOW_MS = 45 * 60_000;
 
-/** A message on thread `m.a2a_thread_id` is for an ended request (the owner's Stop, or any abandon): the NEWEST piece
- *  on the thread that this agent holds or was given is abandoned, and so is its parent ask; a later request has a newer, live piece. */
-export const RESULT_FOR_ENDED_REQUEST = (m: string): string => `EXISTS (SELECT 1 FROM work p JOIN work a ON a.id = p.parent_id
+/** A message on `m.a2a_thread_id` is for ended work: the thread's newest piece of this agent was called off; one the
+ *  engine gave up (`by` scheduler) keeps the late road unless the owner then cancelled the helper's job on it. */
+export const RESULT_FOR_ENDED_REQUEST = (m: string): string => `EXISTS (SELECT 1 FROM work p
   WHERE p.id = (SELECT n.id FROM work n WHERE (n.agent_id = ${m}.agent_id OR n.assignee_agent = ${m}.agent_id) AND n.root_kind = 'a2a_thread'
-                  AND n.root_id = ${m}.a2a_thread_id AND n.parent_id IS NOT NULL ORDER BY n.opened_at DESC LIMIT 1)
-    AND p.state = 'abandoned' AND a.state = 'abandoned')`;
+                  AND n.root_id = ${m}.a2a_thread_id ORDER BY n.opened_at DESC LIMIT 1)
+    AND p.state = 'abandoned' AND (NOT ${abandonedBySql('p', 'scheduler')}
+      OR EXISTS (SELECT 1 FROM work t WHERE ${jobOfPieceSql('t', 'p')} AND t.state = 'abandoned' AND ${abandonedBySql('t', 'owner')})))`;
 export const resultForEndedRequest = (agentId: string, threadId: string): boolean => !!getDb().prepare(
   `SELECT 1 FROM (SELECT ? AS agent_id, ? AS a2a_thread_id) m WHERE ${RESULT_FOR_ENDED_REQUEST('m')}`).get(agentId, threadId);
 

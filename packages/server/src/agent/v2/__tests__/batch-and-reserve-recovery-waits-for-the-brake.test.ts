@@ -16,7 +16,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { AgentError } from '../../errors.js';
 import { initState } from '../state.js';
-import { openTurnContext, endTurnContext } from '../../turn-context.js';
+import { endTurnContext } from '../../turn-context.js';
+import { liveTurn } from './helpers/live-turn.js';
 import { compactionIsBraked, notePassOutcome, LOW_YIELD_BACKOFF_MS, __resetBrakesForTests } from '../../../memory/compaction-brakes.js';
 import { __resetFullContextWaitForTests } from '../full-context-wait.js';
 import { runMigrations } from '../../../db/migrations.js';
@@ -77,9 +78,7 @@ const jobDue = (): number | null => (mockDb.current!.prepare("SELECT MIN(next_at
 const dueNow = (): boolean => { const d = jobDue(); return d !== null && d <= Date.now(); };
 /** The failed turn serves the owner's request, so its park has a task to date. */
 async function recover(...a: Parameters<typeof recoverFromError>): Promise<void> {
-  const bag = openTurnContext(AGENT);
-  bag.turnNumber = 5;
-  bag.root = { kind: 'ask', id: 'm-1', sourceMessageId: 'm-1' };
+  const bag = liveTurn(AGENT, { turnNumber: 5, root: { kind: 'ask', id: 'm-1', sourceMessageId: 'm-1' } });
   try { await recoverFromError(...a); } finally { endTurnContext(AGENT); }
 }
 function armTheBrake(): void {

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createLogger, setLogBroadcast } from './logger.js';
 import { getDb } from './db/connection.js';
 import { resetWorkingAgentsToIdleAtBoot } from './agent/agent-status.js';
+import { stampedStartMs, writeBootStamp } from './boot-stamp.js';
 import { runMigrations } from './db/migrations.js';
 import { abandonUnservableAsks } from './work/store.js';
 import { reconcileOrphanedClaims } from './work/orphaned-claims.js';
@@ -187,6 +188,10 @@ async function bindPortFirst(fetchHandler: (request: Request, env: unknown) => R
 }
 
 async function main(): Promise<void> {
+  // The process stamps its start, pid, version and build sha first, so "which code is this server running?" is
+  // answered by the process itself; the dead process's start is read before it is replaced, for the boot sweep.
+  const previousStartMs = stampedStartMs();
+  writeBootStamp();
   logger.info('Starting Dojo Agent Platform...');
 
   // Until the real app is built at the end of boot, every request gets the 503 starting answer.
@@ -344,7 +349,7 @@ async function main(): Promise<void> {
   } catch { /* groups table may not exist yet on first boot */ }
 
   {
-    const repaired = resetWorkingAgentsToIdleAtBoot();
+    const repaired = resetWorkingAgentsToIdleAtBoot(previousStartMs);
     if (repaired > 0) {
       logger.info(`Reset ${repaired} agent(s) from 'working' to 'idle' after restart`);
     }

@@ -3,10 +3,12 @@
 // shown, not served) and its agent is told once; the engine texts nobody. Idempotent: a parked ask is no
 // longer `claimed`, so a repeated boot finds nothing.
 import { v4 as uuidv4 } from 'uuid';
+import { PROCESS_STARTED_MS } from '../process-start.js';
 import { getDb } from '../db/connection.js';
 import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
-import { appendWorkEvent, dismissCommitment, transition } from './store.js';
+import { appendWorkEvent, transition } from './store.js';
+import { callOff } from './call-off.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { ageInWords } from './hand-back-facts.js';
 import { INHERITED_BACKLOG_MARKER, REPLY_IN_FLIGHT, settleAsk } from './ask-settlement.js';
@@ -16,7 +18,7 @@ const logger = createLogger('inherited-backlog');
 
 /** When THIS process started, in the form `turns.ended_at` is written in (`datetime('now')`, UTC). A dead turn
  *  closed at or after it was closed by this process's own boot sweep or reaper: the process that just died. */
-export const PROCESS_STARTED_AT = new Date().toISOString().replace('T', ' ').slice(0, 19);
+export const PROCESS_STARTED_AT = new Date(PROCESS_STARTED_MS).toISOString().replace('T', ' ').slice(0, 19);
 
 
 /** Where THIS boot's pass records itself: the release step reads it, and only a completed pass of this very
@@ -151,8 +153,8 @@ export function inheritedAskDoor(workId: string, disposition: string, note: stri
     return { isError: true, content: `Not dropped: pass \`note\` with your own reason why ${workId} no longer needs an answer. `
       + 'It goes on the record as your judgement (nobody called it off).' };
   }
-  const r = dismissCommitment(workId, { agentId, reason: `no longer needs an answer — the agent's judgement on an inherited message (nobody called it off): ${note}` });
-  return r.kind === 'applied'
+  const r = callOff(workId, { deciderAgentId: agentId }, `no longer needs an answer — the agent's judgement on an inherited message (nobody called it off): ${note}`);
+  return r.kind === 'decided'
     ? { isError: false, content: `[OK] Stood down: ${workId} — recorded as your judgement that it no longer needs an answer, not as answered.` }
-    : { isError: true, content: `Error: could not stand down ${workId} (${r.kind}).` };
+    : { isError: true, content: `Error: could not stand down ${workId} (${r.text}).` };
 }

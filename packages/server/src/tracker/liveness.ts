@@ -90,7 +90,8 @@ export function workerBusy(agentId: string, work: OwedWork, seen = new Set<strin
     || due.now || due.next !== null) return true;
   if (seen.has(agentId)) return false;
   seen.add(agentId);
-  return (getDb().prepare(`SELECT j.id FROM work j WHERE j.agent_id = ? AND j.remaining_children > 0 AND j.state NOT IN ('done', 'failed', 'abandoned')
+  return (getDb().prepare(`SELECT j.id FROM work j WHERE j.agent_id = ? AND j.state NOT IN ('done', 'failed', 'abandoned')
+      AND EXISTS (SELECT 1 FROM work c WHERE c.parent_id = j.id AND c.root_kind = 'a2a_thread' AND c.state IN ('open', 'claimed', 'blocked'))
       AND NOT EXISTS (SELECT 1 FROM work c WHERE c.parent_id = j.id AND c.root_id = ?)`).all(agentId, work.threadId ?? '') as Array<{ id: string }>)
     .some((j) => openPieces(j.id, seen).some((p) => p.alive));
 }

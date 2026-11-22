@@ -236,12 +236,6 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
     measured: 'fixed template, 900 chars with the storm hint; prepended to an existing message',
   },
   {
-    id: 'lane.stop-marker',
-    slot: 1190,
-    reserveTokens: 83,
-    measured: 'fixed 331-char marker; prepended to an existing message',
-  },
-  {
     id: 'lane.loop-tail',
     slot: MessageSlot.TurnContext,
     reserveTokens: 1650,

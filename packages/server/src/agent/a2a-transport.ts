@@ -32,12 +32,14 @@ import {
   dueJoinsUnderClosedParent,
   failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
-  extendJoinTtl,
+  extendJoinTtl, jobOfPieceSql,
   type JoinState, type JoinPiece, type PieceSettleResult,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, CALLED_OFF_BY_OWNER, type PutBackKind } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, requestParts, type PutBackKind } from '../work/ask-settlement.js';
+import { endPiece } from '../work/call-off.js';
+import { servedBy } from '../work/task-turns.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
 import { afterCommit, withUnit } from '../db/unit.js';
 import { serveLater } from './v2/serve-later.js';
@@ -46,7 +48,7 @@ import { renderTokens } from '../memory/lanes.js';
 import { handInHeard } from '../work/done/effects.js';
 import { latestHandIn } from '../work/done/record.js';
 import { openPieces } from '../tracker/liveness.js';
-import { FINAL_REPLY_INTENTS, FINAL_REPLY_SQL, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
+import { FINAL_REPLY_INTENTS, FINAL_REPLY_SQL, REPLY_NEEDED_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
@@ -172,44 +174,6 @@ async function checkSemanticDedup(payload: string, threadId: string, fromAgent: 
       error: err instanceof Error ? err.message : String(err),
     });
     return false;
-  }
-}
-
-// A re-ASSIGN that omits `thread_id` mints a fresh thread and task each time, invisible to
-// per-thread dedup: check this sender's recent ASSIGNs across ALL threads; same 10-minute rule.
-async function findRecentDuplicateAssignThread(
-  senderId: string,
-  receiverId: string,
-  payload: string,
-): Promise<string | null> {
-  try {
-    const db = getDb();
-    const recent = db.prepare(`
-      SELECT content, a2a_thread_id FROM messages
-       WHERE agent_id = @receiverId AND source_agent_id = @senderId AND a2a_intent = 'ASSIGN'
-         AND a2a_thread_id IS NOT NULL
-         AND created_at >= (unixepoch('now', '-10 minutes') * 1000)
-      ORDER BY rowid DESC
-      LIMIT @lookback
-    `).all({ receiverId, senderId, lookback: DEDUP_LOOKBACK }) as Array<{ content: string; a2a_thread_id: string }>;
-    if (recent.length === 0) return null;
-
-    const { generateEmbedding } = await import('../memory/embeddings.js');
-    const newEmbedding = await generateEmbedding(payload, { agentId: senderId });
-    for (const msg of recent) {
-      const msgPayload = extractPayloadFromA2AMessage(msg.content);
-      if (!msgPayload || msgPayload.length < 10) continue;
-      const existingEmbedding = await generateEmbedding(msgPayload, { agentId: senderId });
-      if (cosineSimilarity(newEmbedding, existingEmbedding) > DEDUP_SIMILARITY_THRESHOLD) {
-        return msg.a2a_thread_id;
-      }
-    }
-    return null;
-  } catch (err) {
-    logger.debug('Cross-thread ASSIGN dedup skipped (embedding unavailable)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
   }
 }
 
@@ -422,16 +386,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     requiresResponse = true; // Promoted DELIVERABLE wakes the receiver
   }
 
-  // An ASSIGN with no thread_id that repeats a recent one reuses that thread, so dedup drops it.
-  let reusedAssignThreadId: string | null = null;
-  if (effectiveIntent === 'ASSIGN' && !envelope.threadId && envelope.fromAgent !== 'system') {
-    reusedAssignThreadId = await findRecentDuplicateAssignThread(envelope.fromAgent, target.id, envelope.payload);
-    if (reusedAssignThreadId) {
-      logger.info('A2A ASSIGN without thread_id matched a recent assignment, reusing its thread', {
-        from: envelope.fromAgent, to: target.id, threadId: reusedAssignThreadId,
-      }, envelope.fromAgent);
-    }
-  }
   const servedThreadId = !envelope.threadId && envelope.fromAgent !== 'system' && FINAL_REPLY_INTENTS.has(effectiveIntent)
     ? servedRequestThreadFrom(envelope.fromAgent, target.id) : null;   // a threadless reply goes on the request it answers
   // A named thread is stored under the full id the two agents' stores hold for its token, the exact id first.
@@ -440,7 +394,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     `SELECT a2a_thread_id AS t FROM messages WHERE agent_id IN (?, ?) AND length(a2a_thread_id) > ${A2A_THREAD_SHORT_LENGTH}
        AND ${a2aThreadTokenMatchesSql('a2a_thread_id')} ORDER BY a2a_thread_id = ? DESC, rowid DESC LIMIT 1`,
   ).get(envelope.fromAgent, target.id, tok, tok, envelope.threadId) as { t: string } | undefined)?.t : undefined;
-  const threadId = named || envelope.threadId || reusedAssignThreadId || servedThreadId || uuidv4();
+  const threadId = named || envelope.threadId || servedThreadId || uuidv4();
   // ⚠ READ BEFORE `ensureThread`, and the order is load-bearing: that insert stamps `datetime('now')`
   // when no row exists, so a later read would report a delivery that never happened.
   // On a request that was called off a result is refused (it is never passed on as news); anything else wakes nobody.
@@ -459,10 +413,10 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
 
   const isEngineEnvelope = envelope.fromAgent === 'system' || envelope.origin === 'engine';
 
-  // Completion intents skip dedup (checkpoints must land whatever the phrasing; dedup exists to
-  // silence ack loops). System-origin skips too: every engine alert is a fresh condition.
+  // Dedup silences ack loops, so only notes (FYI, STATUS) take it: a request or a final reply always lands
+  // whatever the phrasing. System-origin skips too: every engine alert is a fresh condition.
   const senderIsSystem = envelope.fromAgent === 'system';
-  if (!FINAL_REPLY_INTENTS.has(effectiveIntent) && !senderIsSystem) {
+  if (!FINAL_REPLY_INTENTS.has(effectiveIntent) && !REPLY_NEEDED_INTENTS.has(effectiveIntent) && !senderIsSystem) {
     const isDuplicate = await checkSemanticDedup(envelope.payload, threadId, envelope.fromAgent);
     if (isDuplicate) {
       logDrop(envelope, 'SEMANTIC_DUPLICATE');
@@ -1061,6 +1015,7 @@ async function landReplyOnJoin(p: LandInput): Promise<{ handled: boolean; handOf
     return { handled: true, handOff };
   }
   const join = settle.join;
+  if (!joinState(child.parentId)) return { handled: false, handOff };   // a piece under a task: the answer wakes its agent
   if (!join.complete) {
     logger.info('join: piece landed, holding for the rest', {
       agentId: p.agentId, thread: p.threadShort, landed: join.landed, total: join.total,
@@ -1123,13 +1078,13 @@ function applyDeclaredHandOff(
   };
 }
 
-/** The countdown reached zero: nothing came back, the fail-closed notice, unless the owner called off every one of
- *  its pieces, which ends the request as his with nobody told; else the answer goes back to the agent. */
-async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
+/** The countdown reached zero (not ended quietly by `endPiece`): nothing back while another part works, back to its
+ *  agent; nothing at all, the fail-closed notice; else the answer goes back to the agent. */
+export async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
-    if (!getDb().prepare(`SELECT 1 FROM work c WHERE c.parent_id = ? AND NOT (${CALLED_OFF_BY_OWNER('c')} OR EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task'
-        AND t.agent_id = c.assignee_agent AND t.a2a_thread_id = c.root_id AND t.closed_at >= c.opened_at AND ${CALLED_OFF_BY_OWNER('t')}))`).get(join.id)) {
-      transition(join.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: join.parentState, reason: 'the owner called off the work it waited on' });
+    if (requestParts(join.id) === 'working') {
+      handBackAsk(join.id, { agentId: join.agentId, turnNumber: null, cause: 'free', actorId: 'a2a-join', reason: 'a helper\'s part of it ended; the rest still works' });
+      serveLater({ kind: 'ask', id: join.id }, Date.now(), 'a helper\'s part of it ended');
       return;
     }
     const failReason = joinFailureReason(joinPieces(join.id));
@@ -1424,18 +1379,20 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
   return out;
 }
 
-/** A request was called off: each helper's turn on that work stops and its task is cancelled, as his when the owner's. */
-export async function tellHelpersTheRequestEnded(pieces: Array<{ helper: string | null; thread: string; asker: string }>, byOwner: boolean): Promise<void> {
-  const { decide } = await import('../work/done/decide.js');
-  for (const piece of pieces) {
-    if (!piece.helper) continue;
-    const task = (getDb().prepare(
-      "SELECT id FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
-    ).get(piece.helper, piece.thread) as { id: string } | undefined)?.id;
-    const live = turnContext(piece.helper);
-    if (live && [live.root?.id, live.servedJob, live.servedWork?.taskId].some((w) => w === piece.thread || (!!task && w === task))) stopAgent(piece.helper);
-    if (task) decide({ workId: task, deciderAgentId: byOwner ? null : piece.asker, verdict: 'cancel', reason: `the request it was for was called off${byOwner ? ' by the owner' : ''}` });
-  }
+/** After an end commits, a live turn still serving the ended work stops: a piece's helper on that thread or job, and
+ *  a request's asker when the owner ended it (never the turn that relayed his words). */
+export function endTheWorkUnder(workId: string, byOwner: boolean, actorId: string): void {
+  const w = getDb().prepare('SELECT kind, agent_id AS asker, assignee_agent AS helper FROM work WHERE id = ?')
+    .get(workId) as { kind: string; asker: string; helper: string | null } | undefined;
+  const serving = (agentId: string, ids: string[]): boolean => {
+    const live = turnContext(agentId)?.turnNumber;
+    return live !== undefined && servedBy(agentId, live).some((s) => ids.includes(s.id));
+  };
+  if (w?.kind === 'ask' && byOwner && actorId !== w.asker && serving(w.asker, [workId])) stopAgent(w.asker);
+  if (w?.kind === 'ask' || !w?.helper) return;
+  const jobs = (getDb().prepare(`SELECT t.id FROM work p JOIN work t ON ${jobOfPieceSql('t', 'p')} WHERE p.id = ?`)
+    .all(workId) as Array<{ id: string }>).map((t) => t.id);
+  if (serving(w.helper, [workId, ...jobs])) stopAgent(w.helper);
 }
 
 /** When the engine gives up a request the asked agent never answered (its pickup past the budget), the asker
@@ -1463,21 +1420,19 @@ export async function failJoinPieceForAbandonedAsk(
   }
 }
 
-/** End a piece as abandoned; a request still open whose last piece this was is answered or told, once. */
-async function abandonPiece(childId: string, reason: string, actorId: string | null, by?: 'owner'): Promise<PieceSettleResult> {
-  const s = settlePieceWithoutResult(childId, { to: 'abandoned', reason, actorId, by });
-  if (s.result.kind === 'applied' && s.join.complete && !isTerminal(s.join.parentState)) await resolveCompletedJoin(s.join, resolveAgentDisplayName(actorId) ?? undefined);
+/** The engine gives a piece up (no answer came; a late one keeps the late road), and judges its request now. */
+async function abandonPiece(childId: string, reason: string, actorId: string | null): Promise<PieceSettleResult> {
+  const s = endPiece(childId, reason, 'scheduler', actorId ?? 'work-reaper');
+  if (!s.judged) await resolveCompletedJoin(s.join, resolveAgentDisplayName(actorId) ?? undefined);
   return s;
 }
 
-/** A helper's work changed (its task ended or was deleted, the owner was carded, the helper ended): judge now every open
- *  request with a piece assigned to it or on that thread. The agent or thread bounds it: no age floor, no row limit.
- *  The owner's own end of that work first calls off the helper's open pieces (on that thread) as his. */
-export async function judgeKeptRequests(agentId: string, threadId: string | null = null, byOwner = false): Promise<void> {
+/** A helper's work changed (its task ended, the owner was carded, the helper ended): judge now every open request with a
+ *  piece assigned to it or on that thread. The agent or thread bounds it: no age floor, no row limit. */
+export async function judgeKeptRequests(agentId: string, threadId: string | null = null): Promise<void> {
   try {
-    const pieces = getDb().prepare(`SELECT id, parent_id AS ask, assignee_agent AS helper, root_id AS thread FROM work WHERE kind = 'task' AND root_kind = 'a2a_thread'
-        AND parent_id IS NOT NULL AND state IN ('open', 'claimed', 'blocked') AND (assignee_agent = ? OR root_id = ?)`).all(agentId, threadId) as Array<{ id: string; ask: string; helper: string | null; thread: string }>;
-    for (const p of pieces) if (byOwner && p.helper === agentId && (threadId === null || p.thread === threadId)) await abandonPiece(p.id, 'its helper\'s work was called off by the owner', 'owner', 'owner');
+    const pieces = getDb().prepare(`SELECT parent_id AS ask FROM work WHERE kind = 'task' AND root_kind = 'a2a_thread'
+        AND parent_id IS NOT NULL AND state IN ('open', 'claimed', 'blocked') AND (assignee_agent = ? OR root_id = ?)`).all(agentId, threadId) as Array<{ ask: string }>;
     for (const id of new Set(pieces.map((p) => p.ask))) {
       const j = joinState(id);
       if (j && !isTerminal(j.parentState)) await resolveOpenJoin(j);

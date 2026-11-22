@@ -20,7 +20,7 @@ import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
 import { handBackOrphansOf } from '../work/orphaned-claims.js';
-import { transition } from '../work/store.js';
+import { callOff, OWNER } from '../work/call-off.js';
 import { withUnit, afterCommit } from '../db/unit.js';
 import { suppressQueuedReplies } from './v2/deliveries.js';
 import { setAgentModel } from './model-switch.js';
@@ -314,7 +314,6 @@ import { runIsLive } from './ended-mid-run.js';
 import { announceLiveWork } from './live-work.js';
 import { noteOwnerStop } from '../migration/import-agents.js';
 import { serveLater } from './v2/serve-later.js';
-import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
 import { userWords, currentAddress } from './v2/turn-address.js';
@@ -329,9 +328,8 @@ export function stopStatusHeartbeat(agentId: string): void {
   }
 }
 
-// Stop a running agent: abort in-flight calls, halt the loop, and set stopMarkerPending (the stopped request's id, when
-// one was ended) so the next assembly injects a one-shot marker: in memory only, never persisted; the flag lives in the DB.
-export function stopAgent(agentId: string, stopped?: string): void {
+// Stop a running agent: abort in-flight calls and halt the loop. A request it ended says so on its own row's label.
+export function stopAgent(agentId: string): void {
   stoppedAgents.add(agentId);
   // RAISE THE FENCE: stoppedAgents can be lifted by outside doors; only this run's exit lowers the fence.
   const runInFlight = activeRuns.has(agentId);
@@ -367,29 +365,13 @@ export function stopAgent(agentId: string, stopped?: string): void {
     }
   } catch { /* best effort */ }
 
-  // The assembler reads it next turn; the delivering turn clears it (see clearConsumedOneShotFlags).
-  try {
-    const db = getDb();
-    const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-    const config = row?.config ? JSON.parse(row.config) as Record<string, unknown> : {};
-    config.stopMarkerPending = stopped ?? true;
-    db.prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(config), agentId);
-  } catch (err) {
-    logger.warn('Failed to set stopMarkerPending flag', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
-
   logger.info('Agent stop requested', { runInFlight, callsAborted: cut }, agentId);
 }
 
-/** The owner's Stop ends the request being served (`stoppedRequestsOf`) in one transaction: its unsent replies, the
- *  request (with its pieces, in `transition`), its job tasks (no due; held unless a schedule); then the agent stops, and
- *  the run is settled. Nothing running and nothing to end: nothing is done. What the Stop button does, for every door;
- *  import and terminate call `stopAgent`. */
+/** Every Stop door: in one unit its unsent replies go and `callOff` ends each request served and each piece it works
+ *  for another agent; a job left with no request is held. Then the agent stops. Import and terminate call `stopAgent`. */
 export function stopByOwner(agentId: string): { ended: number; repliesNotSent: number; nothingRunning?: true } {
   let s: StoppedRequests = { liveRun: false, asks: [], runTasks: [], requests: [], jobs: [] };
-  let stopped: string | undefined;
   try {
     s = stoppedRequestsOf(agentId);
   } catch (err) {
@@ -402,26 +384,23 @@ export function stopByOwner(agentId: string): { ended: number; repliesNotSent: n
       // With a run live or unwinding only the stopped request's replies go; with none, every queued reply is what runs.
       const dropped = suppressQueuedReplies(agentId, s.liveRun || isRunUnwinding(agentId) ? s.asks : undefined);
       let ended = s.requests.length + s.runTasks.length;
+      const pieces = s.requests.flatMap((r) => getDb().prepare(`SELECT id FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
+        AND assignee_agent = ? AND state IN ('open', 'claimed', 'blocked')`).all(r.threadId, agentId) as Array<{ id: string }>).map((p) => p.id);
       for (const id of new Set([...s.asks, ...dropped.askIds])) {
-        const r = transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop' });
-        if (r.kind === 'applied') { ended++; stopped ??= id; }
-        else logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
+        const r = callOff(id, OWNER, 'called off by the owner: he pressed Stop');
+        if (r.kind === 'decided') ended++;
+        else logger.debug('stop: a request was not called off', { workId: id, why: r.text }, agentId);
       }
+      for (const id of pieces) callOff(id, OWNER, 'called off by the owner: he pressed Stop');
       for (const r of s.requests) sweepByRowid({ rowid: r.rowid, agentId });
       for (const t of s.jobs) {
         serveLater({ kind: 'task', id: t }, null, 'owner stop');
-        const schedule = getDb().prepare('SELECT 1 FROM work WHERE id = ? AND schedule_status IS NOT NULL').get(t);
-        if (!schedule) setHold(t, 'paused', 'stopped by you', 'owner');
+        const left = getDb().prepare("SELECT 1 FROM work WHERE id = ? AND schedule_status IS NULL AND state NOT IN ('done', 'failed', 'abandoned')").get(t);
+        if (left) setHold(t, 'paused', 'stopped by you', 'owner');
       }
-      afterCommit(() => void Promise.all([import('../scheduler/runner.js'), import('./a2a-transport.js')])
-        .then(async ([runner, transport]) => {
-          for (const t of s.runTasks) await runner.onTaskRunComplete(t, 'skipped', 'stopped by the owner');
-          for (const r of s.requests) {
-            const thread = r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH);
-            await transport.failJoinPieceForAbandonedAsk(r.messageId, thread, agentId, 'the owner stopped this work');
-          }
-        })
-        .catch((err: unknown) => logger.warn('stop: its run or the asker was not settled', { error: String(err) }, agentId)));
+      afterCommit(() => void import('../scheduler/runner.js')
+        .then(async (runner) => { for (const t of s.runTasks) await runner.onTaskRunComplete(t, 'skipped', 'stopped by the owner'); })
+        .catch((err: unknown) => logger.warn('stop: its run was not settled', { error: String(err) }, agentId)));
       return { ended, repliesNotSent: dropped.repliesNotSent };
     });
   } catch (err) {
@@ -430,38 +409,28 @@ export function stopByOwner(agentId: string): { ended: number; repliesNotSent: n
     }, agentId);
     return { ended: 0, repliesNotSent: 0 };
   } finally {
-    stopAgent(agentId, stopped);
+    stopAgent(agentId);
     noteOwnerStop(agentId);   // a failed import in flight must not lift the owner's own stop
     announceLiveWork(agentId);   // the frame that takes the stop control away, not waited for
   }
 }
 
-// Clear one-shot markers (stopAgent, a2a-transport); the DELIVERING turn clears, never the assembler,
-// assembly is an outside-turn read; the two clears are ONE transaction, so neither edit is lost.
+// Clear the one-shot preempt marker (a2a-transport); the DELIVERING turn clears, never the assembler: assembly is an
+// outside-turn read.
 export function clearConsumedOneShotFlags(
   agentId: string,
-  consumed?: { a2aPreemptPending?: boolean; stopMarkerPending?: boolean },
+  consumed?: { a2aPreemptPending?: boolean },
 ): void {
-  if (!consumed || (!consumed.a2aPreemptPending && !consumed.stopMarkerPending)) return;
+  if (!consumed?.a2aPreemptPending) return;
   try {
     const db = getDb();
     db.transaction(() => {
       const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
       if (!row?.config) return;
       const config = JSON.parse(row.config) as Record<string, unknown>;
-      let changed = false;
-      if (consumed.a2aPreemptPending && config.a2aPreemptPending !== undefined) {
-        delete config.a2aPreemptPending;
-        changed = true;
-      }
-      if (consumed.stopMarkerPending && config.stopMarkerPending) {
-        config.stopMarkerPending = false;
-        changed = true;
-      }
-      if (changed) {
-        db.prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?")
-          .run(JSON.stringify(config), agentId);
-      }
+      if (config.a2aPreemptPending === undefined) return;
+      delete config.a2aPreemptPending;
+      db.prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(config), agentId);
     })();
   } catch (err) {
     logger.warn('Failed to clear consumed one-shot markers', {

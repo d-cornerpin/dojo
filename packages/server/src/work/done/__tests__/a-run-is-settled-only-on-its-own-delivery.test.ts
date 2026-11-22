@@ -9,6 +9,7 @@ vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {} }));
 import { runMigrations } from '../../../db/migrations.js';
 import { freshDoneDb, doneDb, seedTask } from './helpers/done-db.js';
 import { proofDelivery } from '../proof.js';
+import { turnRow } from '../../../agent/v2/__tests__/helpers/live-turn.js';
 
 const WORKER = randomUUID();
 const TASK = 'task-digest';
@@ -26,14 +27,16 @@ function runOf(taskId: string): string {
 }
 
 /** The worker's message to the owner, sent in a turn whose root is `root` (null: no root). */
+let turns = 0;
 function sent(root: { kind: string; id: string } | null): string {
+  const turn = turnRow(WORKER, ++turns, root);
   const id = randomUUID();
   const msg = randomUUID();
   doneDb().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, authorized, sent_at, created_at)
     VALUES (?, ?, 'owner', 'assistant', 'Your digest: three new orders and one refund today.', 1, ?, ?)`).run(msg, WORKER, Date.now(), Date.now());
-  doneDb().prepare(`INSERT INTO deliveries (id, agent_id, tool, channel, message_id, outcome, created_at, updated_at, root_kind, root_id)
-    VALUES (?, ?, 'auto-route', 'dashboard', ?, 'delivered', ?, ?, ?, ?)`)
-    .run(id, WORKER, msg, sqlTime(Date.now()), sqlTime(Date.now()), root?.kind ?? null, root?.id ?? null);
+  doneDb().prepare(`INSERT INTO deliveries (id, agent_id, tool, channel, message_id, outcome, created_at, updated_at, turn_number, root_kind, root_id)
+    VALUES (?, ?, 'auto-route', 'dashboard', ?, 'delivered', ?, ?, ?, ?, ?)`)
+    .run(id, WORKER, msg, sqlTime(Date.now()), sqlTime(Date.now()), turn, root?.kind ?? null, root?.id ?? null);
   return id;
 }
 

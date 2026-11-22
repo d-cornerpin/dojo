@@ -10,7 +10,7 @@ import { getDb } from '../../db/connection.js';
 import { getPMAgentId, isPrimaryAgent } from '../../config/platform.js';
 import { ownerAskedInThisTurn } from '../row-authority.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
-import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from '../store.js';
+import { transition, appendWorkEvent, isTerminal, askIdForMessage, jobOfPieceSql, type Actor, type WorkOutcome, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
 import { tellUnfinishedTasks } from './project-state.js';
 import { latestHandIn, workerOf, workersOf, unitOrRollback, recordAdjudication, OWNER_ID, ENGINE_ID } from './record.js';
@@ -23,6 +23,8 @@ import { whoDecides } from './who-decides.js';
 import { onDecided } from './effects.js';
 import { endStallCard } from '../../healer/owner-notices.js';
 import { resultForEndedRequest } from '../../agent/v2/counterparty.js';
+import { requestEnded } from '../ask-settlement.js';
+import { onPieceEnded } from '../task-ended.js';
 
 export type Verdict = 'approve' | 'send_back' | 'cancel' | 'owner_done';
 export interface DecideInput {
@@ -40,7 +42,7 @@ export interface DecideInput {
 export type DecideResult = { kind: 'decided'; to: WorkState; text: string; unclosed: string[] } | { kind: 'refused'; text: string };
 
 const VERDICTS: readonly Verdict[] = ['approve', 'send_back', 'cancel', 'owner_done'];
-const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
+export const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
 
 /** The owner's open cards: each handed-in row asked of him since its newest hand-in, with when he was asked. */
 function openOwnerCards(): Map<string, number> {
@@ -55,19 +57,19 @@ function openOwnerCards(): Map<string, number> {
 
 type Who = { owner: true } | { owner: false; agentId: string };
 
-/** Who is deciding: the owner on the dashboard, or by his words relayed by an agent that did not work the row
- *  (a cancel by the main agent; an approve or send back of the one hand-in he was asked about, from a message
+/** Who is deciding: the owner on the dashboard, or by his words relayed by an agent (a cancel by the main agent; an
+ *  approve or send back, by an agent that did not work the row, of the one hand-in he was asked about, from a message
  *  written after he was asked, an approval only as his whole message), or else the agent itself. */
 function deciderOf(input: DecideInput): Who | { refused: string } {
   if (input.deciderAgentId === null) return { owner: true };
   const relayer = input.deciderAgentId;
   if (input.ownerQuote === undefined || input.ownerQuote.trim() === '') return { owner: false, agentId: relayer };
   const no = (why: string): { refused: string } => ({ refused: `${why} Nothing changed.` });
-  if (workersOf(input.workId).has(relayer)) return no('you worked this, so you cannot pass on his decision of it; he taps the card.');
   let after: number | undefined;
   if (input.verdict === 'cancel') {
     if (!isPrimaryAgent(relayer)) return no('only the main agent cancels a task on the owner\'s words.');
   } else if (input.verdict === 'approve' || input.verdict === 'send_back') {
+    if (workersOf(input.workId).has(relayer)) return no('you worked this, so you cannot pass on his decision of it; he taps the card.');
     const cards = openOwnerCards();
     after = cards.get(input.workId);
     if (after === undefined) return no('the owner\'s relayed words decide only a hand-in he was asked about.');
@@ -139,12 +141,23 @@ function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): 
   return moved;
 }
 
+/** A helper's piece called off ends the job on it in the same unit (`transition`'s cascade): the piece's end is the
+ *  ground, recorded as the owner's when that end was his, else the engine's. */
+function endJobsOfPiece(pieceId: string, byOwner: boolean): void {
+  const jobs = getDb().prepare(`SELECT t.id, t.state FROM work p JOIN work t ON ${jobOfPieceSql('t', 'p')} AND t.opened_at <= p.closed_at
+      AND t.state NOT IN ('done', 'failed', 'abandoned') WHERE p.id = ?`).all(pieceId) as Array<{ id: string; state: WorkState }>;
+  for (const t of jobs) {
+    applyDecision(t.id, t.state, 'abandoned', { verdict: 'cancel', reason: 'the job it was for was called off', deciderId: byOwner ? OWNER_ID : ENGINE_ID, by: byOwner ? 'owner' : 'agent', outcome: 'cant_be_done', run: false });
+  }
+}
+onPieceEnded(endJobsOfPiece);
+
 /** THE DECISION (header). */
 export function decide(input: DecideInput): DecideResult {
   if (!VERDICTS.includes(input.verdict)) return refused(`"${String(input.verdict)}" is not a verdict. Use approve or send_back.`);
   const row = getDb().prepare(
-    `SELECT id, title, state, agent_id AS worker, a2a_thread_id AS thread FROM work w WHERE w.id = ? AND ((${taskScope('w')}) OR (${projectScope('w')}))`,
-  ).get(input.workId) as { id: string; title: string | null; state: WorkState; worker: string; thread: string | null } | undefined;
+    `SELECT id, title, state, agent_id AS worker, a2a_thread_id AS thread, source_message_id AS request FROM work w WHERE w.id = ? AND ((${taskScope('w')}) OR (${projectScope('w')}))`,
+  ).get(input.workId) as { id: string; title: string | null; state: WorkState; worker: string; thread: string | null; request: string | null } | undefined;
   if (!row) return refused(`there is no task or project ${input.workId} on the board.`);
   const name = `"${row.title ?? row.id}" [${row.id}]`;
   const reason = input.reason.trim();
@@ -153,7 +166,8 @@ export function decide(input: DecideInput): DecideResult {
   if ('refused' in who) return refused(who.refused);
 
   if (input.verdict === 'cancel' || input.verdict === 'owner_done') {
-    const ended = input.verdict === 'cancel' && !!row.thread && resultForEndedRequest(row.worker, row.thread);   // its request was called off
+    const ended = input.verdict === 'cancel' && (row.thread ? resultForEndedRequest(row.worker, row.thread)   // its piece was called off
+      : requestEnded(askIdForMessage(row.request ?? '')) === 'called_off');
     if (!who.owner && !ended) return refused(`only the owner cancels or closes ${name} directly. Nothing changed.`);
     if (isTerminal(row.state)) return refused(`${name} is already closed (${row.state}).`);
   } else {

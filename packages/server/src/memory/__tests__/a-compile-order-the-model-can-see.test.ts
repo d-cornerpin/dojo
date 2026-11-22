@@ -68,7 +68,7 @@ describe('the order reaches only the turn that serves the request', () => {
     expect(entry.content).toContain(PIECE_1.trim());
     expect(entry.content).toContain(PIECE_2);
     expect(entry.key).toBe(String(putBack.id));
-    expect(entry.shown).toEqual({ askId, putBackId: putBack.id });
+    expect(entry.shown).toEqual([{ askId, putBackId: putBack.id }]);
     const stored = mockDb.current!.prepare("SELECT content FROM messages WHERE agent_id = ? AND role = 'system'").all(AGENT);
     expect(stored).toEqual([{ content: "All 2 delegated pieces for the owner's request are back." }]);
     // Fired once per put-back: the next step of the same turn is not handed it again.
@@ -90,6 +90,6 @@ describe('the order reaches only the turn that serves the request', () => {
     await resolveJoinsAtBoot();
     const state = withHandBackFacts(initState({ agentId: AGENT } as never), turnOf('m-ask'), AGENT, 2);
     const delivered = markSteerDelivered(state.steerQueue, nextSteer(state.steerQueue)!);
-    expect(delivered.delivered[0].shown).toEqual({ askId, putBackId: newestPutBack(askId)!.id });
+    expect(delivered.delivered[0].shown).toEqual([{ askId, putBackId: newestPutBack(askId)!.id }]);
   });
 });

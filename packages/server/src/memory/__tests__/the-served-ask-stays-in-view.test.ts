@@ -34,6 +34,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { claimAsk } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { liveTurn } from '../../agent/v2/__tests__/helpers/live-turn.js';
 import { getUnsummarisedRows } from '../store.js';
 import { rowsLeavingView } from '../tail-horizon.js';
 import { servedOwnerMessageIds } from '../served-ask.js';
@@ -121,9 +122,7 @@ describe('t145 R4 — only the served owner message is protected, and it is re-e
   /** The park: the serving turn checkpoints (the real note path) and parks its job on a task for the request. */
   let jobTask: string | null = null;
   function parkTurnServing(askId: string): void {
-    const bag = openTurnContext(AGENT);
-    bag.turnNumber = 1;
-    bag.root = { kind: 'ask', id: askId, sourceMessageId: askId };
+    const bag = liveTurn(AGENT, { turnNumber: 1, root: { kind: 'ask', id: askId, sourceMessageId: askId } });
     noteEngineCheckpoint(AGENT, 'turn-budget');
     expect(parkJob(AGENT, 'turn-budget', Date.now())).toBe(true);
     jobTask = bag.jobParked;

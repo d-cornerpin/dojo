@@ -9,7 +9,8 @@ vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async
 import { runMigrations } from '../../db/migrations.js';
 import { parkJob } from '../../work/job-continuation.js';
 import { setHold } from '../../work/done/hold.js';
-import { openTurnContext, endTurnContext } from '../turn-context.js';
+import { endTurnContext } from '../turn-context.js';
+import { liveTurn } from '../v2/__tests__/helpers/live-turn.js';
 import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
 import { ownerAsks, rowOf } from './helpers/long-job.js';
 
@@ -19,9 +20,7 @@ beforeEach(async () => { freshAgentsDb(runMigrations); await ownerAsks('m-1'); }
 function parkOnAnEvent(): { task: string; arrive: () => Promise<void> } {
   let fire!: () => void;
   const event = new Promise<void>((r) => { fire = r; });
-  const bag = openTurnContext(HELPER);
-  bag.turnNumber = 1;
-  bag.root = { kind: 'ask', id: 'm-1', sourceMessageId: 'm-1' };
+  const bag = liveTurn(HELPER, { turnNumber: 1, root: { kind: 'ask', id: 'm-1', sourceMessageId: 'm-1' } });
   expect(parkJob(HELPER, 'waits for the writer', 'event', event)).toBe(true);
   const task = bag.jobParked!;
   endTurnContext(HELPER);

@@ -26,7 +26,12 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
   // delivery rows: a2a rows are stored to the whole second, so a clock bound would sweep in the previous turn's sends.
   // Read only when this response delegated: any other tool step proceeds, so the model sees its result and writes its line.
   const delegatedNow = result.toolCalls.some((tc) => tc.name === 'send_to_agent' || tc.name === 'spawn_agent');
-  const sentRows = counterparty.kind === 'agent' || !delegatedNow ? [] : db.prepare(
+  // An agent's turn serving a task opens its sends under that task, so ending the task ends what it handed on; it goes on.
+  const { root, servedJob } = counterparty.kind === 'agent' && delegatedNow ? ctx.turnCtx : { root: null, servedJob: null };
+  const underTask = servedJob ?? (root?.kind !== 'a2a' ? null : (db.prepare(`SELECT id FROM work WHERE kind = 'task' AND agent_id = ?
+    AND a2a_thread_id = ? AND state NOT IN ('done', 'failed', 'abandoned')`).get(agentId, root.id) as { id: string } | undefined)?.id ?? null);
+  const parent = underTask ?? triggerWorkId;
+  const sentRows = (counterparty.kind === 'agent' && !underTask) || !delegatedNow ? [] : db.prepare(
     `SELECT m.a2a_thread_id AS a2a_thread_id, m.agent_id AS agent_id, m.a2a_intent AS a2a_intent
        FROM deliveries d JOIN messages m ON m.id = d.message_id
       WHERE d.agent_id = @agentId AND d.turn_number = @turnNumber
@@ -41,7 +46,7 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
     // The ask's work row is already claimed, which stops a re-trigger; the join is child rows with an
     // atomic countdown, and the message row is untouched. Its answer comes back through the request.
     // Ends as delegated only when a live piece is out; a send swallowed by another request's piece delegated nothing.
-    if (triggerRow) {
+    if (triggerRow || underTask) {
       try {
         const seen = new Set<string>();
         const threads: DelegationThread[] = [];
@@ -50,7 +55,7 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
           seen.add(r.a2a_thread_id);
           // A follow-up on a thread whose piece belongs to another request is part of that piece, not a second one.
           const open = findJoinChildByThread(agentId, r.a2a_thread_id);
-          if (open && open.parentId !== triggerWorkId) continue;
+          if (open && open.parentId !== parent) continue;
           threads.push({
             threadId: r.a2a_thread_id,
             assigneeAgent: r.agent_id,
@@ -58,17 +63,17 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
             hopCount: threadHopCount(r.a2a_thread_id) ?? 0,
           });
         }
-        const opened = triggerWorkId && threads.length > 0 ? openDelegationJoin({
-          parentWorkId: triggerWorkId,
+        const opened = parent && threads.length > 0 ? openDelegationJoin({
+          parentWorkId: parent,
           agentId,
           // Copied now, never resolved later: the reply returns on the conversation the ask came on.
           replyConversationId: triggerConversationId,
           ttlAt: Date.now() + JOIN_TTL_MINUTES * 60_000,
           threads,
         }) : [];
-        if (opened.length === 0) return proceed(state);
+        if (opened.length === 0 || underTask) return proceed(state);
         logger.info('v2: delegated the owner question, join opened', {
-          agentId, work: triggerWorkId, children: opened.length, ownerRowid: triggerRow.rowid,
+          agentId, work: triggerWorkId, children: opened.length, ownerRowid: triggerRow?.rowid,
         }, agentId);
       } catch (err) {
         logger.warn('v2: delegation join could not be opened', {

@@ -3,7 +3,8 @@
 // model, or a task that owes no message: the run goes to the manager as before. A one-time reminder's only run is its
 // final one, decided the same way on whichever channel it went. A reminder asked on the dashboard, whose request settled
 // on the agent's confirmation, closes on the one line its run's own turn wrote there: that line is never a start line.
-// A reminder a contact asked for by text is never closed on the owner's dashboard copy: it stays not delivered.
+// A reminder a contact asked for by text is never closed on the owner's dashboard copy: it stays not delivered. One the
+// owner asked for by text is not closed on a dashboard line either; a send to him on another of his channels closes it.
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -15,9 +16,11 @@ import '../../../agent/decision-ask.js';
 import { closeRunsThatDelivered, onTaskRunComplete } from '../../../scheduler/runner.js';
 import { freshBoard, deliveredToOwner, ownerSays, stateOf, eventCount, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
+import { turnRow } from '../../../agent/v2/__tests__/helpers/live-turn.js';
 import { installDecisionModel, scriptDecisions, yes, type DecisionCall } from '../../../agent/__tests__/decision-fake.js';
 
 const REMINDER = 'Time to stretch: stand up and roll your shoulders.';
+const OWNER_PHONE = '+15550000001';
 
 /** A live daily schedule of kind `kind` (or a one-time reminder) worked by WORKER, whose open run delivered REMINDER
  *  to the owner on `channel`. */
@@ -33,8 +36,11 @@ function aDeliveredRun(kind: string, model = true, once = false, channel = 'dash
     `INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, sequence, opened_at, updated_at)
      VALUES ('run-1', 'occurrence', ?, ?, 'schedule', 'schedule', ?, 'open', 'occurrence', 0, 0, 'a run', 1, ?, ?)`,
   ).run(TASK, WORKER, TASK, at, at);
-  doneDb().prepare("UPDATE deliveries SET root_kind = 'occurrence', root_id = 'run-1', channel = ?, tool = ? WHERE id = ?")
-    .run(channel, channel === 'dashboard' ? 'auto-route' : channel, deliveredToOwner(WORKER, REMINDER));
+  doneDb().prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('imessage_approved_senders', ?)")
+    .run(JSON.stringify([{ address: OWNER_PHONE, name: 'Owner', is_primary: true, sharing_level: 'full' }]));
+  doneDb().prepare("UPDATE deliveries SET turn_number = ?, root_kind = 'occurrence', root_id = 'run-1', channel = ?, tool = ?, recipient_id = ? WHERE id = ?")
+    .run(turnRow(WORKER, 900, { kind: 'occurrence', id: 'run-1' }), channel, channel === 'dashboard' ? 'auto-route' : channel,
+      channel === 'dashboard' ? null : OWNER_PHONE, deliveredToOwner(WORKER, REMINDER));
 }
 
 async function runFinishes(): Promise<void> {
@@ -127,8 +133,24 @@ describe('a reminder the Dojo saw delivered is approved when the model agrees', 
     doneDb().prepare("UPDATE work SET source_message_id = 'm-contact' WHERE id = ?").run(TASK);
     expect(await closeRunsThatDelivered()).toBe(0);
     expect(doneDb().prepare("SELECT state FROM work WHERE id = 'run-1'").get()).toEqual({ state: 'open' });
-    doneDb().prepare("UPDATE deliveries SET root_kind = 'occurrence', root_id = 'run-1', channel = 'sms', tool = 'sms', recipient_id = '+15550001111' WHERE id = ?")
-      .run(deliveredToOwner(WORKER, 'Time to feed the cat.'));
+    doneDb().prepare("UPDATE deliveries SET turn_number = ?, root_kind = 'occurrence', root_id = 'run-1', channel = 'sms', tool = 'sms', recipient_id = '+15550001111' WHERE id = ?")
+      .run(turnRow(WORKER, 901, { kind: 'occurrence', id: 'run-1' }), deliveredToOwner(WORKER, 'Time to feed the cat.'));
     expect(await closeRunsThatDelivered()).toBe(1);   // the text that reached the contact closes it
+  });
+
+  it('the owner asked by text: his dashboard line does not close the run; an email to his own mailbox does', async () => {
+    aDeliveredRun('reminder', true, true, 'dashboard');
+    scriptDecisions(() => yes(0.9));
+    const ask = ownerSays('Remind me at six to feed the cat', { agent: WORKER, channel: 'imessage',
+      inbound_meta: JSON.stringify({ channel: 'imessage', sender: OWNER_PHONE, relation: 'owner', authorized: true }) });
+    doneDb().prepare('UPDATE work SET source_message_id = ? WHERE id = ?').run(ask, TASK);
+    expect(await closeRunsThatDelivered()).toBe(0);
+    doneDb().prepare("INSERT INTO google_accounts (id, kind, position, email, connected) VALUES ('g-owner', 'user', 0, 'owner@example.com', 1)").run();
+    doneDb().prepare("UPDATE deliveries SET turn_number = ?, root_kind = 'occurrence', root_id = 'run-1', channel = 'email', tool = 'email_send', recipient_id = 'owner@example.com' WHERE id = ?")
+      .run(turnRow(WORKER, 902, { kind: 'occurrence', id: 'run-1' }), deliveredToOwner(WORKER, 'Time to feed the cat.'));
+    expect(await closeRunsThatDelivered()).toBe(1);
+    await vi.dynamicImportSettled();
+    await new Promise((r) => setTimeout(r, 100));
+    expect([stateOf(), decidedBy()]).toEqual(['done', 'engine']);
   });
 });

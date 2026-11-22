@@ -121,6 +121,35 @@ describe('the first boot of this build', () => {
     expect(waiting, 'nothing inherited is auto-served').toEqual([askIdForMessage('m-fresh')]);
   });
 
+  it('an open turn months older than the process that just died is never taken for its work: its request is parked', () => {
+    // An older version left this turn open and its request claimed; the dead process's own turn holds the roof quote.
+    ask('m-ancient', 'Did the plumber ever call back?', OWNER);
+    claimAsk(askIdForMessage('m-ancient'), AGENT);
+    stampClaimingTurn(askIdForMessage('m-ancient'), 4);
+    db().prepare(`INSERT INTO turns (agent_id, turn_number, kind, root_kind, root_id, started_at, answered)
+      VALUES (?, 4, 'user', 'ask', 'm-ancient', datetime('now', '-60 days'), 0)`).run(AGENT);
+    resetWorkingAgentsToIdleAtBoot(Date.now() - 3_600_000);   // the dead process started an hour ago, by its boot stamp
+    sweepBootStaleness();
+    abandonUnservableAsks();
+    reconcileOrphanedClaims({ inheritedBacklog: true });
+    expect(stateOf('m-ancient'), 'parked as inherited backlog, never served in a burst').toBe('blocked');
+    expect(stateOf('m-fresh'), 'the dead process\'s own request is handed back').toBe('open');
+  });
+
+  it('with no boot stamp, an older open turn of the agent left working is still not the dead process\'s: parked', () => {
+    ask('m-ancient', 'Did the plumber ever call back?', OWNER);
+    claimAsk(askIdForMessage('m-ancient'), AGENT);
+    stampClaimingTurn(askIdForMessage('m-ancient'), 4);
+    db().prepare(`INSERT INTO turns (agent_id, turn_number, kind, root_kind, root_id, started_at, answered)
+      VALUES (?, 4, 'user', 'ask', 'm-ancient', datetime('now', '-60 days'), 0)`).run(AGENT);
+    resetWorkingAgentsToIdleAtBoot(null);   // the first start after the update, or an unreadable stamp
+    sweepBootStaleness();
+    abandonUnservableAsks();
+    reconcileOrphanedClaims({ inheritedBacklog: true });
+    expect(stateOf('m-ancient')).toBe('blocked');
+    expect(stateOf('m-fresh'), 'the turn the dead process was running is its own').toBe('open');
+  });
+
   it('tells the agent ONCE, listing each owed message: who, which conversation, its age, a snippet', () => {
     boot(true);
     const n = owedNotices();

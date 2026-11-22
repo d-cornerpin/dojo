@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
@@ -19,7 +20,10 @@ import {
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
 import { workSettled, noteUnsettled, findObligationByTypedId, type Actor } from '../work/store.js';
-import { writeAssignee } from '../work/row-authority.js';
+import { moveAssignee, writeAssignee } from '../work/row-authority.js';
+import { linkedTaskOf } from '../work/ask-settlement.js';
+import { callOff, OWNER } from '../work/call-off.js';
+import { requestOfTurn } from '../work/job-continuation.js';
 import { isTerminalName } from '../work/terminal-states.js';
 import { decide } from '../work/done/decide.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
@@ -345,11 +349,17 @@ export function closeProjectAndOpenTasks(params: {
     .all(projectId) as Array<{ id: string; state: string }>;
   const alreadyClosed = tasks.filter((t) => isTerminalName(t.state)).length;
   // The decision closes the project's open tasks with it; a project its tasks already settled is closed.
-  const settled = isTerminalName((getDb().prepare('SELECT state FROM work WHERE id = ?').get(projectId) as { state: string } | undefined)?.state ?? '');
-  const pr = settled ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
+  const stateNow = (id: string): string => (getDb().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string } | undefined)?.state ?? '';
+  // One unit: each open task called off as what it is, then the project's own decision.
+  const pr = withUnit(() => {
+    if (verdict === 'cancel' && !isTerminalName(stateNow(projectId))) {
+      for (const t of tasks) if (!isTerminalName(t.state)) callOff(t.id, OWNER, reason);
+    }
+    return isTerminalName(stateNow(projectId)) ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
+  });
   const unsettled = pr?.kind === 'refused' ? [{ workId: projectId, text: pr.text }]
     : (pr?.unclosed ?? []).map((workId) => ({ workId, text: 'did not close with its project' }));
-  const tasksClosed = pr?.kind === 'decided' ? tasks.length - alreadyClosed - pr.unclosed.length : 0;
+  const tasksClosed = tasks.filter((t) => !isTerminalName(t.state) && isTerminalName(stateNow(t.id))).length;
   logger.info('Project bulk-closed by the owner', { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, verdict });
 
   for (const t of tasks) {
@@ -363,7 +373,7 @@ export function closeProjectAndOpenTasks(params: {
     broadcast({ type: 'tracker:project_updated', data: project });
   }
 
-  return { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, unsettled, projectClosed: settled || pr?.kind === 'decided' };
+  return { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, unsettled, projectClosed: isTerminalName(stateNow(projectId)) };
 }
 
 export function updateProject(
@@ -502,16 +512,25 @@ export function autoCreateAssignTask(params: {
       return null;
     }
 
-    // A transfer's task rides its job's ASSIGN and takes its thread; one that has a thread by then is not taken.
-    if (params.taskId && db.prepare('UPDATE work SET a2a_thread_id = ?, updated_at = ? WHERE id = ? AND a2a_thread_id IS NULL')
-      .run(params.threadId, Date.now(), params.taskId).changes === 1) return { taskId: params.taskId, isNew: true };
-
     // Reuse if a task already exists for this thread.
     const existing = db
       .prepare(`SELECT work.id AS id FROM work WHERE ${TASK_WHERE} AND work.a2a_thread_id = ? LIMIT 1`)
       .get(params.threadId) as { id: string } | undefined;
     if (existing?.id) {
       return { taskId: existing.id, isNew: false };
+    }
+
+    // The job's task is the one named; with none named (undefined, not null) it is the sender's own open, thread-less
+    // task for the request its turn serves, moved to the receiver. Either takes the thread; else the job gets a new task.
+    const own = params.taskId === undefined ? linkedTaskOf(params.senderId, requestOfTurn(params.senderId)) : null;
+    const ownMoves = !!own && !!db.prepare('SELECT 1 FROM work WHERE id = ? AND a2a_thread_id IS NULL').get(own)
+      && moveAssignee({ taskId: own, by: 'agent', actorId: params.senderId, cause: 'coordination', to: { agentId: params.receiverId }, door: 'send_to_agent(ASSIGN)' }).ok;
+    const taken = params.taskId ?? (ownMoves ? own : null);
+    if (taken && db.prepare('UPDATE work SET a2a_thread_id = ?, updated_at = ? WHERE id = ? AND a2a_thread_id IS NULL')
+      .run(params.threadId, Date.now(), taken).changes === 1) {
+      patchWork(taken, { goal: params.payload.trim().slice(0, 2000) || undefined });   // reviewed against the brief it was handed
+      broadcastTaskSettled(taken, null);
+      return { taskId: taken, isNew: true };
     }
 
     // Title: first sentence (or first 80 chars) of the payload, cleaned up.

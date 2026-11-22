@@ -14,7 +14,7 @@ import { runMigrations } from '../../../db/migrations.js';
 import { deliverDueReplies } from '../channel-sender.js';
 import { freshReplyDb, imessage, replyRows } from './helpers/reply-sender.js';
 import { claimedAsk } from './helpers/owner-stop.js';
-import { CONV, askRow, endTurn } from './helpers/text-request.js';
+import { CONV, askRow, endTurn, turnRow } from './helpers/text-request.js';
 
 import { queueReply } from '../deliveries.js';
 import { AGENT, PERSON } from './helpers/reply-sender.js';
@@ -29,6 +29,7 @@ beforeEach(() => {
 describe('a start line alone never holds a request', () => {
   it('the request goes back open while only its start line waits', async () => {
     const ask = claimedAsk('msg-1', CONV, 1);
+    turnRow(1);
     await queueReply({ agentId: AGENT, turnNumber: 1, root: { kind: 'ask', id: 'msg-1', sourceMessageId: 'msg-1', conversationId: CONV }, text: 'on it', address: { channel: 'imessage', to: PERSON }, kind: 'start-line' });
     settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 1 });
     expect(replyRows()[0].outcome).toBe('pending');

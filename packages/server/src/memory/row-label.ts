@@ -5,6 +5,7 @@
 import type { Message } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { getOwnerName } from '../config/platform.js';
+import { requestEnded } from '../work/ask-settlement.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { renderInstant, renderMessageTimeStamp } from './message-stamp.js';
 import { subjectKindsBySeq, type SubjectKind } from './message-store.js';
@@ -52,6 +53,7 @@ export class LabelFacts {
   private readonly wakes = new Map<number, string | null>();
   private readonly peers = new Map<string, string>();
   private readonly receipts = new Map<string, { channel: string; at: string } | null>();
+  private readonly ended = new Map<string, boolean>();
   private served: string | null | undefined;
   constructor(private readonly agentId: string) {}
 
@@ -162,6 +164,12 @@ export class LabelFacts {
     return this.receipts.get(messageId) ?? null;
   }
 
+  /** The person's message whose request was called off (its ask abandoned): a stored, one-way fact. */
+  calledOff(messageId: string): boolean {
+    if (!this.ended.has(messageId)) this.ended.set(messageId, requestEnded('ask:' + messageId) === 'called_off');
+    return this.ended.get(messageId) === true;
+  }
+
   /** The request a delivered result answers, by instant + first words (two in a minute differ). */
   requestInstant(resultMessageId: string): string | null {
     try {
@@ -240,12 +248,14 @@ export function labelRows(agentId: string, rows: Message[]): Map<string, string>
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     const subject = rowSubject(m, facts);
     const isToolCall = m.role === 'assistant' && typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
+    // A person's message whose request was called off says so on every view, so no later turn takes it as work.
+    const mark = (label: string): string => (m.role === 'user' && facts.calledOff(m.id) ? label.slice(0, -1) + ' · ended: do not do this]' : label);
     if (subject !== current) {
-      out.set(m.id, renderRowLabel(m, facts));
+      out.set(m.id, mark(renderRowLabel(m, facts)));
       current = subject;
     } else if (!isToolCall) {
       const at = renderMessageTimeStamp(m.createdAt);
-      if (at) out.set(m.id, at);
+      if (at) out.set(m.id, mark(at));
     }
   }
   return out;

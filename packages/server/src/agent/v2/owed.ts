@@ -10,8 +10,9 @@ import { originOfTasks, type JobOrigin } from '../../work/job-origin.js';
 import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { turnContext } from '../turn-context.js';
 import { parkedJobs } from '../live-work.js';
-import { askIdForMessage, openPieceOnSql } from '../../work/store.js';
-import { linkedTaskOf, jobHeldAt } from '../../work/ask-settlement.js';
+import { askIdForMessage, helperWorksOnSql, openPieceOnSql } from '../../work/store.js';
+import { jobHeldAt } from '../../work/ask-settlement.js';
+import { requestsTakenUpBy } from '../../work/task-turns.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
 import {
   getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, findUnservedTerminalWake, askRoot,
@@ -160,7 +161,7 @@ const REQUEST_ROW = `SELECT seq AS rowid, id AS messageId, a2a_thread_id AS thre
     created_at AS createdAt
   FROM messages WHERE agent_id = ? AND role = 'user' AND a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK') AND swept_at IS NULL`;
 
-/** Which request a Stop ends: the live turn's; else every parked job's, every ask waiting on a helper, and the latest
+/** Which request a Stop ends: the live turn's (every ask it claimed); else every parked job's, every ask waiting on a helper, and the latest
  *  turn's while still started (an ask claimed, held, or open with a due; another agent's request unanswered or its
  *  job parked); and their job tasks. */
 export function stoppedRequestsOf(agentId: string): StoppedRequests {
@@ -179,16 +180,12 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
   ).get(agentId) as { n: number; kind: string | null; id: string | null } | undefined;
   const root = live ? live.root : latest?.kind && latest.id ? { kind: latest.kind, id: latest.id } : null;
 
-  // The request behind the root: an ask, or another agent's request (re-read, so a swept one is not ended twice).
+  // The requests the live turn took up, else the latest turn's, and another agent's request (re-read, so a swept one
+  // is not ended twice).
   let request = live?.servedRequest ? requestRow('seq = ?', live.servedRequest.rowid)
     : !live && !root && latest ? requestRow('served_by_turn = ?', latest.n) : undefined;
-  const ask = root?.kind === 'ask' ? { id: askIdForMessage(root.id) }
-    : root?.kind === 'engine' ? one(`SELECT CASE WHEN root_kind = 'ask' THEN 'ask:' || root_id
-        WHEN task_id LIKE 'ask:%' THEN task_id END AS id FROM messages WHERE id = ?`, root.id)
-    : root?.kind === 'a2a' ? one(`SELECT parent_id AS id FROM work WHERE agent_id = ? AND root_kind = 'a2a_thread'
-        AND root_id = ? AND parent_id IS NOT NULL ORDER BY opened_at DESC LIMIT 1`, agentId, root.id)
-    : undefined;
-  if (root?.kind === 'a2a' && !ask) request ??= requestRow('a2a_thread_id = ?', root.id);
+  const taken = live ? requestsTakenUpBy(agentId, live.turnNumber!) : latest ? requestsTakenUpBy(agentId, latest.n) : [];
+  if (root?.kind === 'a2a' && (live || taken.length === 0)) request ??= requestRow('a2a_thread_id = ?', root.id);
   const run = root?.kind === 'occurrence'
     ? one("SELECT parent_id AS id FROM work WHERE id = ? AND parent_id IS NOT NULL AND state = 'open'", root.id)
     : undefined;
@@ -198,9 +195,8 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
   const parked = live ? [] : parkedJobs(agentId).map((j) => ({ id: j.id, origin: originOfTasks(agentId, [j.id]) }));
   const parkedAsks = parked.map((j) => (j.origin?.kind === 'ask' ? askIdForMessage(j.origin.messageId) : null));
   const waiting = live ? [] : (db.prepare(`SELECT a.id FROM work a WHERE a.agent_id = ? AND a.kind = 'ask' AND a.state = 'blocked'
-    AND EXISTS (SELECT 1 FROM work p WHERE p.parent_id = a.id AND p.kind = 'task' AND p.state IN ('open', 'claimed', 'blocked'))`)
-    .all(agentId) as Array<{ id: string }>).map((a) => a.id);
-  const asks = [...new Set([ask?.id, ...parkedAsks, ...waiting])]
+    AND ${helperWorksOnSql('a')}`).all(agentId) as Array<{ id: string }>).map((a) => a.id);
+  const asks = [...new Set([...taken, ...parkedAsks, ...waiting])]
     .filter((id): id is string => !!id && !!one(`SELECT id FROM work WHERE id = ?
       AND (state IN ('claimed', 'blocked') OR (state = 'open' AND next_attempt_at IS NOT NULL))`, id));
   const candidates = [request,
@@ -210,11 +206,10 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
       || threadTasks(r.threadId).some((t) => t.due !== null)))
     .map((r) => [r.rowid, r] as const)).values()];
 
-  // The job tasks: the live turn's job, the run's schedule, the parked ones, the task linked to an ask or named by
-  // its job hold, and the working tasks on a request's thread.
+  // The job tasks: the live turn's job, the run's schedule, the parked ones, the task named by an ask's job hold. A
+  // request's own jobs end with it (`callOff`); Stop holds only what is left.
   const jobs = new Set([live?.servedJob, live?.jobParked, run?.id, ...parked.map((j) => j.id),
-    ...asks.flatMap((a) => [linkedTaskOf(agentId, a.slice('ask:'.length)), jobHeldAt(a)?.task]),
-    ...requests.flatMap((r) => threadTasks(r.threadId).map((t) => t.id))].filter((t): t is string => !!t));
+    ...asks.map((a) => jobHeldAt(a)?.task)].filter((t): t is string => !!t));
   return { liveRun: !!live, asks, runTasks: run ? [run.id] : [], requests, jobs: [...jobs] };
 }
 

@@ -29,6 +29,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { insertMessage } from '../message-store.js';
 import { claimAsk } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { liveTurn } from '../../agent/v2/__tests__/helpers/live-turn.js';
 import { checkAndCompact } from '../compaction.js';
 import { __resetBrakesForTests } from '../compaction-brakes.js';
 import { assembleContext } from '../assembler.js';
@@ -88,9 +89,7 @@ function firstTurnOfAJob(): void {
   // t194: the turn's work is heavy (an overflow is what forces these passes), so the ask lies before the
   // protected recent part, which is sized in tokens now rather than the 40-row rung.
   for (let i = 0; i < 70; i++) say('assistant', `turn row ${i} ${'w'.repeat(1_200)}`);
-  const bag = openTurnContext(AGENT);
-  bag.turnNumber = 1;
-  bag.root = { kind: 'ask', id: 'ask-row', sourceMessageId: 'ask-row' };
+  const bag = liveTurn(AGENT, { turnNumber: 1, root: { kind: 'ask', id: 'ask-row', sourceMessageId: 'ask-row' } });
   bag.conversationId = 'conv-dash';
 }
 /** The job's own turn, as the preflight picks up its parked task: rooted in the request the task names. */

@@ -12,6 +12,7 @@ import { createLogger } from '../logger.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
+import { requestsTakenUpBy, servedBy } from './task-turns.js';
 import { ENGINE_SCAFFOLD_ROOT_KIND, PARKED_JOB_TITLE, handedInExpr, heldByOwnerSql } from './tracker-view.js';
 import { delegatedRelayEvidence, turnEndedInModelSilence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
@@ -23,7 +24,7 @@ import { broadcast } from '../gateway/ws.js';
 import { announceAgentLiveWork, serveLater } from '../agent/v2/serve-later.js';
 import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import {
-  appendWorkEvent, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState, stampClaimingTurn,
+  abandonedBySql, appendWorkEvent, jobOfPieceSql, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState, stampClaimingTurn,
   transition,
   type WorkState,
 } from './store.js';
@@ -440,14 +441,35 @@ function undeliveredReply(ask: AskRow, turnNumber: number | null, atVerdict: boo
   ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded) as { id: string; outcome: string; detail: string | null } | undefined) ?? null;
 }
 
-/** SQL: task `t` was called off by the owner (its move to abandoned was his). */
-export const CALLED_OFF_BY_OWNER = (t: string): string => `${t}.state = 'abandoned' AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = ${t}.id
-  AND e.kind = 'transition' AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = 'owner')`;
-
 /** The request (its row, or its id) waits on delegated work. */
 export function joinOutstanding(ask: AskRow | string): boolean {
   const a = typeof ask === 'string' ? readAsk(ask) : ask;
   return !!a && ((a.remaining_children ?? 0) > 0 || a.compile_pending === 1);
+}
+
+/** How the request ended, when it was called off or failed; null while it stands or once it was answered. */
+export function requestEnded(ask: AskRow | string): 'called_off' | 'failed' | null {
+  const a = typeof ask === 'string' ? readAsk(ask) : ask;
+  return a?.state === 'abandoned' ? 'called_off' : a?.state === 'failed' ? 'failed' : null;
+}
+
+/** SQL: task `c` is one of request `a`'s cards (a task its agent opened for the request's message, any holder). */
+export const cardOfSql = (c: string, a: string): string =>
+  `${c}.kind = 'task' AND ${c}.root_kind <> 'a2a_thread' AND ${c}.requester_id = ${a}.agent_id AND ${c}.source_message_id = ${a}.root_id`;
+
+/** What is left of request `askId`'s parts (its helpers' pieces, its cards, its pictures and songs): one still works,
+ *  every one was ended by the owner, or neither. A card that is a piece's job is stood for by that piece. */
+export function requestParts(askId: string): 'working' | 'his' | 'ended' {
+  const part = `((x.parent_id = a.id AND x.root_kind = 'a2a_thread') OR (${cardOfSql('x', 'a')} AND NOT EXISTS (SELECT 1 FROM work p
+    WHERE p.parent_id = a.id AND p.root_kind = 'a2a_thread' AND ${jobOfPieceSql('x', 'p')})))`;
+  const media = (cond: string): string => ['generation_jobs', 'video_jobs']
+    .map((t) => `EXISTS (SELECT 1 FROM ${t} g WHERE g.source_message_id = a.root_id AND ${cond})`).join(' OR ');
+  const r = getDb().prepare(`SELECT EXISTS (SELECT 1 FROM work x WHERE ${part} AND x.state NOT IN ('done', 'failed', 'abandoned', 'handed_in'))
+        OR ${media(`g.status NOT IN (${TERMINAL_JOB_STATUS_SQL})`)} AS working,
+      NOT EXISTS (SELECT 1 FROM work x WHERE ${part} AND NOT (x.state = 'abandoned' AND ${abandonedBySql('x', 'owner')}))
+        AND NOT (${media("g.status <> 'cancelled'")}) AS his
+    FROM work a WHERE a.id = ?`).get(askId) as { working: number; his: number } | undefined;
+  return r?.working ? 'working' : r?.his ? 'his' : 'ended';
 }
 
 /** The authority: every ask transition into `done`, and every decision not to, goes through here.
@@ -806,28 +828,33 @@ function settleOnJoin(
 // Async arm: a background job's result (image, music, speech, video) is posted by the worker after the turn
 // that started it, with no turn. The ask settles on a DELIVERED result once nothing is owed: no job out, no
 // delegated work, no open linked tracker task, no turn serving it; whichever ends last
-// re-asks. A request whose jobs were all cancelled and delivered nothing is the owner's call-off: abandoned.
+// re-asks. A request whose every part the owner cancelled, with nothing delivered, ends as his (`requestParts`).
 
-function mediaJobs(askRootId: string): { all: number; out: number; cancelled: number } {
+function mediaJobs(askRootId: string): { all: number; out: number } {
   const db = getDb();
-  const t = { all: 0, out: 0, cancelled: 0 };
+  const t = { all: 0, out: 0 };
   for (const table of ['generation_jobs', 'video_jobs']) {
     const r = db.prepare(
-      `SELECT COUNT(*) AS n, SUM(status NOT IN (${TERMINAL_JOB_STATUS_SQL})) AS o, SUM(status = 'cancelled') AS c FROM ${table} WHERE source_message_id = ?`,
-    ).get(askRootId) as { n: number; o: number | null; c: number | null };
-    t.all += r.n; t.out += r.o ?? 0; t.cancelled += r.c ?? 0;
+      `SELECT COUNT(*) AS n, SUM(status NOT IN (${TERMINAL_JOB_STATUS_SQL})) AS o FROM ${table} WHERE source_message_id = ?`,
+    ).get(askRootId) as { n: number; o: number | null };
+    t.all += r.n; t.out += r.o ?? 0;
   }
   return t;
 }
 
 /** Job hold: while the request's task (linked, or parked by this turn for it) runs, a progress text does not close it:
- *  held at send time while its turn is live; at the end held when parked, or by a job turn not ended on its answer. */
+ *  held at send time while its turn is live; at the end (and at boot) held when parked, or by a job turn not ended on its
+ *  answer. At boot a dead turn that carried the job (its job mark) parks the job again, so it resumes from its row. */
 function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: AskSettlementVerdict, d: string) => AskSettlementOutcome): AskSettlementOutcome | null {
-  if (ctx.at !== 'delivery' && ctx.at !== 'finalize') return null;
+  if (ctx.at !== 'delivery' && ctx.at !== 'finalize' && ctx.at !== 'boot') return null;
   const parked = ctx.parkedTask && ask.claimed_by_turn === ctx.turnNumber && taskNow(ctx.parkedTask).open ? ctx.parkedTask : null;
   const task = linkedTaskOf(ask.agent_id, ask.root_id) ?? parked;
   if (!task) return null;
-  if (ctx.at === 'delivery') return turnContext(ask.agent_id)?.turnNumber === ask.claimed_by_turn ? out('held', 'its job is still running') : null;
+  if (ctx.at === 'delivery') return takenUpByLiveTurn(ask) ? out('held', 'its job is still running') : null;
+  const carried = ctx.at === 'boot' && ctx.turnNumber !== null && !taskNow(task).parked && taskNow(task).open
+    && servedBy(ask.agent_id, ctx.turnNumber).some((s) => s.id === task && s.how === 'job');
+  if (carried) serveLater({ kind: 'task', id: task }, Date.now(), 'its job turn died with the process; the job resumes from its row');
+  if (carried && !qualifyingDelivery(ask, ctx.turnNumber)) return null;   // nothing was said: the person is served, the job in view
   const jobTurnEnded = ctx.jobTurn === true
     && (handBackCauseOf(turnExitReason(ask.agent_id, ctx.turnNumber), ctx) !== 'silence' || !qualifyingDelivery(ask, ctx.turnNumber));
   if (!taskNow(task).parked && !jobTurnEnded) return null;
@@ -846,7 +873,7 @@ function handInOnDelivery(agentId: string, tasks: () => Promise<string[]>, becau
   }).catch((err: unknown) => logger.warn('a delivered job\'s tasks were not handed in', { deliveryId, error: String(err) }, agentId)));
 }
 
-/** On any answer the card a park opened for the request is handed in; on the Dojo's relay of a delegated answer
+/** On any answer the card a park opened for the request is handed in; on the Dojo's own delivery of a delegated answer
  *  the agent's own open cards for it too, since the agent will not finish them. */
 function handInCardsOf(ask: AskRow, deliveryId: string, agentsCards: boolean): void {
   const ids = (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')}
@@ -869,13 +896,15 @@ export function linkedTaskOf(agentId: string, messageId: string | null, opts: { 
     .get(agentId, messageId) as { id: string } | undefined)?.id ?? null;
 }
 
+/** Did the turn running now (other than `ignoreTurn`) take this request up? */
+function takenUpByLiveTurn(ask: AskRow, ignoreTurn: number | null = null): boolean {
+  const live = turnContext(ask.agent_id)?.turnNumber;
+  return live !== undefined && live !== ignoreTurn && requestsTakenUpBy(ask.agent_id, live).includes(ask.id);
+}
+
 function stillOwed(ask: AskRow, ignoreTurn: number | null): string | null {
   if (linkedTaskOf(ask.agent_id, ask.root_id)) return 'a tracker task linked to this request is still open (its holder has not handed it in)';
-  const bag = turnContext(ask.agent_id);
-  if (bag?.root?.kind === 'ask' && bag.root.sourceMessageId === ask.root_id && bag.turnNumber !== ignoreTurn) {
-    return 'a turn serving this request is running';
-  }
-  return null;
+  return takenUpByLiveTurn(ask, ignoreTurn) ? 'a turn serving this request is running' : null;
 }
 
 function settleOnAsyncResult(
@@ -889,9 +918,8 @@ function settleOnAsyncResult(
   const heldAt = ask.state === 'blocked' && jobs.out === 0 ? jobHeldAt(ask.id) : null;
   if (heldAt && !linkedTaskOf(ask.agent_id, ask.root_id, { ownerHeldEnds: true })) {
     const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, heldAt.at);
-    // The owner called the job off: so is the request (the async arm's own rule).
-    const calledOff = !late && !!getDb().prepare(`SELECT 1 FROM work t WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ?
-      AND ${CALLED_OFF_BY_OWNER('t')} LIMIT 1`).get(ask.agent_id, ask.root_id);
+    // The owner called off every part of it: so is the request.
+    const calledOff = !late && requestParts(ask.id) === 'his';
     const r = late
       ? transition(ask.id, { to: 'done', by: 'agent', actorId, resultDeliveryId: late.id, expectedState: 'blocked', reason: `its job ended; answered via ${late.tool}` })
       : calledOff ? transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'blocked', reason: 'the owner called off the job this request waited on' })
@@ -908,7 +936,7 @@ function settleOnAsyncResult(
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
   ).get(ask.agent_id, ask.root_id) as { id: string } | undefined)?.id ?? null;
   if (!named) {
-    if (jobs.cancelled === 0) return out('unchanged', 'no result has reached the owner');
+    if (requestParts(ask.id) !== 'his') return out('unchanged', 'no result has reached the owner');
     const r = transition(ask.id, {
       to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: ask.state,
       reason: 'the owner cancelled the background work this request waited on, and nothing was delivered',
@@ -961,10 +989,10 @@ export function settleAskOnJobEnded(agentId: string, jobId: string): AskSettleme
   return null;
 }
 
-export function settleAskOnTaskEnded(agentId: string, askMessageId: string | null | undefined, threadId: string | null = null, byOwner = false): void {
+export function settleAskOnTaskEnded(agentId: string, askMessageId: string | null | undefined, threadId: string | null = null): void {
   announceAgentLiveWork(agentId);   // an ended task is no longer a parked job Stop would end
   reaskAsync(agentId, askMessageId, null);
-  if (threadId) void import('../agent/a2a-transport.js').then((m) => m.judgeKeptRequests(agentId, threadId, byOwner));
+  if (threadId) void import('../agent/a2a-transport.js').then((m) => m.judgeKeptRequests(agentId, threadId));
 }
 onTaskEnded(settleAskOnTaskEnded);
 
@@ -1067,40 +1095,19 @@ export interface FinalizeSettlementInput extends TurnEnd {
 
 export interface FinalizeSettlementResult { closed: number; held: number; reopened: number }
 
-/** The turn is over: every ask it claimed or assembled gets its verdict. No ask stays `claimed` by a finalized
- *  turn unless its reply is on its way (`work/__tests__/ask-done-census.test.ts`). The claimed set is scoped by
- *  turn, not conversation: an ask picked up and answered elsewhere is still this turn's to dispose of. */
+/** The turn is over: every ask it took up (`root`, `claimed`), closed or assembled gets its verdict; none stays
+ *  `claimed` by a finalized turn unless its reply is on its way. */
 export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSettlementResult {
   const result: FinalizeSettlementResult = { closed: 0, held: 0, reopened: 0 };
-  const db = getDb();
-  const claimed = db.prepare(
-    `SELECT id FROM work
-      WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed' AND claimed_by_turn = ?`,
-  ).all(p.agentId, p.turnNumber) as Array<{ id: string }>;
-  // Third scope: an ask THIS TURN CLOSED (`claimed_by_turn` is cleared by the close, so the turn is found
-  // through the receipt). The arms ask their own questions; the scope only says which rows the turn owns.
-  const closedByThisTurn = db.prepare(
-    `SELECT w.id AS id FROM work w
-      WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'done'
-        AND w.result_delivery_id IN (
-          -- the outcome filter is redundant here (the receipt can only come from a delivered row);
-          -- every reader of this table carries it, so an owner's close receipt is never read as a send.
-          SELECT d.id FROM deliveries d
-           WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered')`,
-  ).all(p.agentId, p.agentId, p.turnNumber) as Array<{ id: string }>;
-
+  const owned: Array<{ workId: string; rowid?: number }> = servedBy(p.agentId, p.turnNumber)
+    .filter((s) => s.kind === 'ask' && ['root', 'claimed', 'closed'].includes(s.how)).map((s) => ({ workId: s.id }));
   const seen = new Set<string>();
   const tally = (v: AskSettlementVerdict): void => {
     if (v === 'closed') result.closed++;
     else if (v === 'held') result.held++;
     else if (v === 'reopened') result.reopened++;
   };
-  for (const r of [...claimed, ...closedByThisTurn]) {
-    if (seen.has(r.id)) continue;
-    seen.add(r.id);
-    tally(settleAsk(r.id, { ...p, at: 'finalize', askedNothing: r.id === p.askedNothing }).verdict);
-  }
-  for (const a of p.assembled ?? []) {
+  for (const a of [...owned, ...(p.assembled ?? [])]) {
     if (seen.has(a.workId)) continue;
     seen.add(a.workId);
     tally(settleAsk(a.workId, { ...p, at: 'finalize', rowid: a.rowid, askedNothing: a.workId === p.askedNothing }).verdict);

@@ -69,7 +69,8 @@ import { __resetBrakesForTests, compactionBrakeMsLeft } from '../compaction-brak
 import { __resetCompactionFailuresForTests } from '../compaction-defect.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
-import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { endTurnContext } from '../../agent/turn-context.js';
+import { liveTurn } from '../../agent/v2/__tests__/helpers/live-turn.js';
 import { parkAfterForcedPass, __resetFullContextWaitForTests } from '../../agent/v2/full-context-wait.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
 import { configRouter } from '../../gateway/routes/config.js';
@@ -142,9 +143,7 @@ const realSummaries = (agentId = AGENT): number =>
 let turnNumber = 100;
 async function overBudgetTurn(agentId: string): Promise<void> {
   const ask = (db().prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1").get(agentId) as { id: string }).id;
-  const bag = openTurnContext(agentId);   // the turn serves the owner's latest message, so its park has a task to date
-  bag.turnNumber = ++turnNumber;
-  bag.root = { kind: 'ask', id: ask, sourceMessageId: ask };
+  const bag = liveTurn(agentId, { turnNumber: ++turnNumber, root: { kind: 'ask', id: ask, sourceMessageId: ask } });   // the turn serves the owner's latest message, so its park has a task to date
   try {
     const own = (db().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string }).model_id;
     const brakedBefore = compactionBrakeMsLeft(agentId) !== null;

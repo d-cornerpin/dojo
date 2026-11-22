@@ -46,7 +46,7 @@ import { validateManifest } from '../../scope.js';
 import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc, type A2AIntent } from '../../a2a-transport.js';
 import { onAgentRecovered } from '../../../healer/injury-recovery.js';
 import { resolveTaskId, getTask, formatResolveError } from '../../../tracker/schema.js';
-import { moveAssignee, planSpawnTask, type SpawnTaskPlan } from '../../../work/row-authority.js';
+import { moveAssignee, ownerAskedInThisTurn, planSpawnTask, type SpawnTaskPlan } from '../../../work/row-authority.js';
 import { setAgentModel } from '../../model-switch.js';
 import { updateGroup as doUpdateGroup, SYSTEM_GROUP_ID as SYS_GROUP_U, getGroupDetail, getGroups as listAllGroups, deleteGroup as doDeleteGroup, SYSTEM_GROUP_ID as SYS_GROUP } from '../../groups.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
@@ -402,11 +402,7 @@ export async function sendToAgent(agentId: string, input: {
         content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. This exchange has gone on long enough: stop, or bring it to the person you work for.`;
         break;
       case 'SEMANTIC_DUPLICATE':
-        // A duplicate-dropped ASSIGN means the work is ALREADY assigned; re-sending
-        // spawns nothing. Do NOT advise a fresh thread: that is the duplicate-task vector.
-        content = intent === 'ASSIGN'
-          ? `Assignment not re-sent: you already assigned essentially this same work to "${agentRef}" moments ago (thread ${result.threadId.slice(0, 8)}). The engine tracks it as a tracker task and you will be woken when they reply or complete it. Do not re-assign; end your turn and wait.`
-          : 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
+        content = 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
         break;
       case 'REQUEST_ENDED':
         content = 'Not delivered: the request this answered was called off, so nothing was passed on. Send nothing more about it.';
@@ -537,7 +533,8 @@ export const agentsHandlers: ToolHandlerMap = {
       // The job is handed over the way any agent is given work: one ASSIGN on its own thread with the job's rules.
       if (args.auto_start !== false) {
         const job = await sendToAgent(agentId, {
-          agent: result.agentId, intent: 'ASSIGN', requiresResponse: true, taskId: given,
+          // A spawn that named a task passes it, or null when it was kept or not moved, so no other task of the sender is given away.
+          agent: result.agentId, intent: 'ASSIGN', requiresResponse: true, taskId: taskPlan ? given : undefined,
           payload: jobBrief({ systemPrompt: args.system_prompt as string, initialMessage: args.initial_message as string | undefined }),
         });
         content += `\n${job.content}`;
@@ -589,7 +586,7 @@ export const agentsHandlers: ToolHandlerMap = {
       content = `Agent ${targetId} is already terminated. No action taken.`;
       return { content, isError };
     }
-    terminateAgent(targetId, `Killed by agent ${agentId}`);
+    terminateAgent(targetId, `Killed by agent ${agentId}`, ownerAskedInThisTurn(agentId, args.user_quote).ok);
     content = `Agent ${targetId} has been terminated.`;
     return { content, isError };
   },

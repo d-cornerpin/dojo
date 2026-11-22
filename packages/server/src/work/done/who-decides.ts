@@ -9,6 +9,7 @@ import { turnContext } from '../../agent/turn-context.js';
 import { repliesSince, type ThreadReply } from '../../memory/message-store.js';
 import { AUDIT_KIND } from '../audit-trail.js';
 import { taskScope } from '../tracker-view.js';
+import { workingExpr } from '../terminal-states.js';
 import { latestHandIn, workerOf, workersOf } from './record.js';
 
 export type Decider = { kind: 'agent'; agentId: string } | { kind: 'owner' };
@@ -76,11 +77,19 @@ export function holdingQuestions(workId: string): PMQuestion[] {
   return pmQuestions(workId).filter((q) => q.at >= handAt && q.at < handAt + QUEUED_TURN_BOUND_MS);
 }
 
-/** The request a card was opened for, of the card's requester (`owed`: an answer is coming, it was not stood down), and its answer. */
+/** The request a card was opened for (by its message, or by its piece's id, which keeps its first thread through a
+ *  hand-off; the newest), of the card's requester (`owed`: an answer is coming, not stood down), its message `root`, its answer. */
 export const requestOf = (id: string) => getDb().prepare(`SELECT a.state IN ('open', 'claimed') OR (a.state = 'blocked' AND (a.remaining_children > 0
-  OR a.compile_pending = 1)) AS owed, d.id, d.recipient_display AS who, d.created_at AS at FROM work w JOIN work a ON a.kind = 'ask' AND a.root_id = w.source_message_id
-  AND a.agent_id = w.requester_id LEFT JOIN deliveries d ON d.id = a.result_delivery_id WHERE w.id = ?`)
-  .get(id) as { owed: number; id: string | null; who: string | null; at: string | null } | undefined;
+  OR a.compile_pending = 1)) AS owed, a.root_id AS root, d.id, d.recipient_display AS who, d.created_at AS at FROM work w JOIN work a ON a.kind = 'ask'
+  AND (a.root_id = w.source_message_id OR EXISTS (SELECT 1 FROM work p WHERE p.id = 'piece:' || a.id || ':' || w.a2a_thread_id))
+  AND a.agent_id = w.requester_id LEFT JOIN deliveries d ON d.id = a.result_delivery_id WHERE w.id = ? ORDER BY a.opened_at DESC LIMIT 1`)
+  .get(id) as { owed: number; root: string; id: string | null; who: string | null; at: string | null } | undefined;
+/** The working task another agent holds for `requesterId`'s request `messageId`, with its holder's name, or null. */
+export function delegatedTaskOf(requesterId: string, messageId: string | null): { id: string; holder: string } | null {
+  const held = messageId ? getDb().prepare(`SELECT w.id, COALESCE(g.name, w.agent_id) AS holder FROM work w LEFT JOIN agents g ON g.id = w.agent_id
+    WHERE ${taskScope('w')} AND w.requester_id = ? AND w.agent_id <> w.requester_id AND ${workingExpr('w', true)}`).all(requesterId) as Array<{ id: string; holder: string }> : [];
+  return held.find((t) => requestOf(t.id)?.root === messageId) ?? null;
+}
 /** Until when this hand-in is held (0 when nothing holds it): the PM's questions, or for good while its request is owed. */
 export function questionsHoldUntil(workId: string): number {
   if (requestOf(workId)?.owed) return Infinity;

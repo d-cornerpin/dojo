@@ -4,7 +4,6 @@ import { getDb } from '../../db/connection.js';
 import { getAgentRuntime, stopByOwner } from '../../agent/runtime.js';
 import { liveWork } from '../../agent/live-work.js';
 import { terminateAgent } from '../../agent/spawner.js';
-import { judgeKeptRequests } from '../../agent/a2a-transport.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
@@ -476,8 +475,7 @@ agentsRouter.delete('/:id', async (c) => {
     return c.json({ ok: false, error: 'Agent is already terminated' }, 400);
   }
 
-  await judgeKeptRequests(id, null, true);
-  terminateAgent(id, 'Terminated via dashboard');
+  terminateAgent(id, 'Terminated via dashboard', true);
   return c.json({ ok: true, data: { agentId: id, status: 'terminated' } });
 });
 
