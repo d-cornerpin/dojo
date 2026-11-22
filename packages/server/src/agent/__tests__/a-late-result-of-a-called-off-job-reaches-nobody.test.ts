@@ -14,9 +14,9 @@ vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
 
 import { testDb } from '../v2/__tests__/helpers/reply-sender.js';
 import { stopByOwner } from '../runtime.js';
-import { sweepExpiredJoins } from '../a2a-transport.js';
+import { sweepExpiredJoins, failJoinPieceForAbandonedAsk } from '../a2a-transport.js';
 import { relayRows } from './helpers/text-relay.js';
-import { call, delegated, lateReply, ownerTurn, settled, ASK, AGENT, HELPER } from './helpers/call-off-world.js';
+import { boardCancel, call, delegated, lateReply, ownerTurn, settled, ASK, AGENT, HELPER } from './helpers/call-off-world.js';
 
 describe('a late result of a called-off job reaches nobody', () => {
   it("after the owner's Stop with nothing running", async () => {
@@ -32,6 +32,14 @@ describe('a late result of a called-off job reaches nobody', () => {
     expect((await call(AGENT, 'work_close_request', { id: ASK, disposition: 'dropped', note: 'Never mind.' })).isError).toBeFalsy();
     await settled();
     expect(await lateReply()).toBe(false);
+  });
+
+  it("the Dojo gave the piece up, then the owner cancelled the helper's job: his cancel wins, the answer is refused (P5)", async () => {
+    delegated();
+    await failJoinPieceForAbandonedAsk('req-thread-relay-0001', 'relay-00', HELPER);   // the engine's budget give-up
+    expect(await boardCancel('task-helper-1')).toBe(200);
+    await settled();
+    expect(await lateReply(HELPER)).toBe(false);
   });
 
   it('a piece the Dojo gave up keeps the late road: its answer reaches the agent', async () => {
