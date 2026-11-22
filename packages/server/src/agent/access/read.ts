@@ -11,6 +11,7 @@ import { getDb } from '../../db/connection.js';
 import { TOOL_CATEGORIES } from '../../tools/categories.js';
 import { deriveLegacyGrants } from './derive.js';
 import { canonicalizeToolsPolicy } from './tools-policy.js';
+import { LIFT_TOOL } from '../v2/repeat-rule.js';
 
 // The memo keys on the stored text itself: a write to the column self-invalidates the cache
 // without any write site remembering to forget, so no writer can leave a stale verdict.
@@ -139,11 +140,17 @@ export function toolCategoryLabels(tool: string): string[] {
   return [...categoriesOf(tool)];
 }
 
+/** Held whatever the groups or an allow list say (a deny by name still wins): loading a tool, lifting a loop stop, and
+ *  for an agent given a job on an agent's thread (every ASSIGN opens or stamps a task), the ways to hand it back. */
+export const alwaysHeld = (agentId: string): string[] => [...HELD, ...(getDb().prepare(
+  "SELECT 1 FROM work WHERE agent_id = ? AND kind = 'task' AND a2a_thread_id IS NOT NULL LIMIT 1").get(agentId) ? JOB_HELD : [])];
+const HELD = ['load_tool_docs', LIFT_TOOL], JOB_HELD = ['send_to_agent', 'complete_task'];
+
 // A tool with no labels PASSES: the grant is a positive layer, not an allow-list of every name.
 // One predicate for the surface strip AND the executor gate: two copies is how they drift apart.
 export function toolCategoryGranted(agentId: string, tool: string): boolean {
   const labels = categoriesOf(tool);
-  if (labels.length === 0) return true;
+  if (labels.length === 0 || HELD.includes(tool) || (JOB_HELD.includes(tool) && alwaysHeld(agentId).includes(tool))) return true;
   const grants = getAccessGrants(agentId);
   return labels.some((l) => categoryGranted(grants, l));
 }
