@@ -243,7 +243,9 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
         reason: finished ? 'the work it was for is finished' : input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',
       });
     }
-    if (ends && input.to === 'abandoned' && (row.kind === 'ask' || row.root_kind === 'a2a_thread')) {
+    // Called off (not given up by the engine, which keeps the late road): the work under it stops with it.
+    const calledOff = ends && input.to === 'abandoned' && input.by !== 'scheduler';
+    if (calledOff && (row.kind === 'ask' || row.root_kind === 'a2a_thread')) {
       afterCommit(() => void import('../agent/a2a-transport.js')
         .then((m) => m.endTheWorkUnder(workId, input.by === 'owner', actorId))
         .catch((err: unknown) => logger.warn('the work under an ended request was not ended', { workId, error: String(err) })));
@@ -284,8 +286,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       claim: input.claim ?? null,
       note: input.note ?? null,
     }, at);
-    // A piece called off (not given up by the engine) takes its helper's job with it, in this unit (`work/done/decide.ts`).
-    if (ends && input.to === 'abandoned' && input.by !== 'scheduler' && row.root_kind === 'a2a_thread') notifyPieceEnded(workId, input.by === 'owner');
+    // A piece called off takes its helper's job with it, in this unit (`work/done/decide.ts`).
+    if (calledOff && row.root_kind === 'a2a_thread') notifyPieceEnded(workId, input.by === 'owner');
 
     // EFFECT: a child settling decrements its parent's countdown in the same transaction as its own state
     // change, guarded at zero so a double-settle cannot drive it negative.

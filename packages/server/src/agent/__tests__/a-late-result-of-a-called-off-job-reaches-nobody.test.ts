@@ -16,7 +16,7 @@ import { testDb } from '../v2/__tests__/helpers/reply-sender.js';
 import { stopByOwner } from '../runtime.js';
 import { sweepExpiredJoins, failJoinPieceForAbandonedAsk } from '../a2a-transport.js';
 import { relayRows } from './helpers/text-relay.js';
-import { boardCancel, call, delegated, lateReply, ownerTurn, settled, ASK, AGENT, HELPER } from './helpers/call-off-world.js';
+import { boardCancel, call, delegated, stateOf, stopped, lateReply, ownerTurn, settled, ASK, AGENT, HELPER } from './helpers/call-off-world.js';
 
 describe('a late result of a called-off job reaches nobody', () => {
   it("after the owner's Stop with nothing running", async () => {
@@ -40,6 +40,13 @@ describe('a late result of a called-off job reaches nobody', () => {
     expect(await boardCancel('task-helper-1')).toBe(200);
     await settled();
     expect(await lateReply(HELPER)).toBe(false);
+  });
+
+  it('a piece the Dojo gave up leaves its helper working: its turn goes on and its job stays open (P5b)', async () => {
+    delegated();
+    await failJoinPieceForAbandonedAsk('req-thread-relay-0001', 'relay-00', HELPER);
+    await settled();
+    expect([stopped(HELPER), stateOf('task-helper-1')]).toEqual([false, 'claimed']);
   });
 
   it('a piece the Dojo gave up keeps the late road: its answer reaches the agent', async () => {
