@@ -95,7 +95,7 @@ export function clearOn(signal: Signal): void {
     const drop = (r: { scope: string; key: string }): void => { del.run(r.scope, r.key); };
     switch (signal.kind) {
       case 'person-spoke': rows(TRANSIENT).filter((r) => r.agent === signal.agentId || (r.agent === EVERY_AGENT && candidateOf(signal.agentId, r.writer))).forEach(drop); break;
-      case 'own-model-changed': if (signal.agentId) rows(REASONS.filter((r) => r !== 'cannot-hold')).filter((r) => r.agent === signal.agentId).forEach(drop); break;   // a writer's verdict is keyed by that writer
+      case 'own-model-changed': if (signal.agentId) rows(TRANSIENT).filter((r) => r.agent === signal.agentId).forEach(drop); break;   // a writer's verdict is keyed by that writer
       case 'span-written': rows(['check-failed']).filter((r) => r.agent === signal.agentId && signal.spanKeys.includes(r.span)).forEach(drop); break;
       case 'boot': rows(TRANSIENT).forEach(drop); break;
       case 'memory-readable': rows(['memory-unreadable']).forEach(drop); break;

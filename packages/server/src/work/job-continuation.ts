@@ -9,6 +9,11 @@ import { PARKED_JOB_TITLE } from './tracker-view.js';
 
 const logger = createLogger('job-continuation');
 
+/** ONE task carries the turn's work: the one the turn was started from, else the one linked to its request, else the
+ *  first the turn worked. */
+export const jobOfTurn = (agentId: string, request: string | null): string | null =>
+  turnContext(agentId)?.servedJob ?? linkedTaskOf(agentId, request) ?? turnWorkIds(agentId)[0] ?? null;
+
 /** THE ONE DEFINITION OF "PARK": the job's task gets its due time; with no task, a turn serving a request opens the
  *  engine task first. A park with no task and no request continues nothing, and a stopped run parks nothing. */
 export function parkJob(agentId: string, reason: string, due: number | 'event', after?: Promise<unknown>): boolean {
@@ -16,9 +21,7 @@ export function parkJob(agentId: string, reason: string, due: number | 'event', 
   if (isStopFenced(agentId)) return false;
   // The request this turn serves: a person's message, or another agent's request.
   const request = bag?.root?.kind === 'ask' ? bag.root.sourceMessageId : bag?.servedRequest?.messageId ?? null;
-  // ONE task carries the job: the one the turn was started from, else the one linked to its request, else the
-  // first the turn worked, else the engine task opened now for the request.
-  const job = bag?.servedJob ?? linkedTaskOf(agentId, request) ?? turnWorkIds(agentId)[0]
+  const job = jobOfTurn(agentId, request)
     ?? (request && bag?.turnNumber !== undefined
       ? openEngineScaffoldTask(agentId, PARKED_JOB_TITLE, bag.turnNumber, { messageId: request, convKey: bag.convKey ?? null, threadId: bag.servedRequest?.threadId })
       : null);

@@ -69,7 +69,8 @@ export function runTurnTrigger(
 
   // The turn serves the first thing owed. A person comes first, and is the waiting reader's first conversation,
   // in the same order (the owner, then never served, then oldest).
-  const item = nextOwed(agentId)[0];
+  const owed = nextOwed(agentId);
+  const item = owed[0];
   if (item) logger.info('owed: first owed at turn start', { agentId, kind: item.kind, rank: item.rank }, agentId);
   const waitingConvs = getWaitingHumanConversations(agentId);
   // Read before the pickup claim: afterwards this turn's own ask is claimed, and every user turn would
@@ -77,9 +78,12 @@ export function runTurnTrigger(
   const openHumanWorkAtTurnStart = item?.kind === 'person';
   // A parked job is served from its task row; a job started by a person's request continues in that conversation.
   const job = item?.kind === 'job' && waitingConvs.length === 0 ? pickUpJob(agentId, turnCtx, item) : null;
+  // A person's turn also carries that person's due job: the owner's, or one asked in this conversation.
+  const carried = item?.kind === 'person' ? owed.find((i) => i.kind === 'job' && i.job?.ask
+    && (waitingConvs[0]?.owner ? i.job.ask.owner : i.job.ask.key === waitingConvs[0]?.key)) : undefined;
   // A run's turn is addressed from the request that asked for the task, so its result goes where that was asked.
   const jobRow = job?.ask?.row ?? (item?.kind === 'clock' && item.event?.runId ? requestOf(agentId, item.event.taskId) : undefined);
-  const isHumanContinuation = job?.ask?.row !== undefined;
+  const isHumanContinuation = job?.ask?.row !== undefined || carried !== undefined;
   const chosenConvKey = job?.ask ? job.ask.key : (waitingConvs[0]?.key ?? null);
   // `chosenConvKey` stays beside the conversation id because other tables are still keyed by the string.
   let chosenConversationId: string | null = job?.ask?.row ? job.ask.row.conversation_id : (waitingConvs[0]?.oldest?.conversation_id ?? null);
@@ -132,6 +136,7 @@ export function runTurnTrigger(
       return preflightAbandon('pickup-claim-lost');
     }
   }
+  if (carried) pickUpJob(agentId, turnCtx, carried, true);
 
   // Published only here, where `chosenConversationId` is final: an early null made the assembler drop
   // the agent's stamped answers and the model answered again. One `.set()`, one owner.
@@ -152,17 +157,19 @@ function requestOf(agentId: string, taskId: string | null): WaitingConversation[
 }
 
 /** A job item's pickup: in one unit its task's due is cleared and its request, held on the job, is claimed. The turn
- *  is rooted where the job started: a person's request, or its run (another agent's thread is rooted at classification). */
-function pickUpJob(agentId: string, turnCtx: TurnContext, item: OwedItem): NonNullable<OwedItem['job']> {
+ *  is rooted where the job started: a person's request, or its run (another agent's thread is rooted at classification).
+ *  A person's turn that carries the job keeps its own root, and the job stays due to go on in its own turn. */
+function pickUpJob(agentId: string, turnCtx: TurnContext, item: OwedItem, carried = false): NonNullable<OwedItem['job']> {
   const task = item.ref;
   const job = item.job ?? { origin: null, ask: null };
   withUnit(() => {
-    serveLater({ kind: 'task', id: task }, null, 'claimed by its job turn');
+    if (!carried) serveLater({ kind: 'task', id: task }, null, 'claimed by its job turn');
     if (job.ask?.state === 'blocked') claimAsk(job.ask.row.work_id, agentId, 'blocked');
   });
   const run = inFlightOccurrence(task)?.id ?? null;
   turnCtx.servedWork = resolveServedWork(task, run);
   turnCtx.servedJob = task;
+  if (carried) return job;
   const r = job.ask?.row;
   turnCtx.root = r ? { kind: 'ask', id: r.id, sourceMessageId: r.id, conversationId: r.conversation_id }
     : run ? { kind: 'occurrence', id: run, sourceMessageId: null } : null;

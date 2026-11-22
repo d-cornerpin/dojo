@@ -22,6 +22,7 @@ import { recordOwnerRemainder } from '../measure-close-gate.js';
 import { whoDecides } from './who-decides.js';
 import { onDecided } from './effects.js';
 import { endStallCard } from '../../healer/owner-notices.js';
+import { resultForEndedRequest } from '../../agent/v2/counterparty.js';
 
 export type Verdict = 'approve' | 'send_back' | 'cancel' | 'owner_done';
 export interface DecideInput {
@@ -94,7 +95,7 @@ function agentRefusal(agentId: string, workId: string, name: string, verdict: Ve
   if (agentId === ENGINE_ID) {
     const h = latestHandIn(workId);
     const run = inFlightOccurrence(workId, { anyState: true });
-    const ok = verdict === 'approve' && h?.scope === 'run' && h.outcome === 'finished'
+    const ok = verdict === 'approve' && !!h?.scope && h.outcome === 'finished'
       && !!run && occurrenceRunStatus(run.id) === 'complete' && (basis === 'delivered'
       ? owedRunDelivery(run.id) !== null
       : engineProof(workId).some((i) => i.kind === 'measure') && measureSetByCreator(workId));
@@ -142,8 +143,8 @@ function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): 
 export function decide(input: DecideInput): DecideResult {
   if (!VERDICTS.includes(input.verdict)) return refused(`"${String(input.verdict)}" is not a verdict. Use approve or send_back.`);
   const row = getDb().prepare(
-    `SELECT id, title, state FROM work w WHERE w.id = ? AND ((${taskScope('w')}) OR (${projectScope('w')}))`,
-  ).get(input.workId) as { id: string; title: string | null; state: WorkState } | undefined;
+    `SELECT id, title, state, agent_id AS worker, a2a_thread_id AS thread FROM work w WHERE w.id = ? AND ((${taskScope('w')}) OR (${projectScope('w')}))`,
+  ).get(input.workId) as { id: string; title: string | null; state: WorkState; worker: string; thread: string | null } | undefined;
   if (!row) return refused(`there is no task or project ${input.workId} on the board.`);
   const name = `"${row.title ?? row.id}" [${row.id}]`;
   const reason = input.reason.trim();
@@ -152,7 +153,8 @@ export function decide(input: DecideInput): DecideResult {
   if ('refused' in who) return refused(who.refused);
 
   if (input.verdict === 'cancel' || input.verdict === 'owner_done') {
-    if (!who.owner) return refused(`only the owner cancels or closes ${name} directly. Nothing changed.`);
+    const ended = input.verdict === 'cancel' && !!row.thread && resultForEndedRequest(row.worker, row.thread);   // its request was called off
+    if (!who.owner && !ended) return refused(`only the owner cancels or closes ${name} directly. Nothing changed.`);
     if (isTerminal(row.state)) return refused(`${name} is already closed (${row.state}).`);
   } else {
     if (row.state !== 'handed_in') return refused(`${name} is ${row.state}, not handed in; there is nothing to decide.`);

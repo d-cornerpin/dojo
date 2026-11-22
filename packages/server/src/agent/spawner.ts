@@ -660,7 +660,7 @@ export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): vo
 // The timeout is set by the creating agent, and reaching it is a DECISION POINT, never an execution:
 // the engine posts an awareness notice to the CREATOR (or the primary if the creator is gone) and
 // the sub-agent KEEPS RUNNING until spawn_timeout_decision resolves it. timeout_decision_pending is
-// the reboot-safe ledger: 0 nothing pending, 1 creator notified, 2 escalated to the primary once.
+// the reboot-safe ledger: 0 nothing pending, 1 creator woken, 2 nothing more to send (escalated once, or posted idle).
 
 // If no decision lands within this window after the creator notice, escalate
 // once to the primary so the owner hears about it in-voice. Never auto-kill.
@@ -691,8 +691,9 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
   // Already awaiting/decided -- fire once.
   if ((agent.timeout_decision_pending ?? 0) !== 0) return;
 
-  // Stamp pending BEFORE posting so a concurrent sweep/boot re-arm can't double-notify.
-  db.prepare(`UPDATE agents SET timeout_decision_pending = 1, updated_at = datetime('now') WHERE id = ?`).run(agentId);
+  // Stamp pending BEFORE posting so a concurrent sweep/boot re-arm can't double-notify; an idle helper's notice waits for the creator's next turn.
+  const busy = workerBusy(agentId, {});
+  db.prepare(`UPDATE agents SET timeout_decision_pending = ?, updated_at = datetime('now') WHERE id = ?`).run(busy ? 1 : 2, agentId);
 
   // The creator owns the decision. Fall back to the primary if the creator is
   // gone so the decision never lands nowhere.
@@ -713,7 +714,7 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
 
   const chosenPhrase = chosenMinutes ? `${chosenMinutes}-minute ` : '';
   const elapsedPhrase = elapsedMinutes ? ` after about ${elapsedMinutes} min` : '';
-  const brief = `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) reached its ${chosenPhrase}timeout${elapsedPhrase} and ${workerBusy(agentId, {}) ? 'is still working' : 'is idle'}; ${taskLine}. You created it, so the call is yours: spawn_timeout_decision(agent_id="${agentId}", action="extend", extend_minutes=<n>) to give it more time, or action="terminate" to let it stop. It stays until you decide.`;
+  const brief = `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) reached its ${chosenPhrase}timeout${elapsedPhrase} and ${busy ? 'is still working' : 'is idle'}; ${taskLine}. You created it, so the call is yours: spawn_timeout_decision(agent_id="${agentId}", action="extend", extend_minutes=<n>) to give it more time, or action="terminate" to let it stop. It stays until you decide.`;
 
   postAgentNotice({
     toAgentId: recipientId,
@@ -724,7 +725,7 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
   });
 
   // One-shot wake so the creator's model sees the notice this turn.
-  try {
+  if (busy) try {
     getAgentRuntime().handleMessage(recipientId, '[spawn: timeout decision pending]').catch((err) => {
       logger.warn('fireSpawnTimeoutDecision: creator wake failed', { agentId, recipientId, error: err instanceof Error ? err.message : String(err) }, agentId);
     });
@@ -733,7 +734,7 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
   // The fired decision timer is spent; re-use its slot for the undecided ladder.
   const existing = timeoutTimers.get(agentId);
   if (existing) clearTimeout(existing);
-  timeoutTimers.set(agentId, setTimeout(() => { fireSpawnTimeoutUndecided(agentId); }, SPAWN_TIMEOUT_UNDECIDED_GRACE_MS));
+  if (busy) timeoutTimers.set(agentId, setTimeout(() => { fireSpawnTimeoutUndecided(agentId); }, SPAWN_TIMEOUT_UNDECIDED_GRACE_MS));
 
   logger.warn('Spawn timeout reached: creator decision requested (agent still running)', {
     agentId, name: agent.name, recipientId, chosenMinutes, elapsedMinutes, taskId: agent.task_id,

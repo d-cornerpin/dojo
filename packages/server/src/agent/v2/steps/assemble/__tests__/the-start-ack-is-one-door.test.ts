@@ -11,7 +11,7 @@
 // a steer.
 //
 // THE MERGER IS A DELETION. One module owns the text, the flag triple, the arming gate and
-// the reminder rung; the openers keep ONLY their own opening predicate, which is the one
+// the hold rung; the openers keep ONLY their own opening predicate, which is the one
 // thing that genuinely differs between them (a wall-clock/tracker REQUEST versus a routed
 // channel or a multistep verdict). Nothing about when the door opens moves.
 //
@@ -42,6 +42,7 @@ const AGENT = FXID.n4;
 // ── The checkpoint's own inputs, at the one moment it runs: assemble, mid-array. ──
 type Bag = Record<string, unknown>;
 const bag = (over: Bag = {}): Bag => ({
+  startAckTimer: {},   // a person waits on the turn
   startAckSteerRequested: false,
   startAckSteerArmedThisTurn: false,
   startAckSteersInjected: 0,
@@ -107,6 +108,12 @@ describe('§2 the checkpoint opener still arms exactly as it did', () => {
     expect(fired(state)).toEqual([]);
   });
 
+  it('a request on a turn nobody waits on (a run or a clock turn) arms no steer, so no hold follows', () => {
+    const first = runCheckpoint({ turnCtx: bag({ startAckSteerRequested: true, startAckTimer: null }), loopCount: 2 });
+    const next = runCheckpoint({ turnCtx: first.turnCtx, state: advance(first.state, { loopCount: 3 }) });
+    expect([next.turnCtx.startAckSteersInjected, fired(next.state)]).toEqual([0, []]);
+  });
+
   it('no request, no steer — the door does not open itself', () => {
     const { state, turnCtx } = runCheckpoint();
     expect(turnCtx.startAckSteerArmedThisTurn).toBe(false);
@@ -115,43 +122,37 @@ describe('§2 the checkpoint opener still arms exactly as it did', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════
-// §3 — RUNG 2, AND ITS BOUND
+// §3 — RUNG 2 (THE HOLD), AND ITS BOUND
 // ════════════════════════════════════════════════════════════════════
 
-describe('§3 the reminder is rung 2 of the same ladder, and it stops at two', () => {
-  it('the first steer was ignored on a LATER loop → one reminder, and it reads the queue entry', () => {
+describe('§3 the hold is rung 2 of the same ladder, and it stops at two', () => {
+  it('the first steer was ignored on a LATER loop: the hold is armed for that loop, with no second steer', () => {
     const first = runCheckpoint({ turnCtx: bag({ startAckSteerRequested: true }), loopCount: 2 });
     // Same bag, same queue, a later loop: the gate is `loopCount > steerFiredAtLoop`.
-    const second = runCheckpoint({
-      turnCtx: first.turnCtx,
-      state: advance(first.state, { loopCount: 3 }),
-    });
-    expect(second.turnCtx.startAckSteersInjected).toBe(2);
-    expect(fired(second.state).map((e) => e.floor)).toEqual(['start-ack', 'start-ack-reminder']);
-  });
-
-  it('NOT on the same loop the first steer rode — the model has not been asked yet', () => {
-    const first = runCheckpoint({ turnCtx: bag({ startAckSteerRequested: true }), loopCount: 2 });
-    const second = runCheckpoint({ turnCtx: first.turnCtx, state: first.state });
-    expect(second.turnCtx.startAckSteersInjected).toBe(1);
+    const second = runCheckpoint({ turnCtx: first.turnCtx, state: advance(first.state, { loopCount: 3 }) });
+    expect(second.turnCtx).toMatchObject({ startAckSteersInjected: 2, startAckSteerInjectedAtLoop: 3 });
     expect(fired(second.state).map((e) => e.floor)).toEqual(['start-ack']);
   });
 
-  it('HARD BOUND: never a third — after the reminder the terminal reply is the only voice left', () => {
+  it('NOT on the same loop the first steer rode: the model has not been asked yet', () => {
+    const first = runCheckpoint({ turnCtx: bag({ startAckSteerRequested: true }), loopCount: 2 });
+    const second = runCheckpoint({ turnCtx: first.turnCtx, state: first.state });
+    expect(second.turnCtx.startAckSteersInjected).toBe(1);
+  });
+
+  it('HARD BOUND: never a second hold, the loop it holds stays the first one', () => {
     const first = runCheckpoint({ turnCtx: bag({ startAckSteerRequested: true }), loopCount: 2 });
     const second = runCheckpoint({ turnCtx: first.turnCtx, state: advance(first.state, { loopCount: 3 }) });
     const third = runCheckpoint({ turnCtx: second.turnCtx, state: advance(second.state, { loopCount: 4 }) });
-    expect(third.turnCtx.startAckSteersInjected).toBe(2);
-    expect(fired(third.state).map((e) => e.floor)).toEqual(['start-ack', 'start-ack-reminder']);
+    expect(third.turnCtx).toMatchObject({ startAckSteersInjected: 2, startAckSteerInjectedAtLoop: 3 });
   });
 
-  it('a delivered ack silences the reminder as well as the first rung', () => {
+  it('a delivered ack arms no hold', () => {
     const first = runCheckpoint({ turnCtx: bag({ startAckSteerRequested: true }), loopCount: 2 });
     const second = runCheckpoint({
       turnCtx: first.turnCtx, state: advance(first.state, { loopCount: 3 }), delivered: true,
     });
     expect(second.turnCtx.startAckSteersInjected).toBe(1);
-    expect(fired(second.state).map((e) => e.floor)).toEqual(['start-ack']);
   });
 });
 

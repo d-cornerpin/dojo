@@ -58,11 +58,11 @@ describe('the start-ack family never asks after the person was shown a line', ()
     expect(turnCtx.startAckSteerArmedThisTurn).toBe(false);
   });
 
-  it('the delivered start line (stamped engine_start_ack) is heard: no reminder after it', () => {
+  it('the delivered start line (stamped engine_start_ack) is heard: no hold after it', () => {
     insertMessageIfAbsent({ id: 'sl', agentId: AGENT, role: 'assistant', content: 'On it.', turnNumber: TURN, originIntent: START_ACK_ORIGIN_INTENT });
     const turnCtx = bag({ startAckSteerRequested: true, startAckSteerArmedThisTurn: true, startAckSteersInjected: 1, startAckSteerInjectedAtLoop: 1 });
-    const s = checkpoint(turnCtx, 3);
-    expect(floors(s)).not.toContain('start-ack-reminder');
+    checkpoint(turnCtx, 3);
+    expect(turnCtx.startAckSteersInjected).toBe(1);
   });
 
   it('CONTROL: an INTERNAL note never reached him, so the steer is still asked for', () => {

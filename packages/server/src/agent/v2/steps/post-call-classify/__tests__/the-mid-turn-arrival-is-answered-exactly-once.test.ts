@@ -79,6 +79,9 @@ import { laneLimit } from '../../../../../memory/lanes.js';
 import { runOwedInterrupt } from '../owed-interrupt.js';
 import { runCloseoutFloors } from '../closeout-floors.js';
 import type { PostCallClassifyContext, PostCallScratch } from '../index.js';
+import { insertMessage } from '../../../../../memory/message-store.js';
+import { askIdForMessage, claimAsk, stampClaimingTurn } from '../../../../../work/store.js';
+import { recordOwedInterruptSubjects, settleAsksAtTurnFinalize } from '../../../../../work/ask-settlement.js';
 import { FX, FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -331,6 +334,35 @@ describe('§3 a second bubble about the arrival never reaches the person', () =>
     }
     expect(a.persistedContent).toBeNull();
     expect(b.persistedContent).toBeNull();
+  });
+
+  for (const sent of [false, true]) it(sent ? 'a send the granted round made still answers the arrival; its voice burst does not'
+    : 'the arrival stays owed when the held round was already spoken by the voice burst', () => {
+    const inbound = (id: string, content: string): void => {
+      insertMessage({ id, agentId: AGENT, role: 'user', content, lane: 'owner', channel: 'dashboard', senderId: 'owner',
+        authorized: true, conversationId: CONV, inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }) } as never);
+    };
+    const delivered = (id: string, tool: string, channel: string, messageId: string): void => {
+      db().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'delivered')`).run(id, AGENT, TURN, tool, channel, CONV, messageId);
+    };
+    inbound('m-a', 'What is the weather like?');
+    claimAsk(askIdForMessage('m-a'), AGENT);
+    stampClaimingTurn(askIdForMessage('m-a'), TURN);
+    inbound('m-b', 'For a picnic, roughly?');
+    delivered('d-weather', 'dashboard', 'dashboard', 'msg-weather');
+    recordOwedInterruptSubjects(AGENT, ['m-b'], TURN);   // the seam's record when it grants the round
+    if (sent) delivered('d-sent', 'send_message', 'dashboard', 'msg-sent');
+    delivered('d-spoken', 'speech-out', 'voice', 'tts-burst');
+    runCloseoutFloors(freshState({ loopCount: 5, owedInterruptGrant: grantedAfterReply(3) }), ctxFor(),
+      scratchFor({ persistedContent: 'That reading is for one city; say which spot you mean.' }));
+    db().prepare(`INSERT INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered, answer_message_id)
+      VALUES (?, ?, datetime('now'), datetime('now'), 'answered', 1, 'msg-weather')`).run(AGENT, TURN);
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN, assembled: [{ workId: askIdForMessage('m-b'), rowid: 0 }] });
+    const work = (id: string): unknown => db().prepare('SELECT state, result_delivery_id AS receipt FROM work WHERE id = ?').get(askIdForMessage(id));
+    expect(work('m-a')).toMatchObject({ state: 'done' });
+    expect(work('m-b'), 'the picnic question is owed its own answer unless the round sent one')
+      .toEqual(sent ? { state: 'done', receipt: 'd-sent' } : { state: 'open', receipt: null });
   });
 
   it('CONTROL — no grant, no hold: an ordinary reply is untouched', () => {

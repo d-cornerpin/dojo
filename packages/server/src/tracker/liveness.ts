@@ -96,18 +96,20 @@ export function workerBusy(agentId: string, work: OwedWork, seen = new Set<strin
 }
 
 /** SQL: piece `c` has a task on its thread still open, its agent not ended, and not ended by the owner's card: a card
- *  never ends it while the owner or the engine holds the task, or when the task is the join's own agent's. */
+ *  never ends it while the task is paused (waiting on him) or held by him or the engine, or is the join's own agent's. */
 const ALIVE = (c: string): string => `EXISTS (SELECT 1 FROM work t JOIN agents h ON h.id = t.agent_id AND h.status <> 'terminated'
   WHERE t.kind = 'task' AND t.a2a_thread_id = ${c}.root_id AND t.state NOT IN ('done', 'failed', 'abandoned')
-    AND ((t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
+    AND (t.hold_kind = 'paused' OR (t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
 
-/** Open pieces of a join, alive by their task (ALIVE), a run in flight, or with no task a busy helper or a question back its asker owes. */
+/** Open pieces of a join, alive by their task (ALIVE), a run in flight on a task still open by a helper not ended,
+ *  or with no task a busy helper or a question back its asker owes. `tasked`: null no task, 1 one open by a live helper. */
 export function openPieces(joinId: string, seen = new Set<string>()): Array<{ childId: string; alive: boolean }> {
   return (getDb().prepare(`SELECT c.id, c.agent_id AS asker, c.assignee_agent AS helper, c.root_id AS thread, ${ALIVE('c')} AS alive,
-      EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked
+      (SELECT MAX(t.state NOT IN ('done', 'failed', 'abandoned') AND COALESCE(h.status, '') <> 'terminated') FROM work t LEFT JOIN agents h ON h.id = t.agent_id
+        WHERE t.kind = 'task' AND t.a2a_thread_id = c.root_id) AS tasked
       FROM work c WHERE c.parent_id = ? AND c.kind = 'task' AND c.state IN ('open', 'claimed', 'blocked')`).all(joinId) as
-    Array<{ id: string; asker: string; helper: string | null; thread: string; alive: number; tasked: number }>).map((p) => ({
-    childId: p.id, alive: p.alive === 1 || activeRuns.has(p.helper ?? '') || (p.tasked === 0 && !!p.helper
+    Array<{ id: string; asker: string; helper: string | null; thread: string; alive: number; tasked: number | null }>).map((p) => ({
+    childId: p.id, alive: p.alive === 1 || (p.tasked === 1 && activeRuns.has(p.helper ?? '')) || (p.tasked === null && !!p.helper
       && (agentRequests(p.asker, Date.now(), p.thread).length > 0 || workerBusy(p.helper, { threadId: p.thread }, seen))),
   }));
 }

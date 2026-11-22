@@ -20,6 +20,7 @@ import { workerOf, unitOrRollback, type HandInRecord, type HandInScope } from '.
 import { onHandedIn } from './effects.js';
 import { isHousekeeping, settleHousekeeping } from './housekeeping.js';
 import { WORKING_STATES, workingExpr } from './hold.js';
+import { serveLater } from '../../agent/v2/serve-later.js';
 
 export type HandInBy = { kind: 'worker'; agentId: string } | { kind: 'engine'; onBehalfOf: string; because: string };
 /** `wordsFollow`: the caller sends the worker's last words itself, after the hand-in is applied. */
@@ -87,6 +88,7 @@ export function handIn(input: HandInInput): HandInResult {
   let eventId = 0;
   const moved = unitOrRollback(() => {
     eventId = appendWorkEvent(row.id, 'handed_in', filedBy, record);
+    serveLater({ kind: 'task', id: row.id }, null, 'handed in: its job waits for the decision');
     return transition(row.id, {
       to: 'handed_in', by: engine ? 'engine' : 'agent', actorId: filedBy, expectedState: row.state,
       reason: input.by.kind === 'engine' ? `engine hand-in for ${row.worker}: ${input.by.because.trim()}` : `handed in (${outcomeWords(input.outcome)}): ${note}`,

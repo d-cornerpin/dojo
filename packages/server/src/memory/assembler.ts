@@ -1011,10 +1011,11 @@ async function assembleMessageContext(
         }
       }
 
-      if (config.stopMarkerPending === true) {
+      if (config.stopMarkerPending) {
         // The marker is PREPENDED to the user's message, so it must not say "the next user message" (weaker models
-        // read that as "wait for one to arrive").
-        const STOP_MARKER = '[Context note: the owner pressed Stop on your previous work, and that request is ended. Do not resume it or retry its last action. Answer what is in front of you now on its own.]';
+        // read that as "wait for one to arrive"). It names the stopped request when Stop ended one.
+        const words = typeof config.stopMarkerPending === 'string' ? (getDb().prepare("SELECT replace(substr(m.content, 1, 160), char(10), ' ') AS w FROM work a JOIN messages m ON m.id = a.root_id WHERE a.id = ?").get(config.stopMarkerPending) as { w: string } | undefined)?.w : undefined;
+        const STOP_MARKER = `[Context note: your previous work${words ? ` on "${words}"` : ''} was stopped, and that request is ended. Do not resume it, retry its last action or send what it was writing. Answer what is in front of you now on its own.]`;
         if (merged.length > 0 && merged[merged.length - 1].role === 'user') {
           const lastMsg = merged[merged.length - 1];
           if (typeof lastMsg.content === 'string') {

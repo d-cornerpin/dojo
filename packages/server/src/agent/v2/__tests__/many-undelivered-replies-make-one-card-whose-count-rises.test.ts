@@ -1,7 +1,9 @@
 // A reply that still cannot get through after all its tries is told to the owner on one dashboard card per agent
 // that stays until he dismisses it: each new failure raises its count on the same card, and after he dismisses it
 // only a new failure brings it back, counting afresh. No text goes to the owner. A failed start line is not told.
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+// A text the phone service refuses for a reason that cannot clear (a 4xx that is not a rate limit) fails on its first
+// try, the reminder queued behind it for the same person fails the same way at once, and the one card counts both.
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const seen = vi.hoisted(() => ({ frames: [] as Array<Record<string, unknown>>, alerts: [] as unknown[] }));
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/reply-sender.js')).connectionMock());
@@ -14,13 +16,15 @@ vi.mock('../../../config/platform.js', async (orig) => ({ ...(await orig<Record<
 vi.mock('../../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engineRouteRefusalReason: () => 'no grant' }));
 vi.mock('../steps/finalize/link-backstop.js', () => ({ appendUndeliveredLinks: async (s: unknown) => s }));
 vi.mock('../../../gateway/ws.js', () => ({ broadcast: (f: Record<string, unknown>) => { seen.frames.push(f); } }));
+vi.mock('../../../twilio/auth.js', () => ({ getTwilioCreds: () => ({ sid: 'AC-test', token: 'test-token' }), getDefaultFromNumber: () => '+15550009999' }));
 
 import { runMigrations } from '../../../db/migrations.js';
 import { routeTerminalReply } from '../steps/finalize/route-reply.js';
 import { deliverDueReplies } from '../channel-sender.js';
 import { servedOwnerNotices } from '../../../healer/owner-notice-kinds.js';
 import { dismissOwnerNotice } from '../../../healer/owner-notices.js';
-import { freshReplyDb, imessage, personTurn, testDb, AGENT, OWNER, PERSON, T0 } from './helpers/reply-sender.js';
+import { queueReply } from '../deliveries.js';
+import { freshReplyDb, imessage, personTurn, replyRows, testDb, AGENT, OWNER, PERSON, T0 } from './helpers/reply-sender.js';
 
 const MIN = 60_000;
 const KEY = `undelivered:${AGENT}`;
@@ -86,5 +90,40 @@ describe('many undelivered replies make one card whose count rises', () => {
     await aReplyThatNeverGoes('on it', 'engine-ack');
     expect(cards()).toEqual([]);
     expect(notices()).toEqual([]);
+  });
+});
+
+describe('a text the phone service refuses is told at once', () => {
+  const ASKER = '+15555550155';
+  const twilio = vi.fn();
+  const answer = (status: number, message: string) => twilio.mockImplementation(async () => new Response(JSON.stringify({ message }), { status }));
+  /** The answer to the asker's text, then the reminder they set, both queued for their number. */
+  async function twoTextsQueued(): Promise<void> {
+    const address = { channel: 'sms' as const, to: ASKER, from: null };
+    await queueReply({ agentId: AGENT, turnNumber: 1, root: { kind: 'ask', id: 'm-1', sourceMessageId: 'm-1', conversationId: 'conv-sms' }, text: 'The vet is open until six.', address });
+    await queueReply({ agentId: AGENT, turnNumber: 2, root: { kind: 'occurrence', id: 'run-1', sourceMessageId: null, conversationId: 'conv-sms' }, text: 'Time to feed the cat.', address });
+  }
+  beforeEach(() => {
+    testDb().prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run('twilio_sms_approved_senders', JSON.stringify([{ address: ASKER, name: 'a person' }]));
+    twilio.mockReset();
+    vi.stubGlobal('fetch', twilio);
+  });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('an invalid number: both texts fail on their first try and one card counts both', async () => {
+    answer(400, "Invalid 'To' Phone Number");
+    await twoTextsQueued();
+    await deliverDueReplies(Date.now());
+    await deliverDueReplies(Date.now() + 1_000);
+    expect(replyRows().map((r) => [r.outcome, r.attempts])).toEqual([['failed', 1], ['failed', 1]]);
+    expect(twilio).toHaveBeenCalledTimes(2);
+    expect(servedOwnerNotices().map((c) => c.words)).toEqual([expect.stringMatching(/^2 replies could not be delivered/)]);
+  });
+
+  it('a rate limit is tried again after its wait', async () => {
+    answer(429, 'Too Many Requests');
+    await twoTextsQueued();
+    await deliverDueReplies(Date.now());
+    expect(replyRows().map((r) => r.outcome)).toEqual(['pending', 'pending']);
   });
 });

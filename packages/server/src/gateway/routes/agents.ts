@@ -4,6 +4,7 @@ import { getDb } from '../../db/connection.js';
 import { getAgentRuntime, stopByOwner } from '../../agent/runtime.js';
 import { liveWork } from '../../agent/live-work.js';
 import { terminateAgent } from '../../agent/spawner.js';
+import { judgeKeptRequests } from '../../agent/a2a-transport.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
@@ -457,8 +458,8 @@ agentsRouter.put('/:id', async (c) => {
   return c.json({ ok: true, data: rowToAgentDetail(row) });
 });
 
-// DELETE /:id: terminate agent (cascade)
-agentsRouter.delete('/:id', (c) => {
+// DELETE /:id: the owner removes an agent; the work it was given is called off first, so those requests end as his
+agentsRouter.delete('/:id', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
@@ -475,6 +476,7 @@ agentsRouter.delete('/:id', (c) => {
     return c.json({ ok: false, error: 'Agent is already terminated' }, 400);
   }
 
+  await judgeKeptRequests(id, null, true);
   terminateAgent(id, 'Terminated via dashboard');
   return c.json({ ok: true, data: { agentId: id, status: 'terminated' } });
 });

@@ -8,6 +8,7 @@ import { getDb } from '../../../../db/connection.js';
 import { claimEngineEventByRowid, markServedByRowid } from '../../../../memory/message-store.js';
 import { askIdForMessage, firstServedAt, stampClaimingTurn } from '../../../../work/store.js';
 import { liftStandDowns } from '../../../../work/ask-settlement.js';
+import { originOfTasks } from '../../../../work/job-origin.js';
 import { turnBoundary } from '../../../turn-state.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { initState } from '../../state.js';
@@ -142,8 +143,9 @@ export async function runCounterpartyAndRecord(
       stampClaimingTurn(triggerWorkId, turnNumber);
       if (wroteAgain) liftStandDowns(agentId, triggerWorkId, turnNumber);   // a request of theirs that stood down is served with it
     }
-    // A job turn holds the request its job started from, claimed at its pickup.
-    if (turnCtx.servedJob && turnCtx.root?.kind === 'ask') stampClaimingTurn(askIdForMessage(turnCtx.root.id), turnNumber);
+    // A turn serving a job holds the request its job started from, claimed at its pickup.
+    const jobOrigin = turnCtx.servedJob ? originOfTasks(agentId, [turnCtx.servedJob]) : null;
+    if (jobOrigin?.kind === 'ask') stampClaimingTurn(askIdForMessage(jobOrigin.messageId), turnNumber);
     if (triggerRow) {
       markServedByRowid(triggerRow.rowid, turnNumber);
     }

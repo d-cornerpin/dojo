@@ -180,6 +180,6 @@ describe('§2 a dead delegate still fails the join, and the owner still hears ab
     const said = ownerFacing();
     expect(said.length, 'the person is never left in silence').toBeGreaterThan(0);
     expect(said.map((m) => m.content).join('\n'), 'the platform says plainly that nothing answered')
-      .toMatch(/never answered/i);
+      .toMatch(/nothing came back/i);
   });
 });

@@ -106,12 +106,12 @@ type Resolver = (ctx: ProofContext, ref: string, input: ProofItemInput) => Facts
 function delivery(ctx: ProofContext, ref: string): Facts | string {
   const d = getDb().prepare(
     `SELECT d.agent_id, d.tool, d.channel, d.recipient_id, d.recipient_display, d.conversation_id, d.outcome, d.created_at, d.detail,
-            d.turn_number, d.message_id, m.display_kind, m.origin_intent, COALESCE(m.content, r.sent_text) AS text,
+            d.turn_number, d.root_kind, d.message_id, m.display_kind, m.origin_intent, COALESCE(m.content, r.sent_text) AS text,
             ${ROOT_SERVES_TASK('d')} AS tied
        FROM deliveries d LEFT JOIN messages m ON m.id = d.message_id LEFT JOIN tool_receipts r ON r.id = d.receipt_id
       WHERE d.id = ?`,
   ).get(ref, { task: ctx.task.id }) as { agent_id: string; tool: string; channel: string; recipient_id: string | null; detail: string | null;
-    turn_number: number | null; message_id: string | null; tied: number;
+    turn_number: number | null; root_kind: string | null; message_id: string | null; tied: number;
     display_kind: string | null; origin_intent: string | null; recipient_display: string | null; conversation_id: string | null;
     outcome: string; created_at: string; text: string | null } | undefined;
   if (!d) return '';
@@ -122,7 +122,7 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
   if ((NON_ANSWERING_DISPLAY_KINDS as readonly string[]).includes(d.display_kind ?? '')) return 'is a tool chip or working note, not a message';
   const own = ownRow(ctx, d.agent_id, sqlTimeMs(d.created_at));
   if (own) return own;
-  if (!ctx.byEngine && !deliveredToAsker(ctx.asker, d)) return 'was not addressed to the asker (it went to someone else)';
+  if ((!ctx.byEngine || (ctx.asker.kind === 'person' && !ctx.asker.owner)) && !deliveredToAsker(ctx.asker, d)) return 'was not addressed to the asker (it went to someone else)';
   if (d.channel === 'a2a' && !handsOverWork(intentOf(d.detail) ?? intentOf(d.text))) return 'does not hand over the work (its intent is not an answer or a deliverable)';
   if (d.text === null) return 'carries no text on record, so it shows no work';
   if (claim(ctx, d.text)) return 'is only a status claim, which is never proof';
@@ -133,12 +133,12 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
 
 const isEngineTool = (tool: string): boolean => ENGINE_SENT_TOOLS.has(tool) || tool.endsWith('-door');
 
-/** Is this delivery the start line of its turn: never the line the task's ask settled on; otherwise the
- *  worker's first line to the asker in that turn when another line to the asker follows, or, once the
- *  turn has ended, a lone line when the ask settled on some other line? Keyed to the delivery's own turn
- *  record, never to what the worker does afterwards. */
-function startLineOfItsTurn(ctx: ProofContext, ref: string, d: { agent_id: string; turn_number: number | null }): boolean {
-  if (d.turn_number === null || ref === ctx.task.ask?.receipt) return false;
+/** Is this delivery the start line of its turn: never the line the task's ask settled on, nor a line a run's own
+ *  turn wrote (that turn serves no ask); otherwise the worker's first line to the asker in that turn when another
+ *  line to the asker follows, or, once the turn has ended, a lone line when the ask settled on some other line?
+ *  Keyed to the delivery's own turn record, never to what the worker does afterwards. */
+function startLineOfItsTurn(ctx: ProofContext, ref: string, d: { agent_id: string; turn_number: number | null; root_kind: string | null }): boolean {
+  if (d.turn_number === null || d.root_kind === 'occurrence' || ref === ctx.task.ask?.receipt) return false;
   const db = getDb();
   // The worker's own lines to the asker only: never the engine's, never a tool chip or working note.
   const lines = (db.prepare(

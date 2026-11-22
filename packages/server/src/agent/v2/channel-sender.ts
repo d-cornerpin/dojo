@@ -271,7 +271,7 @@ async function sendBy(agentId: string, text: string, a: ReplyAddress, to: string
     const { sendSms } = await import('../../twilio/client.js');
     const { getDefaultFromNumber } = await import('../../twilio/auth.js');
     const res = await sendSms(to, text, a.from ?? getDefaultFromNumber() ?? '');
-    if (!res.ok) return { ok: false, detail: res.error };
+    if (!res.ok) return { ok: false, final: !!res.status && res.status >= 400 && res.status < 500 && res.status !== 429, detail: res.error };
     const sid = res.data.sid;
     writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!sid, basis: sid ? 'provider-id' : 'http-status', providerId: sid ?? null, recipient: to, sentText: text, detail: { route: 'auto', textLength: text.length } });
     return { ok: true };

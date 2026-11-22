@@ -254,19 +254,20 @@ function taskNow(id: string): { open: boolean; parked: boolean } {
 }
 
 /** A delivery at or below the rowid high-water `recordOwedInterruptSubjects` stored for this ask predates
- *  the re-prompt that told the model it was still owed. Rowid, not the clock: `created_at` is whole seconds
- *  and can tie. Refusing it cannot park the ask: finalize hands it back open. */
+ *  the re-prompt that told the model it was still owed (a `spokenOnly` mark voids only voice bursts). Rowid, not
+ *  the clock: `created_at` is whole seconds and can tie. Refusing it cannot park the ask: finalize hands it back open. */
 const NOT_OWED_PAST_THIS_DELIVERY =
   `NOT EXISTS (SELECT 1 FROM work_events oi
                 WHERE oi.work_id = ? AND oi.kind = 'owed_interrupt'
                   AND json_extract(oi.payload, '$.turnNumber') = ?
-                  AND d.rowid <= json_extract(oi.payload, '$.deliveryHighWater'))`;
+                  AND d.rowid <= json_extract(oi.payload, '$.deliveryHighWater')
+                  AND (json_extract(oi.payload, '$.spokenOnly') IS NULL OR d.tool = 'speech-out'))`;
 
 /** The owed-interrupt receipt, written here because `work/` is the spine's single writer and read by the
  *  narrowing above. Best-effort: an owed message with no ask row is skipped; a failure must not cost
  *  the re-prompt. */
 export function recordOwedInterruptSubjects(
-  agentId: string, owedMessageIds: readonly string[], turnNumber: number,
+  agentId: string, owedMessageIds: readonly string[], turnNumber: number, spokenOnly?: true,
 ): void {
   if (owedMessageIds.length === 0) return;
   const db = getDb();
@@ -277,7 +278,7 @@ export function recordOwedInterruptSubjects(
     const workId = askIdForMessage(messageId);
     const exists = db.prepare('SELECT 1 FROM work WHERE id = ?').get(workId);
     if (!exists) continue;
-    appendWorkEvent(workId, 'owed_interrupt', 'engine', { turnNumber, deliveryHighWater: water });
+    appendWorkEvent(workId, 'owed_interrupt', 'engine', { turnNumber, deliveryHighWater: water, spokenOnly });
     logger.info('owed mid-turn ask recorded on its own ledger: this turn\'s earlier deliveries are not its answer', {
       agentId, workId, turnNumber, deliveryHighWater: water,
     }, agentId);
@@ -439,8 +440,14 @@ function undeliveredReply(ask: AskRow, turnNumber: number | null, atVerdict: boo
   ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded) as { id: string; outcome: string; detail: string | null } | undefined) ?? null;
 }
 
-function joinOutstanding(ask: AskRow): boolean {
-  return (ask.remaining_children ?? 0) > 0 || ask.compile_pending === 1;
+/** SQL: task `t` was called off by the owner (its move to abandoned was his). */
+export const CALLED_OFF_BY_OWNER = (t: string): string => `${t}.state = 'abandoned' AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = ${t}.id
+  AND e.kind = 'transition' AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = 'owner')`;
+
+/** The request (its row, or its id) waits on delegated work. */
+export function joinOutstanding(ask: AskRow | string): boolean {
+  const a = typeof ask === 'string' ? readAsk(ask) : ask;
+  return !!a && ((a.remaining_children ?? 0) > 0 || a.compile_pending === 1);
 }
 
 /** The authority: every ask transition into `done`, and every decision not to, goes through here.
@@ -883,9 +890,8 @@ function settleOnAsyncResult(
   if (heldAt && !linkedTaskOf(ask.agent_id, ask.root_id, { ownerHeldEnds: true })) {
     const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, heldAt.at);
     // The owner called the job off: so is the request (the async arm's own rule).
-    const calledOff = !late && !!getDb().prepare(`SELECT 1 FROM work t JOIN work_events e ON e.work_id = t.id AND e.kind = 'transition'
-      WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ? AND t.state = 'abandoned'
-        AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = 'owner' LIMIT 1`).get(ask.agent_id, ask.root_id);
+    const calledOff = !late && !!getDb().prepare(`SELECT 1 FROM work t WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ?
+      AND ${CALLED_OFF_BY_OWNER('t')} LIMIT 1`).get(ask.agent_id, ask.root_id);
     const r = late
       ? transition(ask.id, { to: 'done', by: 'agent', actorId, resultDeliveryId: late.id, expectedState: 'blocked', reason: `its job ended; answered via ${late.tool}` })
       : calledOff ? transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'blocked', reason: 'the owner called off the job this request waited on' })
@@ -955,10 +961,10 @@ export function settleAskOnJobEnded(agentId: string, jobId: string): AskSettleme
   return null;
 }
 
-export function settleAskOnTaskEnded(agentId: string, askMessageId: string | null | undefined, threadId: string | null = null): void {
+export function settleAskOnTaskEnded(agentId: string, askMessageId: string | null | undefined, threadId: string | null = null, byOwner = false): void {
   announceAgentLiveWork(agentId);   // an ended task is no longer a parked job Stop would end
   reaskAsync(agentId, askMessageId, null);
-  if (threadId) void import('../agent/a2a-transport.js').then((m) => m.judgeKeptRequests(agentId, threadId));
+  if (threadId) void import('../agent/a2a-transport.js').then((m) => m.judgeKeptRequests(agentId, threadId, byOwner));
 }
 onTaskEnded(settleAskOnTaskEnded);
 

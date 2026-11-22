@@ -1,5 +1,8 @@
-// When a helper's work stops by an event the Dojo already records (its task cancelled or deleted, its project
-// deleted, the helper ended), the person waiting is told at that moment, once, with no sweep, however old the request.
+// When a helper's work stops by an event the Dojo already records (the helper ended, even while its run unwinds), the
+// person waiting is told at that moment, once, with no sweep, however old the request. When the owner cancels, deletes
+// or removes it on the dashboard (its task, its project, the helper, even one given a plain question), that piece is called off by him;
+// with nothing else back the request ends as called off by him (nobody is told, nothing redoes it, a late answer is
+// refused), and in a fan-out the other helpers' answers still go back to the agent.
 // Until then the request is kept however long the task is open. A stop the Dojo missed while it was down is caught
 // by the boot pass from the rows. A later answer reaches the person once, as an Update. A plain question (no task) is
 // kept while its helper is in a run, has not yet been served it (whatever its age, a restart or a pause), or said it is
@@ -8,7 +11,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
 vi.mock('../../services/imessage-bridge.js', async (orig) => (await import('../v2/__tests__/helpers/reply-sender.js')).bridgeMock(await orig()));
-vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => {} }) }));
+vi.mock('../runtime.js', async (orig) => ({ ...(await orig<object>()), getAgentRuntime: () => ({ handleMessage: async () => {} }) }));
 vi.mock('../access/engine-route.js', () => ({ engineMayRouteTo: () => true, engineRouteRefusalReason: () => 'no grant' }));
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
@@ -20,7 +23,11 @@ import { sweepBootStaleness } from '../../work/work-reaper.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { writeAgentStatus } from '../agent-status.js';
 import { decide } from '../../work/done/decide.js';
+import { agentsRouter } from '../../gateway/routes/agents.js';
 import { deleteTrackerRow } from '../../work/tracker-store.js';
+import { newestPutBack } from '../../work/ask-settlement.js';
+import { setHold } from '../../work/done/hold.js';
+import { runLadder } from '../../work/done/ladder.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import {
   agentLines, agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, helperTask, passesRun, requestState, served, textsSent, ASK, HELPER, THREAD,
@@ -33,38 +40,106 @@ async function told(): Promise<[string, number, number]> {
   return [requestState(), failedNotices(), agentLines()];
 }
 
-beforeEach(() => delegatedTextRequest());
+beforeEach(() => { vi.useRealTimers(); activeRuns.clear(); delegatedTextRequest(); });
 
 describe('a stopped helper tells the person at once', () => {
-  it('kept past its deadline while the task is open; told once at the cancel; the late answer is an Update', async () => {
+  it('kept past its deadline while the task is open; the owner cancels it on the board while the helper runs: called off by him', async () => {
     helperTask();
     vi.setSystemTime(Date.now() + 5 * 3_600_000);
     await sweepExpiredJoins();
     expect(await told()).toEqual(['blocked', 0, 0]);
+    activeRuns.add(HELPER);
     expect(decide({ workId: 'task-helper-1', deciderAgentId: null, verdict: 'cancel', reason: 'The venue closed for good' }).kind).toBe('decided');
-    expect(await told()).toEqual(['failed', 1, 1]);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
     await sweepExpiredJoins();
     await resolveJoinsAtBoot();
-    expect(await told()).toEqual(['failed', 1, 1]);
-    await helperAnswers('It reopens on the 14th after all.');
-    await agentStaysSilent();
-    await deliverDueReplies(Date.now());
-    expect(textsSent().filter((t) => t.startsWith('Dojo: Update:'))).toEqual(['Dojo: Update: Helper answered after all. It reopens on the 14th after all.']);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
+    expect(await deliverA2AMessage({ intent: 'COMPLETE', threadId: THREAD, requiresResponse: true, payload: 'Done anyway.', toAgent: AGENT, fromAgent: HELPER } as never))
+      .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
+    expect(textsSent()).toEqual([]);
   });
 
-  it('its task deleted', async () => {
+  it('a helper that paused its task waiting on the owner keeps the request past his card, however long he takes', async () => {
+    testDb().prepare("UPDATE _migrations SET applied_at = datetime(applied_at, '-2 hours') WHERE name LIKE '901%'").run();
+    served();
+    expect(setHold(helperTask(), 'paused', 'Waiting on the owner to pick the date', HELPER)).toEqual({ ok: true });
+    for (const hours of [0.35, 24, 24 * 5]) {
+      vi.setSystemTime(Date.now() + hours * HOUR);
+      await runLadder();
+      await sweepExpiredJoins();
+      expect(await told()).toEqual(['blocked', 0, 0]);
+    }
+    expect(testDb().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'task-helper-1' AND kind = 'validation_escalated'").get()).toEqual({ n: 1 });
+  });
+
+  it('the owner removes the helper on the dashboard mid-job: called off by him, nobody is told', async () => {
+    helperTask();
+    activeRuns.add(HELPER);
+    expect((await agentsRouter.request(`/${HELPER}`, { method: 'DELETE' })).status).toBe(200);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
+  });
+
+  const OTHER = 'agent-helper-2', T2 = 'thread-relay-0002';
+  /** A fan-out to two helpers, each with its task; the owner cancels the first helper's task on the board. */
+  async function fanOutFirstCancelled(): Promise<void> {
+    delegatedTextRequest({}, [THREAD, T2]);
+    testDb().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, 'Other', 'idle', 'standard')").run(OTHER);
+    testDb().prepare('UPDATE work SET assignee_agent = ? WHERE parent_id = ? AND root_id = ?').run(OTHER, ASK, T2);
+    testDb().prepare('UPDATE messages SET agent_id = ? WHERE a2a_thread_id = ?').run(OTHER, T2);
+    helperTask();
+    testDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, a2a_thread_id, opened_at, updated_at)
+      VALUES ('task-helper-2', 'task', ?, 'agent', 'tracker', 'task-helper-2', 'claimed', 'ASSIGN', 0, 0, 'Check the garden', ?, ?, ?)`).run(OTHER, T2, Date.now(), Date.now());
+    expect(decide({ workId: 'task-helper-1', deciderAgentId: null, verdict: 'cancel', reason: 'Not needed any more' }).kind).toBe('decided');
+    expect(await told()).toEqual(['blocked', 0, 0]);
+  }
+
+  it('a fan-out: the owner cancels one helper\'s task and the other helper ends: the person is told nothing came back', async () => {
+    await fanOutFirstCancelled();
+    writeAgentStatus(OTHER, 'terminated');
+    expect(await told()).toEqual(['failed', 1, 1]);
+  });
+
+  it('a fan-out: the owner cancels both helpers\' tasks: called off by him, nobody is told', async () => {
+    await fanOutFirstCancelled();
+    expect(decide({ workId: 'task-helper-2', deciderAgentId: null, verdict: 'cancel', reason: 'Not needed either' }).kind).toBe('decided');
+    expect(await told()).toEqual(['abandoned', 0, 0]);
+  });
+
+  it('a fan-out: the owner cancels one helper\'s task on the board, and the other helper\'s answer goes back to the agent', async () => {
+    await fanOutFirstCancelled();
+    await deliverA2AMessage({ intent: 'ANSWER', threadId: T2, requiresResponse: false, payload: 'The garden is free.', toAgent: AGENT, fromAgent: OTHER } as never);
+    expect([await told(), newestPutBack(ASK)?.kind]).toEqual([[requestState(), 0, 0], 'compile']);
+    expect(requestState()).not.toBe('abandoned');
+  });
+
+  it('the owner cancels its task and the Dojo stops before the judge: the next start still ends it as his', async () => {
+    helperTask();
+    testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'task-helper-1'").run(Date.now());   // committed, never judged
+    testDb().prepare(`INSERT INTO work_events (work_id, kind, actor, payload, created_at) VALUES ('task-helper-1', 'transition', 'owner', ?, ?)`)
+      .run(JSON.stringify({ to: 'abandoned', by: 'owner' }), Date.now());
+    await resolveJoinsAtBoot();
+    expect(await told()).toEqual(['abandoned', 0, 0]);
+  });
+
+  it('the owner removes a helper given a plain question: called off by him, nobody is told', async () => {
+    served();
+    expect((await agentsRouter.request(`/${HELPER}`, { method: 'DELETE' })).status).toBe(200);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
+  });
+
+  it('its task deleted by the owner', async () => {
     served();
     deleteTrackerRow(helperTask());
-    expect(await told()).toEqual(['failed', 1, 1]);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
   });
 
-  it('the project holding its task deleted', async () => {
+  it('the project holding its task deleted by the owner', async () => {
     testDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
       VALUES ('proj-1', 'project', ?, 'agent', 'tracker', 'proj-1', 'open', 'project', 0, 0, 'Venue', ?, ?)`).run(HELPER, Date.now(), Date.now());
     helperTask('proj-1');
     served();
     deleteTrackerRow('proj-1');
-    expect(await told()).toEqual(['failed', 1, 1]);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
   });
 
   it('the helper ended (from an error), on a request eight days old; a second end tells nobody', async () => {
@@ -73,6 +148,13 @@ describe('a stopped helper tells the person at once', () => {
     testDb().prepare('UPDATE work SET opened_at = ? WHERE id = ? OR parent_id = ?').run(Date.now() - 8 * 24 * 3_600_000, ASK, ASK);
     writeAgentStatus(HELPER, 'terminated');
     expect(await told()).toEqual(['failed', 1, 1]);
+    writeAgentStatus(HELPER, 'terminated');
+    expect(await told()).toEqual(['failed', 1, 1]);
+  });
+
+  it('the helper ended while its stopped run still unwinds', async () => {
+    helperTask();
+    activeRuns.add(HELPER);
     writeAgentStatus(HELPER, 'terminated');
     expect(await told()).toEqual(['failed', 1, 1]);
   });

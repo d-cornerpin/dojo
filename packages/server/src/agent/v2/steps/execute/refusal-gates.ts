@@ -1,5 +1,5 @@
 // The gates that can refuse a call before it runs: the reminder-delivery lane, the main agent's warn-once
-// hurdle and the repeat-send stop, plus the hoarding advisory, which refuses nothing.
+// hurdle, the repeat-send stop and the start-line hold, plus the hoarding advisory, which refuses nothing.
 // A refusal comes back as `{ state, refusal }` and `run-one.ts` returns it as the call's result.
 
 import { broadcast } from '../../../../gateway/ws.js';
@@ -11,7 +11,8 @@ import { LOADING_GATE_THRESHOLD, isStructuringTool } from '../../classifiers/hoa
 import { persistEngineSteer } from '../../engine-steer.js';
 import type { AgentTurnState } from '../../state.js';
 import { steerFired } from '../../steer-queue.js';
-import { replyChannelWords } from '../../turn-address.js';
+import { replyChannelWords, userWords } from '../../turn-address.js';
+import { personShownALineThisTurn } from '../../person-shown-this-turn.js';
 import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { SENT_TEXT_MAX_CHARS } from '../../../../receipts/store.js';
@@ -71,6 +72,12 @@ export function runRefusalGates(
 ): { state: AgentTurnState; refusal: PendingToolResult | null } {
   const { agentId, turnNumber, turnCtx, refusedOnceSigs } = ctx;
 
+  // The start-line hold, once per turn: a person who has heard nothing gets the line before this pass's work runs.
+  if (turnCtx.startAckSteersInjected === 2 && turnCtx.startAckSteerInjectedAtLoop === state.loopCount
+      && !turnCtx.engineStartAckDeliveredThisTurn && !personShownALineThisTurn(agentId, turnNumber)) {
+    return { state, refusal: { toolCallId: tc.id, name: tc.name, isError: true, content:
+      `[Engine: nothing ran] ${userWords(turnCtx.address, true)} has heard nothing from you yet. Write your one line to them first, as plain text, then make the calls again.` } };
+  }
   const warning = hurdle(agentId, tc, refusedOnceSigs);
   if (warning) return { state, refusal: warning };
   const repeated = repeatSend(agentId, tc, turnCtx, refusedOnceSigs);

@@ -81,10 +81,7 @@ export function joinFailureNotice(p: NoticeInput): string {
   // shared suffix lets one arity lose the "never" and reads "they answered" for a silent delegate.
   const lead = t.silent > 0 && t.refused === 0 && t.empty === 0
     ? `your agent delegated ${plural ? 'parts of this' : 'this'} to ${who}`
-      + `${waited ? ` and waited ${waited}` : ''}, and `
-      + `${plural ? 'none of them answered' : 'they never answered'}. `
-      + `The ${plural ? 'messages were' : 'message was'} delivered, nothing errored, `
-      + `so the platform stopped waiting rather than leaving you in silence.`
+      + `${waited ? ` and waited ${waited}` : ''}, and nothing came back from ${plural ? 'any of them' : 'them'}.`
     : t.silent > 0
       ? `your agent delegated ${plural ? 'parts of this' : 'this'} to ${who}`
         + `${waited ? ` and waited ${waited}` : ''}: `

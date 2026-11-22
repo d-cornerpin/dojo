@@ -7,7 +7,7 @@ export type SteerFloorId =
   | 'ungrounded-claim' | 'delivery-denial' | 'failed-save-claim' | 'uncommitted-promise'
   | 'false-delivery-claim' | 'handed-back-ask'
   | 'forced-reply' | 'delegation-exit'
-  | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
+  | 'start-ack' | 'owed-interrupt' | 'promise-floor'
   | 'a2a-missed-reply' | 'going-idle-in-progress'
   | 'output-grind' | 'empty-response' | 'dead-end' | 'add-notes-stop'
   | 'tracker-stop-directive' | 'tracker-scaffold' | 'hoarding-advisory'
@@ -36,7 +36,6 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   { id: 'handed-back-ask',       priority: 24, why: 'a person waits on a request whose helpers answered, or a dead run handed back: what came back and what was done come before acting' },
 
   { id: 'start-ack',             priority: 25, why: 'the user has been waiting with no word this turn' },
-  { id: 'start-ack-reminder',    priority: 26, why: 'the first start-ack steer was ignored' },
   { id: 'owed-interrupt',        priority: 27, why: 'a mid-turn human message may go unanswered' },
   { id: 'promise-floor',         priority: 28, why: 'the reply promised work the turn never did' },
 

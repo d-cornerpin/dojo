@@ -292,9 +292,9 @@ export function bumpWorkAttempts(id: string): number {
 }
 
 /**
- * Delete a tracker row and its children (deeper descendants are detached). The helper runs twice, children
- * first, because it nulls `parent_id` on everything pointing into its set: one call for both would leave
- * the `WHERE parent_id = ?` delete matching nothing.
+ * The owner deletes a tracker row and its children (deeper descendants are detached), so a helper's work on them
+ * is called off as his. The helper runs twice, children first, because it nulls `parent_id` on everything pointing
+ * into its set: one call for both would leave the `WHERE parent_id = ?` delete matching nothing.
  */
 export function deleteTrackerRow(id: string): number {
   const db = getDb();
@@ -309,7 +309,7 @@ export function deleteTrackerRow(id: string): number {
     clearReferencesToWork([id]);             // every reference, for the row itself
     changes = db.prepare('DELETE FROM work WHERE id = ?').run(id).changes;
   });
-  for (const t of ended) notifyTaskEnded(t.agent_id, t.source_message_id, t.a2a_thread_id);
+  for (const t of ended) notifyTaskEnded(t.agent_id, t.source_message_id, t.a2a_thread_id, true);
   return changes;
 }
 
