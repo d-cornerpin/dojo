@@ -282,6 +282,12 @@ const openTasks = (agentId = PRIMARY): TaskRow[] =>
         AND state NOT IN ('done','failed','abandoned')`,
   ).all(agentId) as TaskRow[];
 
+/** The helper's final reply through its real tool door, which also hands its job's task in. */
+async function helperReplies(threadId: string, payload: string): Promise<{ isError?: boolean; content: string }> {
+  const { executeTool, toolResultOf } = await import('../../agent/tools/index.js');
+  return toolResultOf(await executeTool('helper', { id: `tc-${threadId}`, name: 'send_to_agent', arguments: { agent: PRIMARY, intent: 'DELIVERABLE', thread_id: threadId, payload } }));
+}
+
 async function taskList(agentId = PRIMARY): Promise<string> {
   return (await buildWorkBoardLane(agentId)).activeTasks ?? '';
 }
@@ -645,10 +651,12 @@ describe('t139 — every multi-step request lands on the task list with its word
     ).get() as { state: string; remaining_children: number | null };
     expect(askRow.state).toBe('blocked');
     expect(askRow.remaining_children).toBe(1);
-    const held = openTasks();
+    // The task opened for the request became the helper's job: one task, linked, on the list.
+    expect(openTasks()).toHaveLength(0);
+    const held = openTasks('helper');
     expect(held.length).toBe(1);
     expect(held[0].source_message_id).toBe('msg-deleg');
-    expect(await taskList()).toContain(ask);
+    expect(await taskList('helper')).toContain(ask);
   });
 
   it('CONTROL (I3): an A2A-assigned job answered back to its ASSIGNER is still a handover ("via a2a")', async () => {
@@ -676,6 +684,19 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(composeTurnDeliverySummary(PRIMARY, 1)).not.toContain('a2a');
   });
 
+  it('the task the engine floor opened before the agent delegated becomes the helper\'s job: one task, not two', async () => {
+    ownerSays('msg-floor-deleg', 'Make me six pictures of the beach, then have the helper plan the day around them.');
+    script([
+      { toolCalls: imageCalls(6) },
+      { content: 'On it.', toolCalls: [call('sa-fd', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'Plan the beach day.' })] },
+      { content: 'I have asked Helper to plan the day.' },
+    ]);
+    await runV2Turn(PRIMARY);
+    expect(openTasks()).toHaveLength(0);
+    const held = openTasks('helper');
+    expect(held.map((t) => [t.root_kind, t.source_message_id])).toEqual([['engine_scaffold', 'msg-floor-deleg']]);
+  });
+
   it('delegated to one helper, whose reply the engine relays, with the task opened on the turn that reply woke: linked to the owner\'s ask', async () => {
     const ask = 'Have the helper collect three caterer quotes, then compare them and tell me which one to book.';
     ownerSays('msg-deleg1', ask);
@@ -687,11 +708,8 @@ describe('t139 — every multi-step request lands on the task list with its word
     const thread = (mockDb.current!.prepare(
       `SELECT a2a_thread_id AS t FROM messages WHERE source_agent_id = ? AND a2a_intent = 'ASSIGN' ORDER BY rowid DESC LIMIT 1`,
     ).get(PRIMARY) as { t: string }).t;
-    const back = await deliverA2AMessage({
-      intent: 'DELIVERABLE', threadId: thread, requiresResponse: false,
-      payload: 'Quotes: Alder 1,200; Birch 1,350; Cedar 990 (all for forty people).', toAgent: PRIMARY, fromAgent: 'helper',
-    });
-    expect(back.delivered).toBe(true);
+    const back = await helperReplies(thread, 'Quotes: Alder 1,200; Birch 1,350; Cedar 990 (all for forty people).');
+    expect(back.isError, back.content).toBeFalsy();
     script([
       { toolCalls: [openTask('wo-deleg1', 'Caterer recommendation', 'A caterer recommendation sent to the owner')] },
       { content: 'The quotes are in; comparing them now.' },
@@ -724,12 +742,8 @@ describe('t139 — every multi-step request lands on the task list with its word
     ).all(PRIMARY) as Array<{ t: string }>).map((r) => r.t);
     expect(threads.length).toBe(2);
     for (const [k, thread] of threads.entries()) {
-      const back = await deliverA2AMessage({
-        intent: 'DELIVERABLE', threadId: thread, requiresResponse: false,
-        payload: k === 0 ? 'Caterers: Alder 1,200; Birch 1,350; Cedar 990.' : 'Venues: Dock 700; Elm Hall 850; Ferry 640.',
-        toAgent: PRIMARY, fromAgent: 'helper',
-      });
-      expect(back.delivered).toBe(true);
+      const back = await helperReplies(thread, k === 0 ? 'Caterers: Alder 1,200; Birch 1,350; Cedar 990.' : 'Venues: Dock 700; Elm Hall 850; Ferry 640.');
+      expect(back.isError, back.content).toBeFalsy();
     }
 
     // The wake turn: the results are in, and the agent opens the task to finish the job.

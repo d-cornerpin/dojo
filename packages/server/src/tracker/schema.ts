@@ -19,7 +19,9 @@ import {
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
 import { workSettled, noteUnsettled, findObligationByTypedId, type Actor } from '../work/store.js';
-import { writeAssignee } from '../work/row-authority.js';
+import { moveAssignee, writeAssignee } from '../work/row-authority.js';
+import { linkedTaskOf } from '../work/ask-settlement.js';
+import { requestOfTurn } from '../work/job-continuation.js';
 import { isTerminalName } from '../work/terminal-states.js';
 import { decide } from '../work/done/decide.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
@@ -502,16 +504,24 @@ export function autoCreateAssignTask(params: {
       return null;
     }
 
-    // A transfer's task rides its job's ASSIGN and takes its thread; one that has a thread by then is not taken.
-    if (params.taskId && db.prepare('UPDATE work SET a2a_thread_id = ?, updated_at = ? WHERE id = ? AND a2a_thread_id IS NULL')
-      .run(params.threadId, Date.now(), params.taskId).changes === 1) return { taskId: params.taskId, isNew: true };
-
     // Reuse if a task already exists for this thread.
     const existing = db
       .prepare(`SELECT work.id AS id FROM work WHERE ${TASK_WHERE} AND work.a2a_thread_id = ? LIMIT 1`)
       .get(params.threadId) as { id: string } | undefined;
     if (existing?.id) {
       return { taskId: existing.id, isNew: false };
+    }
+
+    // The job's task is the one named; with none named (undefined, not null) it is the sender's own open, thread-less
+    // task for the request its turn serves, moved to the receiver. Either takes the thread; else the job gets a new task.
+    const own = params.taskId === undefined ? linkedTaskOf(params.senderId, requestOfTurn(params.senderId)) : null;
+    const ownMoves = !!own && !!db.prepare('SELECT 1 FROM work WHERE id = ? AND a2a_thread_id IS NULL').get(own)
+      && moveAssignee({ taskId: own, by: 'agent', actorId: params.senderId, cause: 'coordination', to: { agentId: params.receiverId }, door: 'send_to_agent(ASSIGN)' }).ok;
+    const taken = params.taskId ?? (ownMoves ? own : null);
+    if (taken && db.prepare('UPDATE work SET a2a_thread_id = ?, updated_at = ? WHERE id = ? AND a2a_thread_id IS NULL')
+      .run(params.threadId, Date.now(), taken).changes === 1) {
+      broadcastTaskSettled(taken, null);
+      return { taskId: taken, isNew: true };
     }
 
     // Title: first sentence (or first 80 chars) of the payload, cleaned up.

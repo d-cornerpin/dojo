@@ -533,7 +533,8 @@ export const agentsHandlers: ToolHandlerMap = {
       // The job is handed over the way any agent is given work: one ASSIGN on its own thread with the job's rules.
       if (args.auto_start !== false) {
         const job = await sendToAgent(agentId, {
-          agent: result.agentId, intent: 'ASSIGN', requiresResponse: true, taskId: given,
+          // A spawn that named a task passes it, or null when it was kept or not moved, so no other task of the sender is given away.
+          agent: result.agentId, intent: 'ASSIGN', requiresResponse: true, taskId: taskPlan ? given : undefined,
           payload: jobBrief({ systemPrompt: args.system_prompt as string, initialMessage: args.initial_message as string | undefined }),
         });
         content += `\n${job.content}`;
