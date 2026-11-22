@@ -10,7 +10,7 @@ import { getDb } from '../../db/connection.js';
 import { getPMAgentId, isPrimaryAgent } from '../../config/platform.js';
 import { ownerAskedInThisTurn } from '../row-authority.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
-import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from '../store.js';
+import { transition, appendWorkEvent, isTerminal, askIdForMessage, type Actor, type WorkOutcome, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
 import { tellUnfinishedTasks } from './project-state.js';
 import { latestHandIn, workerOf, workersOf, unitOrRollback, recordAdjudication, OWNER_ID, ENGINE_ID } from './record.js';
@@ -143,8 +143,8 @@ function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): 
 export function decide(input: DecideInput): DecideResult {
   if (!VERDICTS.includes(input.verdict)) return refused(`"${String(input.verdict)}" is not a verdict. Use approve or send_back.`);
   const row = getDb().prepare(
-    `SELECT id, title, state, agent_id AS worker, a2a_thread_id AS thread FROM work w WHERE w.id = ? AND ((${taskScope('w')}) OR (${projectScope('w')}))`,
-  ).get(input.workId) as { id: string; title: string | null; state: WorkState; worker: string; thread: string | null } | undefined;
+    `SELECT id, title, state, agent_id AS worker, a2a_thread_id AS thread, source_message_id AS request FROM work w WHERE w.id = ? AND ((${taskScope('w')}) OR (${projectScope('w')}))`,
+  ).get(input.workId) as { id: string; title: string | null; state: WorkState; worker: string; thread: string | null; request: string | null } | undefined;
   if (!row) return refused(`there is no task or project ${input.workId} on the board.`);
   const name = `"${row.title ?? row.id}" [${row.id}]`;
   const reason = input.reason.trim();
@@ -153,7 +153,8 @@ export function decide(input: DecideInput): DecideResult {
   if ('refused' in who) return refused(who.refused);
 
   if (input.verdict === 'cancel' || input.verdict === 'owner_done') {
-    const ended = input.verdict === 'cancel' && !!row.thread && resultForEndedRequest(row.worker, row.thread);   // its request was called off
+    const ended = input.verdict === 'cancel' && (row.thread ? resultForEndedRequest(row.worker, row.thread)   // its request was called off
+      : !!getDb().prepare("SELECT 1 FROM work WHERE id = ? AND state = 'abandoned'").get(askIdForMessage(row.request ?? '')));
     if (!who.owner && !ended) return refused(`only the owner cancels or closes ${name} directly. Nothing changed.`);
     if (isTerminal(row.state)) return refused(`${name} is already closed (${row.state}).`);
   } else {

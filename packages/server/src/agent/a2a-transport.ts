@@ -37,7 +37,7 @@ import {
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, CALLED_OFF_BY_OWNER, type PutBackKind } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, linkedTaskOf, CALLED_OFF_BY_OWNER, type PutBackKind } from '../work/ask-settlement.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
 import { afterCommit, withUnit } from '../db/unit.js';
 import { serveLater } from './v2/serve-later.js';
@@ -1424,18 +1424,28 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
   return out;
 }
 
-/** A request was called off: each helper's turn on that work stops and its task is cancelled, as his when the owner's. */
-export async function tellHelpersTheRequestEnded(pieces: Array<{ helper: string | null; thread: string; asker: string }>, byOwner: boolean): Promise<void> {
+/** Work was called off: a piece's helper stops its turn on that work and its task is cancelled; a request's asker has
+ *  its own task for it cancelled and, when the owner ended it, its turn still serving it stopped. As his when the owner's. */
+export async function endTheWorkUnder(workId: string, byOwner: boolean): Promise<void> {
   const { decide } = await import('../work/done/decide.js');
-  for (const piece of pieces) {
-    if (!piece.helper) continue;
-    const task = (getDb().prepare(
-      "SELECT id FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
-    ).get(piece.helper, piece.thread) as { id: string } | undefined)?.id;
-    const live = turnContext(piece.helper);
-    if (live && [live.root?.id, live.servedJob, live.servedWork?.taskId].some((w) => w === piece.thread || (!!task && w === task))) stopAgent(piece.helper);
-    if (task) decide({ workId: task, deciderAgentId: byOwner ? null : piece.asker, verdict: 'cancel', reason: `the request it was for was called off${byOwner ? ' by the owner' : ''}` });
+  const w = getDb().prepare('SELECT kind, agent_id AS asker, assignee_agent AS helper, root_id AS root FROM work WHERE id = ?')
+    .get(workId) as { kind: string; asker: string; helper: string | null; root: string } | undefined;
+  if (!w) return;
+  const cancel = (task: string | null | undefined): void => {
+    if (task) decide({ workId: task, deciderAgentId: byOwner ? null : w.asker, verdict: 'cancel', reason: `the request it was for was called off${byOwner ? ' by the owner' : ''}` });
+  };
+  if (w.kind === 'ask') {
+    const live = turnContext(w.asker);
+    if (byOwner && live?.root?.kind === 'ask' && live.root.id === w.root) stopAgent(w.asker);
+    return cancel(linkedTaskOf(w.asker, w.root));
   }
+  if (!w.helper) return;
+  const task = (getDb().prepare(
+    "SELECT id FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
+  ).get(w.helper, w.root) as { id: string } | undefined)?.id;
+  const live = turnContext(w.helper);
+  if (live && [live.root?.id, live.servedJob, live.servedWork?.taskId].some((t) => t === w.root || (!!task && t === task))) stopAgent(w.helper);
+  cancel(task);
 }
 
 /** When the engine gives up a request the asked agent never answered (its pickup past the budget), the asker

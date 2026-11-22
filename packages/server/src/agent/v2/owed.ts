@@ -11,7 +11,7 @@ import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { turnContext } from '../turn-context.js';
 import { parkedJobs } from '../live-work.js';
 import { askIdForMessage, openPieceOnSql } from '../../work/store.js';
-import { linkedTaskOf, jobHeldAt } from '../../work/ask-settlement.js';
+import { jobHeldAt } from '../../work/ask-settlement.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
 import {
   getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, findUnservedTerminalWake, askRoot,
@@ -210,10 +210,10 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
       || threadTasks(r.threadId).some((t) => t.due !== null)))
     .map((r) => [r.rowid, r] as const)).values()];
 
-  // The job tasks: the live turn's job, the run's schedule, the parked ones, the task linked to an ask or named by
-  // its job hold, and the working tasks on a request's thread.
+  // The job tasks: the live turn's job, the run's schedule, the parked ones, the task named by an ask's job hold, and
+  // the working tasks on a request's thread. A task linked to an ask ends with it (`endTheWorkUnder`).
   const jobs = new Set([live?.servedJob, live?.jobParked, run?.id, ...parked.map((j) => j.id),
-    ...asks.flatMap((a) => [linkedTaskOf(agentId, a.slice('ask:'.length)), jobHeldAt(a)?.task]),
+    ...asks.map((a) => jobHeldAt(a)?.task),
     ...requests.flatMap((r) => threadTasks(r.threadId).map((t) => t.id))].filter((t): t is string => !!t));
   return { liveRun: !!live, asks, runTasks: run ? [run.id] : [], requests, jobs: [...jobs] };
 }
