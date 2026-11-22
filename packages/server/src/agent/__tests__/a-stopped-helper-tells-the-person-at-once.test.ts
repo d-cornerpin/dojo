@@ -1,6 +1,6 @@
-// When a helper's work stops by an event the Dojo already records (its task deleted, its project deleted, the helper
-// ended, even while its run unwinds), the person waiting is told at that moment, once, with no sweep, however old the
-// request. When the owner cancels the helper's task on the board or removes the helper, that piece is called off by him;
+// When a helper's work stops by an event the Dojo already records (the helper ended, even while its run unwinds), the
+// person waiting is told at that moment, once, with no sweep, however old the request. When the owner cancels, deletes
+// or removes it on the dashboard (its task, its project, the helper, even one given a plain question), that piece is called off by him;
 // with nothing else back the request ends as called off by him (nobody is told, nothing redoes it, a late answer is
 // refused), and in a fan-out the other helpers' answers still go back to the agent.
 // Until then the request is kept however long the task is open. A stop the Dojo missed while it was down is caught
@@ -78,19 +78,25 @@ describe('a stopped helper tells the person at once', () => {
     expect(requestState()).not.toBe('abandoned');
   });
 
-  it('its task deleted', async () => {
+  it('the owner removes a helper given a plain question: called off by him, nobody is told', async () => {
     served();
-    deleteTrackerRow(helperTask());
-    expect(await told()).toEqual(['failed', 1, 1]);
+    expect((await agentsRouter.request(`/${HELPER}`, { method: 'DELETE' })).status).toBe(200);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
   });
 
-  it('the project holding its task deleted', async () => {
+  it('its task deleted by the owner', async () => {
+    served();
+    deleteTrackerRow(helperTask());
+    expect(await told()).toEqual(['abandoned', 0, 0]);
+  });
+
+  it('the project holding its task deleted by the owner', async () => {
     testDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
       VALUES ('proj-1', 'project', ?, 'agent', 'tracker', 'proj-1', 'open', 'project', 0, 0, 'Venue', ?, ?)`).run(HELPER, Date.now(), Date.now());
     helperTask('proj-1');
     served();
     deleteTrackerRow('proj-1');
-    expect(await told()).toEqual(['failed', 1, 1]);
+    expect(await told()).toEqual(['abandoned', 0, 0]);
   });
 
   it('the helper ended (from an error), on a request eight days old; a second end tells nobody', async () => {
