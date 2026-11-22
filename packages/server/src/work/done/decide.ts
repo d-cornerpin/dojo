@@ -55,19 +55,19 @@ function openOwnerCards(): Map<string, number> {
 
 type Who = { owner: true } | { owner: false; agentId: string };
 
-/** Who is deciding: the owner on the dashboard, or by his words relayed by an agent that did not work the row
- *  (a cancel by the main agent; an approve or send back of the one hand-in he was asked about, from a message
+/** Who is deciding: the owner on the dashboard, or by his words relayed by an agent (a cancel by the main agent; an
+ *  approve or send back, by an agent that did not work the row, of the one hand-in he was asked about, from a message
  *  written after he was asked, an approval only as his whole message), or else the agent itself. */
 function deciderOf(input: DecideInput): Who | { refused: string } {
   if (input.deciderAgentId === null) return { owner: true };
   const relayer = input.deciderAgentId;
   if (input.ownerQuote === undefined || input.ownerQuote.trim() === '') return { owner: false, agentId: relayer };
   const no = (why: string): { refused: string } => ({ refused: `${why} Nothing changed.` });
-  if (workersOf(input.workId).has(relayer)) return no('you worked this, so you cannot pass on his decision of it; he taps the card.');
   let after: number | undefined;
   if (input.verdict === 'cancel') {
     if (!isPrimaryAgent(relayer)) return no('only the main agent cancels a task on the owner\'s words.');
   } else if (input.verdict === 'approve' || input.verdict === 'send_back') {
+    if (workersOf(input.workId).has(relayer)) return no('you worked this, so you cannot pass on his decision of it; he taps the card.');
     const cards = openOwnerCards();
     after = cards.get(input.workId);
     if (after === undefined) return no('the owner\'s relayed words decide only a hand-in he was asked about.');
