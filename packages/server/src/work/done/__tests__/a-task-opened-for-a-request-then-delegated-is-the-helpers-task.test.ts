@@ -28,8 +28,8 @@ const inTurn = (): void => {
   Object.assign(openTurnContext(MAIN), { turnNumber: 7, root: { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask', conversationId: 'conv-dash' } });
 };
 const jobTasks = () => doneDb().prepare(
-  "SELECT id, agent_id AS holder, a2a_thread_id AS thread, state FROM work WHERE kind = 'task' AND root_kind <> 'a2a_thread' AND id <> 'task-decide-0001' ORDER BY opened_at, rowid",
-).all() as Array<{ id: string; holder: string; thread: string | null; state: string }>;
+  "SELECT id, agent_id AS holder, a2a_thread_id AS thread, state, goal FROM work WHERE kind = 'task' AND root_kind <> 'a2a_thread' AND id <> 'task-decide-0001' ORDER BY opened_at, rowid",
+).all() as Array<{ id: string; holder: string; thread: string | null; state: string; goal: string }>;
 const assignThread = (to: string): string => (doneDb().prepare(
   "SELECT a2a_thread_id AS t FROM messages WHERE agent_id = ? AND a2a_intent = 'ASSIGN' ORDER BY rowid DESC LIMIT 1").get(to) as { t: string }).t;
 const openForRequest = () => call(MAIN, 'work_open', { kind: 'task', title: 'Beach packing list', goal: 'The owner has a beach packing list' });
@@ -82,6 +82,7 @@ describe('a task opened for a request, then delegated, is the helper\'s task', (
       const [job, ...more] = jobTasks();
       expect(more, 'no second task for the same job').toEqual([]);
       expect([job.holder, job.thread]).toEqual([helper, assignThread(helper)]);
+      expect(job.goal, 'the helper is reviewed against the brief it was handed').toContain('Write a beach packing list.');
 
       await helperCompletes(helper);
       expect(jobTasks().map((t) => t.state)).toEqual(['handed_in']);

@@ -520,6 +520,7 @@ export function autoCreateAssignTask(params: {
     const taken = params.taskId ?? (ownMoves ? own : null);
     if (taken && db.prepare('UPDATE work SET a2a_thread_id = ?, updated_at = ? WHERE id = ? AND a2a_thread_id IS NULL')
       .run(params.threadId, Date.now(), taken).changes === 1) {
+      patchWork(taken, { goal: params.payload.trim().slice(0, 2000) || undefined });   // reviewed against the brief it was handed
       broadcastTaskSettled(taken, null);
       return { taskId: taken, isNew: true };
     }
