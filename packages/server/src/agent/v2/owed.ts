@@ -10,7 +10,7 @@ import { originOfTasks, type JobOrigin } from '../../work/job-origin.js';
 import { activeRuns, isRunUnwinding } from '../shared-state.js';
 import { turnContext } from '../turn-context.js';
 import { parkedJobs } from '../live-work.js';
-import { askIdForMessage, openPieceOnSql } from '../../work/store.js';
+import { askIdForMessage, helperWorksOnSql, openPieceOnSql } from '../../work/store.js';
 import { jobHeldAt } from '../../work/ask-settlement.js';
 import { requestsTakenUpBy } from '../../work/task-turns.js';
 import { nextReplyDueAt, deliverDueReplies } from './channel-sender.js';
@@ -201,8 +201,7 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
   const parked = live ? [] : parkedJobs(agentId).map((j) => ({ id: j.id, origin: originOfTasks(agentId, [j.id]) }));
   const parkedAsks = parked.map((j) => (j.origin?.kind === 'ask' ? askIdForMessage(j.origin.messageId) : null));
   const waiting = live ? [] : (db.prepare(`SELECT a.id FROM work a WHERE a.agent_id = ? AND a.kind = 'ask' AND a.state = 'blocked'
-    AND EXISTS (SELECT 1 FROM work p WHERE p.parent_id = a.id AND p.kind = 'task' AND p.state IN ('open', 'claimed', 'blocked'))`)
-    .all(agentId) as Array<{ id: string }>).map((a) => a.id);
+    AND ${helperWorksOnSql('a')}`).all(agentId) as Array<{ id: string }>).map((a) => a.id);
   const asks = [...new Set([ask?.id, ...taken, ...parkedAsks, ...waiting])]
     .filter((id): id is string => !!id && !!one(`SELECT id FROM work WHERE id = ?
       AND (state IN ('claimed', 'blocked') OR (state = 'open' AND next_attempt_at IS NOT NULL))`, id));
@@ -213,11 +212,10 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
       || threadTasks(r.threadId).some((t) => t.due !== null)))
     .map((r) => [r.rowid, r] as const)).values()];
 
-  // The job tasks: the live turn's job, the run's schedule, the parked ones, the task named by an ask's job hold, and
-  // the working tasks on a request's thread. A task linked to an ask ends with it (`endTheWorkUnder`).
+  // The job tasks: the live turn's job, the run's schedule, the parked ones, the task named by an ask's job hold. A
+  // request's own jobs end with it (`callOff`); Stop holds only what is left.
   const jobs = new Set([live?.servedJob, live?.jobParked, run?.id, ...parked.map((j) => j.id),
-    ...asks.map((a) => jobHeldAt(a)?.task),
-    ...requests.flatMap((r) => threadTasks(r.threadId).map((t) => t.id))].filter((t): t is string => !!t));
+    ...asks.map((a) => jobHeldAt(a)?.task)].filter((t): t is string => !!t));
   return { liveRun: !!live, asks, runTasks: run ? [run.id] : [], requests, jobs: [...jobs] };
 }
 
