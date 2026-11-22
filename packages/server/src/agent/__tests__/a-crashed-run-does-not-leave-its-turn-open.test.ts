@@ -26,15 +26,8 @@
 // `agents` and not `turns`. The verdict is its own; the statement lives in
 // `agent/v2/turn-record.ts`, the one module that writes that table.
 //
-// It SELECTS the crashed ids and writes through the one writer — the shape
-// `terminateDuplicateAgentsByName` in the same module already uses, with its reason verbatim:
-// "the statement count stays at one owner".
-//
-// ⚠ THE ORDER IS THE WHOLE MECHANISM, which is why §2 is a clause and not a comment: the read
-// is `status = 'working'` — the same set the status UPDATE is about to repair — so running it
-// AFTER that UPDATE selects nothing and closes nothing, SILENTLY. A sweep that closed zero
-// rows and a boot with nothing to close are indistinguishable from the outside, which is how
-// this kind of zero survives.
+// It closes every agent's open turns through the one writer: no turn survives a restart, so none can be read as
+// still serving its work.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -138,7 +131,8 @@ describe('§1 the boot sweep closes the turn the dead process abandoned', () => 
     // agent, two turns. Every other clause here has them equal, so a refactor that returned
     // `turnsClosed` would pass them all and make `index.ts`'s boot line say "Reset 2 agent(s)"
     // about one agent. The two counts mean different things and the caller reads one of them.
-    expect(resetWorkingAgentsToIdleAtBoot(), 'the return is agents repaired, never turns closed').toBe(1);
+    // Both started after the dead process did, by its boot stamp: both are its turns.
+    expect(resetWorkingAgentsToIdleAtBoot(Date.now() - 3_600_000), 'the return is agents repaired, never turns closed').toBe(1);
     expect(rows().map((x) => x.exit_reason)).toEqual(['terminated', 'terminated']);
     expect(infos.filter((m) => /Closed 2 turn record\(s\)/.test(m)), 'and the turns are counted in the log')
       .toHaveLength(1);
@@ -157,32 +151,30 @@ describe('§1 the boot sweep closes the turn the dead process abandoned', () => 
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// §2 — COUNTING THE OTHER WAY, AND THE ORDER
+// §2 — NO TURN SURVIVES A RESTART: every agent's open rows close, whatever the agent's status
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('§2 it touches only the rows this boot is responsible for', () => {
-  it('an IDLE agent\'s open row is NOT closed — the sweep is not a table sweep', () => {
-    // The direction that matters for a lived-in box: 279 open rows already exist and they
-    // belong to agents that are long since `idle`. Closing them here would be inventing a
-    // verdict about runs nobody judged — and would make the `terminated` count meaningless.
+describe('§2 every open turn closes at boot, of every agent', () => {
+  it('an IDLE agent\'s open row is closed too, and no agent row needed repairing', () => {
+    // A row left open by an idle agent would otherwise read as a turn still serving its work for ever.
     agent('a-idle', 'idle');
     openTurn('a-idle', 3);
     expect(resetWorkingAgentsToIdleAtBoot(), 'no agent row needed repairing').toBe(0);
-    expect(rows()[0].exit_reason).toBeNull();
-    expect(rows()[0].ended_at).toBeNull();
-    expect(infos.filter((m) => /Closed \d+ turn record/.test(m)), 'and it says nothing').toHaveLength(0);
+    expect(rows()[0].exit_reason).toBe('terminated');
+    expect(rows()[0].ended_at).not.toBeNull();
   });
 
-  it('a `terminated` agent and a `paused` one are left alone too', () => {
+  it('a `terminated` agent and a `paused` one have theirs closed as well', () => {
     agent('a-done', 'terminated');
     agent('a-paused', 'paused');
     openTurn('a-done', 1);
     openTurn('a-paused', 1);
     resetWorkingAgentsToIdleAtBoot();
-    expect(rows().map((x) => x.exit_reason)).toEqual([null, null]);
+    expect(rows().map((x) => x.exit_reason)).toEqual(['terminated', 'terminated']);
+    expect(statusOf('a-paused'), 'only a working agent is set idle').toBe('paused');
   });
 
-  it('a mixed roster: only the `working` agent\'s row moves', () => {
+  it('a mixed roster: both rows close, and only the `working` agent is repaired', () => {
     agent('a-crashed', 'working');
     agent('a-idle', 'idle');
     openTurn('a-crashed', 1);
@@ -190,24 +182,8 @@ describe('§2 it touches only the rows this boot is responsible for', () => {
     expect(resetWorkingAgentsToIdleAtBoot()).toBe(1);
     expect(rows()).toEqual([
       expect.objectContaining({ agent_id: 'a-crashed', exit_reason: 'terminated' }),
-      expect.objectContaining({ agent_id: 'a-idle', exit_reason: null }),
+      expect.objectContaining({ agent_id: 'a-idle', exit_reason: 'terminated' }),
     ]);
-  });
-
-  it('⚠ THE ORDER: the crashed ids are read BEFORE the status UPDATE, or nothing closes at all', () => {
-    // Not a style point. The read is `status = 'working'` — the same set the status UPDATE
-    // repairs — so running it afterwards selects nothing and closes nothing, SILENTLY. Both
-    // halves are asserted: the sequence is genuinely order-dependent (driven, by doing the
-    // status write first and watching the sweep close nothing), and the call site genuinely
-    // puts the read first (source, comments stripped).
-    agent('a-crashed', 'working');
-    openTurn('a-crashed', 1);
-    db().prepare("UPDATE agents SET status = 'idle' WHERE status = 'working'").run();
-    expect(
-      resetWorkingAgentsToIdleAtBoot(),
-      'nothing reads `working` any more — this is the silent zero the order prevents',
-    ).toBe(0);
-    expect(rows()[0].exit_reason, 'and no turn row moved either').toBeNull();
   });
 
   it('a boot with nothing to repair writes nothing and says nothing', () => {

@@ -1,5 +1,6 @@
-// Messages a running turn serves: the assembler re-emits any a fold took out of view at the front of the
-// live tail (`memory/assembler.ts` `tailRender`). With no running turn every answer is `[]`.
+// The messages a running turn's reply is addressed to, kept in view: its trigger and the open requests after it in
+// its own conversation, which the reply answers there. The assembler re-emits any a fold took out of view at the
+// front of the live tail (`memory/assembler.ts` `tailRender`). With no running turn every answer is `[]`.
 
 import { getDb } from '../db/connection.js';
 import { turnContext } from '../agent/turn-context.js';

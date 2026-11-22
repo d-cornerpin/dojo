@@ -29,7 +29,7 @@ import { moveAssignee } from '../../../work/row-authority.js';
 import { inheritedAskDoor } from '../../../work/inherited-backlog.js';
 import { resolveTaskId, resolveProjectId, formatResolveError } from '../../../tracker/schema.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
-import { handIn } from '../../../work/done/hand-in.js';
+import { handIn, judgedForItsRun } from '../../../work/done/hand-in.js';
 import { isHousekeeping } from '../../../work/done/housekeeping.js';
 import { decide, type Verdict } from '../../../work/done/decide.js';
 import { openProof } from '../../../work/done/open-proof.js';
@@ -284,7 +284,7 @@ const tableOfHandlers: ToolHandlerMap = {
       items: proofItemsOf(r.id, args.proof), note: noteWithReason(args.note, noteWithReason(args.notes, args.reason)) ?? '',
     });
     if (done.kind === 'handed_in') return { content: done.text, isError: false };
-    const onRecord = proofFor(r.id).map((i) => `{kind:"${i.kind}", ref:"${i.ref}"}`);
+    const onRecord = proofFor(r.id).filter((i) => !judgedForItsRun(r.id, [i])).map((i) => `{kind:"${i.kind}", ref:"${i.ref}"}`);
     return { content: onRecord.length > 0 ? `${done.text}\nRecords on file for this work that you may cite as proof: ${onRecord.join(', ')}.` : done.text, isError: true };
   },
 

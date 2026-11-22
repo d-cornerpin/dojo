@@ -46,6 +46,7 @@ import {
 import { engineRelayPreface } from '../../work/join-drive.js';
 import { resolveJoinsAtBoot } from '../a2a-transport.js';
 import { newestPutBack, recordPiecesShown, settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
+import { turnRow } from '../v2/__tests__/helpers/live-turn.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const AGENT = FXID.n4;
@@ -77,6 +78,7 @@ const ownerFacing = (): Array<{ content: string; role: string }> =>
 async function agentStaysSilent(askId: string, turn = DELEGATING_TURN + 1): Promise<void> {
   await resolveJoinsAtBoot();
   settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: DELEGATING_TURN });   // the delegating turn ends
+  turnRow(AGENT, turn, null);
   claimAsk(askId, AGENT);
   stampClaimingTurn(askId, turn);
   recordPiecesShown(askId, AGENT, turn, newestPutBack(askId)!.id);
@@ -101,6 +103,7 @@ function seedTwoPieceJoin(msgId = 'm-1', opts: { landB?: boolean } = {}): string
     agentId: AGENT, messageId: msgId, conversationId: CONV, requesterId: 'owner',
     openedAt, title: 'plan the trip',
   });
+  turnRow(AGENT, DELEGATING_TURN, { kind: 'ask', id: msgId });
   claimAsk(askId, AGENT);
   stampClaimingTurn(askId, DELEGATING_TURN);
   const kids = openDelegationJoin({

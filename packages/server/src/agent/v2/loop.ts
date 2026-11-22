@@ -5,6 +5,7 @@ import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
 // recordError is not called here: handleMessage's catch calls it, and a second count trips the pause early.
 import { openTurnContext, turnContext, endTurnContext, type TurnContext } from '../turn-context.js';
+import { markTurnDied } from './turn-record.js';
 // agent-status.ts owns the agents.status transition; never re-export setAgentStatus from this module.
 import { setAgentStatus } from '../agent-status.js';
 
@@ -57,13 +58,15 @@ function stopStatusHeartbeat(agentId: string): void {
 }
 
 /** Run one turn on the v2 runtime. This wrapper is the turn's lifetime: it opens and always ends the turn
- *  context (why the clear lives here is written at `endTurnContext`). */
+ *  context (why the clear lives here is written at `endTurnContext`), and the one place every way out of the turn
+ *  passes: a turn row its own end did not close (a throw, an abandon) is closed here. */
 export async function runV2Turn(agentId: string): Promise<void> {
   await ensureArtifactDir(agentId);   // the folder the manifest grants exists before the agent acts
   const turnCtx = openTurnContext(agentId);
   try {
     await runV2TurnBody(agentId, turnCtx);
   } finally {
+    if (turnCtx.turnNumber !== undefined) markTurnDied(agentId, turnCtx.turnNumber);
     endTurnContext(agentId);
   }
 }

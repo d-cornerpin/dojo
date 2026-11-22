@@ -59,6 +59,8 @@ function seedDelivery(
      VALUES (?, ?, ?, ?, 'dashboard', ?, ?, 'delivered', datetime('now', ?), ?, ?)`,
   ).run(id, AGENT, o.turn, o.tool ?? 'dashboard', CONV, o.messageId ?? null, `+${(o.offsetSeconds ?? 0) + 5} seconds`,
     o.serving ? 'ask' : null, o.serving ?? null);
+  // The turn that served the request is rooted on it, as the delivery's own stamp says.
+  if (o.serving) mockDb.current!.prepare("UPDATE turns SET root_kind = 'ask', root_id = ? WHERE agent_id = ? AND turn_number = ?").run(o.serving, AGENT, o.turn);
 }
 
 /** A tracker task exactly as the tool path opens one. */
@@ -157,6 +159,19 @@ describe('the task→ask edge is stamped at create', () => {
     const row = mockDb.current!.prepare('SELECT source_message_id FROM work WHERE id = ?')
       .get(taskId) as { source_message_id: string | null };
     expect(row.source_message_id).toBe('msg-explicit');
+  });
+
+  it('a task opened on a turn that took up two requests links to neither: which one it is for is not on record', () => {
+    seedTurn(4552);
+    for (const [id, text] of [[OWNER_MSG, 'compare squarespace and wordpress'], ['msg-owner-2', 'and find me a domain name']]) {
+      mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, created_at) VALUES (?, ?, 'user', ?, 'owner', ?, ?)`)
+        .run(id, AGENT, text, CONV, Date.now());
+      openAsk({ agentId: AGENT, messageId: id, conversationId: CONV, requesterId: 'owner', openedAt: Date.now(), title: text });
+      claimAsk(askIdForMessage(id), AGENT);
+      stampClaimingTurn(askIdForMessage(id), 4552);
+    }
+    const taskId = seedTask('task-two-asks');
+    expect(mockDb.current!.prepare('SELECT source_message_id FROM work WHERE id = ?').get(taskId)).toEqual({ source_message_id: null });
   });
 
   it('CONTROL: a turn holding no claimed ask stamps nothing', () => {

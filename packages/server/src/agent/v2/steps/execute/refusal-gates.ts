@@ -18,6 +18,7 @@ import { getDb } from '../../../../db/connection.js';
 import { SENT_TEXT_MAX_CHARS } from '../../../../receipts/store.js';
 import { recipientIdsMatch } from '../../../recipient-identity.js';
 import { outboundRecipientForTool } from '../../outbound.js';
+import { requestsTakenUpBy } from '../../../../work/task-turns.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { ToolCall } from '@dojo/shared';
 import type { ExecuteContext, PendingToolResult } from './index.js';
@@ -45,8 +46,9 @@ const sentTextOf = (tool: string, a: Record<string, unknown>): string =>
 
 /** Loop protection, never a block: a send this request made on an earlier turn is refused once; the identical repeat goes. */
 function repeatSend(agentId: string, tc: ToolCall, turnCtx: TurnContext, refusedOnceSigs: Set<string>): PendingToolResult | null {
-  const { root, turnNumber: turn } = turnCtx;
-  if (root?.kind !== 'ask' || turn === undefined) return null;
+  const turn = turnCtx.turnNumber;
+  const requests = turn === undefined ? [] : requestsTakenUpBy(agentId, turn);
+  if (turn === undefined || requests.length === 0) return null;
   const args = (tc.arguments ?? {}) as Record<string, unknown>;
   const tool = tc.name.replace(/^user_/, '');
   const text = sentTextOf(tool, args).slice(0, SENT_TEXT_MAX_CHARS);
@@ -55,9 +57,9 @@ function repeatSend(agentId: string, tc: ToolCall, turnCtx: TurnContext, refused
   if (!text || !recipient || refusedOnceSigs.has(sig)) return null;
   const prior = (getDb().prepare(
     `SELECT turn_number AS n, recipient FROM tool_receipts WHERE agent_id = ? AND created_at >= datetime('now', '-1 day')
-        AND tool = ? AND sent_text = ? AND root_kind = 'ask' AND root_id = ? AND turn_number < ? ORDER BY turn_number DESC`,
-  ).all(agentId, tool, text, root.id, turn) as Array<{ n: number; recipient: string | null }>)
-    .find((r) => recipientIdsMatch(recipient, r.recipient));
+        AND tool = ? AND sent_text = ? AND turn_number < ? ORDER BY turn_number DESC`,
+  ).all(agentId, tool, text, turn) as Array<{ n: number; recipient: string | null }>)
+    .find((r) => recipientIdsMatch(recipient, r.recipient) && requestsTakenUpBy(agentId, r.n).some((a) => requests.includes(a)));
   if (!prior) return null;
   refusedOnceSigs.add(sig);
   return { toolCallId: tc.id, name: tc.name, isError: true, content: `[Engine: not sent] Turn ${prior.n} already sent this same `

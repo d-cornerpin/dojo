@@ -38,6 +38,7 @@ import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin } from '../store.js';
 import { settleAsksAtTurnFinalize } from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
+import { turnRow } from '../../agent/v2/__tests__/helpers/live-turn.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
@@ -150,7 +151,10 @@ describe('CENSUS B — the structural invariant: no `claimed` ask outlives its t
 
   it('three turns, three endings, ZERO claimed survivors', () => {
     const db = mockDb.current!;
+    vi.useFakeTimers({ toFake: ['Date'] });   // one turn after another, as an agent's turns run
     const claim = (id: string, turn: number): void => {
+      vi.setSystemTime(Date.now() + 5_000);
+      turnRow(AGENT, turn, null);
       insertMessage(ownerInbound({ id }) as never);
       claimAsk(askIdForMessage(id), AGENT);
       stampClaimingTurn(askIdForMessage(id), turn);
@@ -184,12 +188,14 @@ describe('CENSUS B — the structural invariant: no `claimed` ask outlives its t
     expect(state('m-answered')).toBe('done');
     expect(state('m-silent'), 'no evidence means the owner is served again, never parked').toBe('open');
     expect(state('m-delegated'), 'delegated work outstanding means held, and visibly owed').toBe('blocked');
+    vi.useRealTimers();
   });
 
   it('the one exception: an ask whose reply is still on its way stays claimed with its turn', () => {
     const db = mockDb.current!;
     insertMessage(ownerInbound({ id: 'm-in-flight' }) as never);
     claimAsk(askIdForMessage('m-in-flight'), AGENT);
+    turnRow(AGENT, 4, null);
     stampClaimingTurn(askIdForMessage('m-in-flight'), 4);
     db.prepare(
       `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, payload_json, next_attempt_at)
@@ -204,6 +210,7 @@ describe('CENSUS B — the structural invariant: no `claimed` ask outlives its t
     const db = mockDb.current!;
     insertMessage(ownerInbound({ id: 'm-silent' }) as never);
     claimAsk(askIdForMessage('m-silent'), AGENT);
+    turnRow(AGENT, 9, null);
     stampClaimingTurn(askIdForMessage('m-silent'), 9);
     settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 9 });
     const closedWithout = db.prepare(

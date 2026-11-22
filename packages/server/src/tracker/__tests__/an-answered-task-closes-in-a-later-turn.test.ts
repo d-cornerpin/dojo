@@ -68,6 +68,8 @@ function line(id: string, content: string, turn: number, askMessage: string | nu
     `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at, root_kind, root_id)
      VALUES (?, ?, ?, 'dashboard', 'dashboard', ?, ?, 'delivered', datetime('now', ?), ?, ?)`,
   ).run(id, AGENT, turn, CONV, `m-${id}`, `+${clock} seconds`, askMessage ? 'ask' : null, askMessage);
+  // A turn already on record that serves the request is rooted on it, as the delivery's own stamp says.
+  if (askMessage) db().prepare("UPDATE turns SET root_kind = 'ask', root_id = ? WHERE agent_id = ? AND turn_number = ? AND root_kind IS NULL").run(askMessage, AGENT, turn);
   return `m-${id}`;
 }
 

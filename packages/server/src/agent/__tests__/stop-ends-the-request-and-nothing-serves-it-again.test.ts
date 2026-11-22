@@ -1,11 +1,14 @@
 // The owner's Stop ends the request being served for good: it is called off, its parked job is held with no due,
 // and nothing serves it again, not after the turn ends and not after a restart. The engine self-wakes queued before
 // a stopped turn are not served either; one tied to a person's request or scheduled run is, as is any queued after.
+// A Stop at the turn's very start ends everything the turn took up, as one later in the turn does.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('./helpers/agent-requests.js')).connectionMock());
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../v2/loop.js', () => ({ runV2Turn: async () => {} }));
+const atFirstAwait = { run: null as null | (() => void) };   // runs at the turn start's first await
+vi.mock('../../tools/tool-docs.js', async (orig) => ({ ...(await orig<object>()), rehydrateSessionToolsFromHistory: () => atFirstAwait.run?.() }));
 
 import { runMigrations } from '../../db/migrations.js';
 import { stopByOwner } from '../runtime.js';
@@ -21,7 +24,7 @@ import { seedTrackerTask } from '../../work/__tests__/work-fixture.js';
 import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
 
 // A run's start clears the Stop flag; these turns start without the runtime, so each test starts clear.
-beforeEach(() => { freshAgentsDb(runMigrations); stoppedAgents.clear(); });
+beforeEach(() => { freshAgentsDb(runMigrations); stoppedAgents.clear(); atFirstAwait.run = null; });
 
 const nothingComesBack = (): void => {
   expect(nextOwed(HELPER)).toEqual([]);
@@ -84,6 +87,15 @@ describe('stop ends the request and nothing serves it again', () => {
     reconcileOrphanedClaims({ agentId: HELPER });
     healStuckClaims();
     nothingComesBack();
+  });
+
+  it('Stop at the first moment of the turn carrying the job ends the question and the job\'s request with it', async () => {
+    const ask = await ownerAsks('m-1');
+    await stretch('parks');
+    const question = await ownerAsks('m-2', 'How is it going?');
+    atFirstAwait.run = () => { stopByOwner(HELPER); };
+    await stretch('stopped');
+    expect([rowOf(question).state, rowOf(ask).state]).toEqual(['abandoned', 'abandoned']);
   });
 
   it('Stop ends a parked job whose hold was written before the hold named its task as evidence', async () => {

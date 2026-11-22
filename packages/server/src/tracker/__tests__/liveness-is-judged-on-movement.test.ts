@@ -189,7 +189,7 @@ function park(turnNumber: number, at: number, first: boolean): void {
   noteEngineCheckpoint('helper', 'turn-budget');
   stampTasksAtTurnFinalize({
     agentId: 'helper', turnNumber, outcome: 'budget', answerMessageId: null,
-    rootSourceMessageId: first ? 'msg-ask' : null, convKey: 'c-job', servedTaskId: null,
+    convKey: 'c-job', servedTaskId: null,
   });
   endTurnContext('helper');
 }

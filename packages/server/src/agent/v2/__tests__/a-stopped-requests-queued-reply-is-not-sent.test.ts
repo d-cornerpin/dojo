@@ -13,7 +13,8 @@ vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRo
 import { runMigrations } from '../../../db/migrations.js';
 import { routeTerminalReply } from '../steps/finalize/route-reply.js';
 import { deliverDueReplies } from '../channel-sender.js';
-import { openTurnContext, endTurnContext } from '../../turn-context.js';
+import { endTurnContext } from '../../turn-context.js';
+import { liveTurn } from './helpers/live-turn.js';
 import { stopByOwner } from '../../runtime.js';
 import { freshReplyDb, imessage, personTurn, replyRows, testDb, AGENT, PERSON, T0 } from './helpers/reply-sender.js';
 import { lastRunEndedAt } from '../../shared-state.js';
@@ -32,8 +33,7 @@ describe("a stopped request's queued reply is not sent", () => {
     await routeTerminalReply(...personTurn('the venue is booked', { channel: 'imessage' }, 1));
     const stopped = claimedAsk('ask-2', `conv-${PERSON}`, 2);
     await routeTerminalReply(...personTurn('here is the address', { channel: 'imessage' }, 2));
-    const bag = openTurnContext(AGENT);
-    Object.assign(bag, { turnNumber: 2, root: { kind: 'ask', id: 'ask-2', sourceMessageId: 'ask-2' } });
+    liveTurn(AGENT, { turnNumber: 2, root: { kind: 'ask', id: 'ask-2', sourceMessageId: 'ask-2' } });
     expect(stopByOwner(AGENT)).toEqual({ ended: 1, repliesNotSent: 1 });
     endTurnContext(AGENT);
 

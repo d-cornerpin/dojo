@@ -18,6 +18,8 @@ import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
 import { proofDelivery } from './done/proof.js';
 import { bumpWorkAttempts } from './tracker-store.js';
+import { servedBy } from './task-turns.js';
+import { turnContext } from '../agent/turn-context.js';
 
 const logger = createLogger('occurrences');
 
@@ -111,15 +113,22 @@ export const RUN_STATUS_UNDELIVERED = 'undelivered';
 /** A run that owes a message and delivered it, or that was handed in during its own turn (delivered or not). */
 export interface RunReadyToClose { occurrenceId: string; taskId: string; deliveryId: string | null; handedIn: boolean }
 
-/** Open runs that owe a message, whose turn ended and whose window holds it (`proofDelivery`) or that were handed in during it. */
+/** Is a turn that served this run still running: the turn its worker is running now in this process, with the run in
+ *  its served set. A row nothing runs any more never holds a run. */
+export function runServedByOpenTurn(runId: string): boolean {
+  const worker = (getDb().prepare('SELECT agent_id FROM work WHERE id = ?').get(runId) as { agent_id: string } | undefined)?.agent_id;
+  const live = worker ? turnContext(worker)?.turnNumber : undefined;
+  return live !== undefined && servedBy(worker!, live).some((s) => s.id === runId);
+}
+
+/** Open runs that owe a message, no turn serving them still open, whose window holds it (`proofDelivery`) or that were handed in. */
 export function runsReadyToCloseOnDelivery(): RunReadyToClose[] {
   const rows = getDb().prepare(`
     SELECT w.id AS occurrence_id, w.parent_id AS task_id, p.state = 'handed_in' AND EXISTS (SELECT 1 FROM work_events h WHERE h.work_id = p.id
         AND h.kind = 'handed_in' AND h.created_at >= w.opened_at AND json_extract(h.payload, '$.waits') = 1) AS handed FROM work w JOIN work p ON p.id = w.parent_id
      WHERE w.kind = ? AND w.state IN ('open','claimed') AND p.task_kind IS NOT NULL
-       AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.root_kind = w.kind AND t.root_id = w.id AND t.ended_at IS NULL)
   `).all(OCCURRENCE_KIND) as Array<{ occurrence_id: string; task_id: string; handed: number }>;
-  return rows.flatMap((row) => {
+  return rows.filter((row) => !runServedByOpenTurn(row.occurrence_id)).flatMap((row) => {
     const deliveryId = owedRunDelivery(row.occurrence_id);
     return deliveryId || row.handed ? [{ occurrenceId: row.occurrence_id, taskId: row.task_id, deliveryId, handedIn: !!row.handed }] : [];
   });

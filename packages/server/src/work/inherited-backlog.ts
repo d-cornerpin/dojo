@@ -3,6 +3,7 @@
 // shown, not served) and its agent is told once; the engine texts nobody. Idempotent: a parked ask is no
 // longer `claimed`, so a repeated boot finds nothing.
 import { v4 as uuidv4 } from 'uuid';
+import { PROCESS_STARTED_MS } from '../process-start.js';
 import { getDb } from '../db/connection.js';
 import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
@@ -16,7 +17,7 @@ const logger = createLogger('inherited-backlog');
 
 /** When THIS process started, in the form `turns.ended_at` is written in (`datetime('now')`, UTC). A dead turn
  *  closed at or after it was closed by this process's own boot sweep or reaper: the process that just died. */
-export const PROCESS_STARTED_AT = new Date().toISOString().replace('T', ' ').slice(0, 19);
+export const PROCESS_STARTED_AT = new Date(PROCESS_STARTED_MS).toISOString().replace('T', ' ').slice(0, 19);
 
 
 /** Where THIS boot's pass records itself: the release step reads it, and only a completed pass of this very

@@ -14,7 +14,7 @@ import { workingExpr } from '../../work/terminal-states.js';
 import { postAgentNotice, redriveWithoutReply } from '../../agent/agent-notice.js';
 import { tsToMs } from '../../work/tracker-view.js';
 import { calculateNextRun, scheduledTaskFromRow } from '../../scheduler/engine.js';
-import { scheduleError } from '../../tracker/tools.js';
+import { scheduleError, nextRunAfterEdit } from '../../tracker/tools.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordReassignment } from '../../tracker/assignee-patience.js';
 import { isLiveAgent } from '../../work/row-authority.js';
@@ -390,30 +390,17 @@ trackerRouter.put('/tasks/:id', async (c) => {
           ?? existingTask?.anchorTime
           ?? body.scheduled_start
         ) as string;
-        // The row's own zone (`getTask` does not project it): the walk runs on the clock the
-        // owner set, not the box's.
-        const taskZone = (getDb().prepare('SELECT tz FROM work WHERE id = ?').get(id) as { tz: string | null } | undefined)?.tz ?? null;
-        const nextRun = calculateNextRun(scheduledTaskFromRow({
-          ...body, id, repeat_end_type: body.repeat_end_type ?? 'never', repeat_days_of_week: repeatDaysOfWeek,
-          anchor_time: anchorTime, schedule_status: 'waiting', run_count: existingTask?.runCount ?? 0, is_paused: 0,
-          last_run_at: null, next_run_at: null, tz: taskZone,
-        })) ?? body.scheduled_start;
+        const edited = {
+          scheduled_start: body.scheduled_start as string, repeat_interval: body.repeat_interval ?? null, repeat_unit: body.repeat_unit ?? null,
+          repeat_end_type: body.repeat_end_type ?? 'never', repeat_end_value: body.repeat_end_value ?? null, repeat_days_of_week: repeatDaysOfWeek,
+        };
+        const next = nextRunAfterEdit(id, { ...edited, anchor_time: anchorTime, is_paused: 0 });
 
         // a schedule on a FINISHED task = run it again: reopen + arm land in one unit (or nothing does)
         const armErr = armScheduleOnOwnerSave(id, () => setNextRun(id, {
-          at: tsToMs(nextRun),
+          at: tsToMs(next?.at ?? body.scheduled_start),
           reason: 'the owner edited the schedule on the dashboard; the fire time was recomputed',
-          alongside: {
-            scheduled_start: tsToMs(body.scheduled_start),
-            repeat_interval: body.repeat_interval ?? null,
-            repeat_unit: body.repeat_unit ?? null,
-            repeat_end_type: body.repeat_end_type ?? 'never',
-            repeat_end_value: body.repeat_end_value ?? null,
-            repeat_days_of_week: repeatDaysOfWeek,
-            anchor_local: anchorTime,
-            schedule_status: 'waiting',
-            is_paused: 0,
-          },
+          alongside: { ...edited, scheduled_start: tsToMs(body.scheduled_start), anchor_local: anchorTime, ...next?.alongside, is_paused: 0 },
         }));
         if (armErr) return c.json({ ok: false, error: armErr, data: { taskId: id } }, 409);
       }

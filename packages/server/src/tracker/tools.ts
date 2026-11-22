@@ -24,7 +24,7 @@ import { finishedScheduleRefusal, setsASchedule } from './finished-task-schedule
 import { taskReadWithNotes } from './task-notes-view.js';
 import { linkLaterInstruction } from './later-instruction.js';
 import { declareDeliverableOnSchedule, declaredDeliverableShape, findLiveRecurringTwin, DELIVERABLE_OWING_TASK_KINDS } from '../work/deliverable-declaration.js';
-import { calculateNextRun, scheduledTaskFromRow, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type WallClock } from '../scheduler/engine.js';
+import { calculateNextRun, scheduledTaskFromRow, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, instantToWall, getBoxTimeZone, type WallClock, type ScheduledTask } from '../scheduler/engine.js';
 import { broadcast } from '../gateway/ws.js';
 import { isPMAgent, isPrimaryAgent } from '../config/platform.js';
 import { taskWriteRefusal, standardEditRefusal, escalationPointer } from '../work/row-authority.js';
@@ -916,6 +916,21 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
 }
 
 
+/** When a schedule fires next after an edit: its stored fields overlaid with `edited`, counting a run in flight, which
+ *  keeps its `running` status for its own close to move on (else the status becomes `waiting`). Null with no such task. */
+export function nextRunAfterEdit(taskId: string, edited: Partial<ScheduledTask> = {}):
+  { at: string | null; scheduledStart: string | null; alongside: { schedule_status?: 'waiting' } } | null {
+  const row = getDb().prepare(`
+    SELECT id, ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value,
+           repeat_days_of_week, anchor_local AS anchor_time, tz, is_paused, ${msToText('last_run_at')} AS last_run_at,
+           ${msToText('next_run_at')} AS next_run_at, schedule_status,
+           attempts + EXISTS (SELECT 1 FROM work o WHERE o.parent_id = work.id AND o.kind = 'occurrence' AND o.state = 'open') AS run_count
+      FROM work WHERE id = ?`).get(taskId) as ScheduledTask | undefined;
+  if (!row) return null;
+  const task = { ...row, ...edited };
+  return { at: calculateNextRun(task), scheduledStart: task.scheduled_start, alongside: row.schedule_status === 'running' ? {} : { schedule_status: 'waiting' } };
+}
+
 // Edits any structural field on a task: title, description, dependencies, step order, schedule. Status
 // changes stay on trackerUpdateStatus (completion has notification and project-rollup side effects) and
 // schedule pause/resume on trackerPauseSchedule / trackerResumeSchedule (they write a reason and notify the
@@ -1122,46 +1137,18 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     }
     if (scheduleChanged) {
       try {
-        const db = getDb();
-        const row = db.prepare(`
-          SELECT id, ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, repeat_unit,
-                 repeat_end_type, repeat_end_value, repeat_days_of_week,
-                 anchor_local AS anchor_time, tz,
-                 attempts AS run_count, is_paused, ${msToText('last_run_at')} AS last_run_at,
-                 ${msToText('next_run_at')} AS next_run_at, schedule_status
-          FROM work WHERE id = ?
-        `).get(taskId) as {
-          id: string;
-          scheduled_start: string | null;
-          repeat_interval: number | null;
-          repeat_unit: string | null;
-          repeat_end_type: string | null;
-          repeat_end_value: string | null;
-          repeat_days_of_week: string | null;
-          anchor_time: string | null;
-          tz: string | null;
-          run_count: number;
-          is_paused: number;
-          last_run_at: string | null;
-          next_run_at: string | null;
-          schedule_status: string;
-        } | undefined;
-        if (row) {
-          const nextRun = calculateNextRun(row);
-          // Only set schedule_status to 'waiting' when there is a future run: calculateNextRun returns null
-          // for completed or non-recurring tasks that already fired, and their status stays as it was.
-          if (nextRun) {
-            noteUnsettled(setNextRun(taskId, {
-              at: tsToMs(nextRun), alongside: { schedule_status: 'waiting' },
-              reason: 'a schedule field was edited, so the next fire time was recomputed',
-            }), 'trackerEditTask: next run recomputed', { taskId });
-          } else if (row.scheduled_start === null) {
-            // Schedule was cleared entirely, drop next_run_at too.
-            noteUnsettled(setNextRun(taskId, {
-              at: null, alongside: { schedule_status: 'idle' },
-              reason: 'the schedule was cleared, so there is no next fire time',
-            }), 'trackerEditTask: schedule cleared', { taskId });
-          }
+        // With no future run (a completed or one-time task that already fired) the status stays as it was.
+        const next = nextRunAfterEdit(taskId);
+        if (next?.at) {
+          noteUnsettled(setNextRun(taskId, {
+            at: tsToMs(next.at), alongside: next.alongside,
+            reason: 'a schedule field was edited, so the next fire time was recomputed',
+          }), 'trackerEditTask: next run recomputed', { taskId });
+        } else if (next && next.scheduledStart === null) {
+          noteUnsettled(setNextRun(taskId, {
+            at: null, alongside: { schedule_status: 'idle' },
+            reason: 'the schedule was cleared, so there is no next fire time',
+          }), 'trackerEditTask: schedule cleared', { taskId });
         }
       } catch (recalcErr) {
         // Non-fatal: the row update succeeded and only the recompute failed, so log it and keep the edit.

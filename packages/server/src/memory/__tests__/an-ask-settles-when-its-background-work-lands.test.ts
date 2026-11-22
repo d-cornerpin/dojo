@@ -138,7 +138,8 @@ import { createTask } from '../../tracker/schema.js';
 import { handIn } from '../../work/done/hand-in.js';
 import { decide } from '../../work/done/decide.js';
 import { openTrackerTask } from '../../work/tracker-store.js';
-import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { endTurnContext } from '../../agent/turn-context.js';
+import { liveTurn } from '../../agent/v2/__tests__/helpers/live-turn.js';
 import { settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
 import { cancelAgentGenerationJobs } from '../../services/generation-jobs.js';
 
@@ -373,8 +374,7 @@ describe('t152 round 2 — nothing is settled while the agent still owes work on
     imageGate.waiting.length = 0;
     await turn(imageCalls(1), { content: '[no-reply]' });
     const ask = askRow();
-    const bag = openTurnContext(AGENT);   // a later turn is serving the ask right now
-    bag.turnNumber = 41; bag.root = { kind: 'ask', id: ask.root_id, sourceMessageId: ask.root_id };
+    liveTurn(AGENT, { turnNumber: 41, root: { kind: 'ask', id: ask.root_id, sourceMessageId: ask.root_id } });   // a later turn is serving the ask right now
     await release(1, imageSuccess);
     await until(() => imageBubbles() === 1);
     await new Promise((r) => setTimeout(r, 200));

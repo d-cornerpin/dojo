@@ -18,6 +18,7 @@ import { agentStaysSilent, delegatedTextRequest, helperAnswers, relayed, relayRo
 import { queueReply } from '../v2/deliveries.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { turnReplies } from './helpers/turn-reply.js';
+import { turnRow } from '../v2/__tests__/helpers/live-turn.js';
 
 const due = (): number | null => (testDb().prepare('SELECT next_attempt_at AS d FROM work WHERE id = ?').get(ASK) as { d: number | null }).d;
 const putBacks = (): number => (testDb().prepare(
@@ -53,6 +54,7 @@ describe('a turn not shown the answer never closes the request', () => {
   it('the delegating turn\'s own reply still on its way when the answer lands: the answer goes back, and reaches the person once', async () => {
     transition(ASK, { to: 'claimed', by: 'agent', reason: 'the delegating turn holds it', expectedState: 'blocked' });
     stampClaimingTurn(ASK, 3);
+    turnRow(AGENT, 3, { kind: 'ask', id: 'm-ask' });
     await queueReply({ agentId: AGENT, turnNumber: 3, root: { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask', conversationId: CONV }, text: 'I\'ve asked the helper', address: { channel: 'imessage', to: PERSON } });
     await helperAnswers('The venue is free on the 14th.');
     await deliverDueReplies(Date.now());

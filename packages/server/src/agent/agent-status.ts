@@ -56,16 +56,19 @@ export function clearAgentLastError(agentId: string): void {
   `).run(agentId);
 }
 
-// Boot sweep: a dead process leaves rows 'working'; restart is the only thing that can know that.
-// No updated_at bump (the 75-minute reaper reads it); the read happens BEFORE the update because
-// after it no row reads working and the loop closes nothing. Turn rows are closed here: a row set
-// idle is never revisited by the 75-minute reaper.
-export function resetWorkingAgentsToIdleAtBoot(): number {
-  const crashed = getDb()
-    .prepare("SELECT id FROM agents WHERE status = 'working'")
-    .all() as Array<{ id: string }>;
+// Boot sweep: a dead process leaves rows 'working' and turns open; restart is the only thing that can know that.
+// No updated_at bump (the 75-minute reaper reads it). No turn survives a restart. A turn the dead process did not run
+// was left by an older one and is closed at its own start, so nothing reads it as the dead process's work: one that
+// started before the dead process (`previousStartMs`, its boot stamp) or, with no stamp, any but the newest open turn
+// of an agent left working.
+export function resetWorkingAgentsToIdleAtBoot(previousStartMs: number | null = null): number {
+  getDb().prepare(`UPDATE turns SET ended_at = started_at, exit_reason = 'terminated', answered = 0 WHERE ended_at IS NULL
+    AND (unixepoch(started_at) < @prev OR (@prev IS NULL AND (agent_id NOT IN (SELECT id FROM agents WHERE status = 'working')
+      OR turn_number < (SELECT MAX(o.turn_number) FROM turns o WHERE o.agent_id = turns.agent_id AND o.ended_at IS NULL))))`)
+    .run({ prev: previousStartMs === null ? null : Math.floor(previousStartMs / 1000) });
+  const open = getDb().prepare('SELECT DISTINCT agent_id AS id FROM turns WHERE ended_at IS NULL').all() as Array<{ id: string }>;
   let turnsClosed = 0;
-  for (const c of crashed) turnsClosed += markTurnsTerminated(c.id);
+  for (const c of open) turnsClosed += markTurnsTerminated(c.id);
   if (turnsClosed > 0) {
     logger.info(`Closed ${turnsClosed} turn record(s) left open by a run that died mid-turn, as 'terminated'`);
   }

@@ -23,7 +23,6 @@ const handleMessage = vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedV
 beforeEach(() => {
   handleMessage.mockClear();
   delegatedTextRequest();
-  testDb().prepare("INSERT INTO turns (agent_id, turn_number, root_kind, root_id, answered, effectful_calls) VALUES (?, 1, 'ask', 'm-ask', 0, 0)").run(AGENT);
 });
 
 const helperDelivers = () => deliverA2AMessage({ intent: 'DELIVERABLE', threadId: THREAD, requiresResponse: true, payload: 'The venue is free on the 14th.', toAgent: AGENT, fromAgent: HELPER } as never);

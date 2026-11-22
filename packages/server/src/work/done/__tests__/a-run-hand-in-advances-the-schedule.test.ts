@@ -16,6 +16,7 @@ import { latestHandIn } from '../record.js';
 import { engineHandIn } from '../hand-in.js';
 import { freshBoard, deliveredToOwner, call, stateOf, eventCount, PM, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
+import { turnRow } from '../../../agent/v2/__tests__/helpers/live-turn.js';
 
 const NEXT = Math.floor(Date.now() / 1000) * 1000 + 86_400_000;
 
@@ -67,9 +68,9 @@ describe('a run hand-in advances the schedule', () => {
     const at = Math.floor(Date.now() / 1000) * 1000;
     doneDb().prepare("INSERT INTO messages (id, agent_id, lane, role, content, authorized, sent_at, created_at) VALUES ('m-third', ?, 'owner', 'assistant', 'Your table for four is booked for Friday.', 1, ?, ?)").run(WORKER, at, at);
     doneDb().prepare(
-      `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, message_id, outcome, created_at, updated_at, root_kind, root_id)
-       VALUES ('dlv-third', ?, 'imessage_send', 'imessage', 'friend@example.com', 'm-third', 'delivered', datetime('now'), datetime('now'), 'occurrence', 'run-1')`,
-    ).run(WORKER);
+      `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, message_id, outcome, created_at, updated_at, turn_number, root_kind, root_id)
+       VALUES ('dlv-third', ?, 'imessage_send', 'imessage', 'friend@example.com', 'm-third', 'delivered', datetime('now'), datetime('now'), ?, 'occurrence', 'run-1')`,
+    ).run(WORKER, turnRow(WORKER, 1, { kind: 'occurrence', id: 'run-1' }));
     expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
     expect(latestHandIn(TASK)).toMatchObject({ outcome: 'finished', items: [expect.objectContaining({ kind: 'delivery', ref: 'dlv-third' })] });
   });

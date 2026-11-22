@@ -12,6 +12,7 @@ import { claimAsk, stampClaimingTurn, openDelegationJoin } from '../../../work/s
 import { newestPutBack, recordPiecesShown, settleAsksAtTurnFinalize } from '../../../work/ask-settlement.js';
 import { deliverA2AMessage } from '../../a2a-transport.js';
 import { freshReplyDb, imessage, testDb, AGENT, PERSON } from '../../v2/__tests__/helpers/reply-sender.js';
+import { turnRow } from '../../v2/__tests__/helpers/live-turn.js';
 
 export const HELPER = 'agent-helper';
 export const ASK = 'ask:m-ask';
@@ -31,6 +32,7 @@ export function delegatedTextRequest(meta: Record<string, unknown> = {}, threads
     id: 'm-ask', agentId: AGENT, role: 'user', content: 'Ask the helper when the venue is free', channel: 'imessage',
     senderId: PERSON, conversationId: CONV, inboundMeta: JSON.stringify({ channel: 'imessage', sender: PERSON, relation: 'known_contact', ...meta }),
   });
+  turnRow(AGENT, 1, { kind: 'ask', id: 'm-ask' });   // the delegating turn
   claimAsk(ASK, AGENT);
   stampClaimingTurn(ASK, 1);
   // The agent's request on each thread reaches the helper first, as the transport writes it; the join is opened from it.
@@ -57,6 +59,7 @@ export async function helperAnswers(payload: string, thread = THREAD, attachment
 /** A turn serves the request once its answer is back, is shown the pieces, and says nothing, its required reply
  *  empty too: A stands the request down and the Dojo relays the pieces (after commit, so this waits for it). */
 export async function agentStaysSilent(turn = 2): Promise<void> {
+  turnRow(AGENT, turn, null);
   claimAsk(ASK, AGENT);
   stampClaimingTurn(ASK, turn);
   const putBack = newestPutBack(ASK);
