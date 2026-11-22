@@ -13,6 +13,11 @@ const logger = createLogger('task-turns');
 export type ServedHow = 'root' | 'claimed' | 'job' | 'closed' | 'shown' | 'forwarded' | 'worked' | 'opened' | 'card' | 'run';
 /** One piece of work the turn served, how it served it, its row's kind and holder (null for a request's id with no row). */
 export interface Served { id: string; how: ServedHow; kind: string | null; holder: string | null }
+/** The ways that only inform: `shown`, the turn was shown a request's returned answer. Every other way means the turn
+ *  acted for the work, so what the turn made is tied to it (and to its cards and runs). */
+const INFORMS_ONLY: readonly ServedHow[] = ['shown'];
+export const actedFor = (s: Served): boolean => !INFORMS_ONLY.includes(s.how);
+const ACTED_SQL = `s.how NOT IN (${INFORMS_ONLY.map((h) => `'${h}'`).join(', ')})`;
 
 // Every arm is filtered by agent (turn numbers are per agent) and starts from an index: the turn's key, the agent's own
 // rows (`ix_work_queue`; only a piece is held by an agent other than its row's), a row's events, a thread's pieces.
@@ -60,9 +65,9 @@ direct(id, how) AS (
 served(id, how) AS (
   SELECT id, how FROM direct WHERE id IS NOT NULL
   UNION SELECT c.id, 'card' FROM mine c CROSS JOIN direct s ON c.kind = 'task' AND c.root_kind <> 'a2a_thread' AND c.requester_id = @a
-    AND c.source_message_id = substr(s.id, 5) WHERE s.id LIKE 'ask:%'
+    AND c.source_message_id = substr(s.id, 5) WHERE s.id LIKE 'ask:%' AND ${ACTED_SQL}
   UNION SELECT o.id, 'run' FROM direct s CROSS JOIN work o ON o.kind = 'occurrence' AND o.parent_id = s.id, t
-    WHERE o.opened_at < t.e_ms AND (o.closed_at IS NULL OR o.closed_at >= t.s_ms)
+    WHERE ${ACTED_SQL} AND o.opened_at < t.e_ms AND (o.closed_at IS NULL OR o.closed_at >= t.s_ms)
 )
 SELECT s.id, s.how, w.kind, COALESCE(w.assignee_agent, w.agent_id) AS holder
   FROM served s LEFT JOIN work w ON w.id = s.id ORDER BY s.how = 'root' DESC, s.id, s.how`;

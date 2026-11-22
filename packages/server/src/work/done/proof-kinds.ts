@@ -8,7 +8,7 @@ import { measureReadsZero } from '../measure-close-gate.js';
 import { ENGINE_SENT_TOOLS, ENGINE_JOIN_RELAY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlement.js';
 import { START_ACK_ORIGIN_INTENT } from '../../memory/origin-intents.js';
 import { askerOf, deliveredToAsker, type Asker } from './asker.js';
-import { servedBy, takenUp, type Served } from '../task-turns.js';
+import { actedFor, servedBy, takenUp, type Served } from '../task-turns.js';
 import { occurrenceOwesDeliverable } from '../deliverable-declaration.js';
 import { fileFacts } from './file-facts.js';
 
@@ -97,9 +97,9 @@ function servedOf(ctx: ProofContext, agentId: string, turn: number, aboutTask: b
   ctx.turns.set(key, served);
   return served;
 }
-/** Did `agentId`'s turn serve the task, one of its runs or its request? */
+/** Did `agentId`'s turn act for the task, one of its runs or its request (a turn only shown its answer did not)? */
 export const turnServedTask = (ctx: ProofContext, agentId: string, turn: number | null): boolean =>
-  turn !== null && servedOf(ctx, agentId, turn, true).some((s) => s.id === ctx.task.id || s.id === ctx.task.ask?.id);
+  turn !== null && servedOf(ctx, agentId, turn, true).some((s) => actedFor(s) && (s.id === ctx.task.id || s.id === ctx.task.ask?.id));
 type Addressed = { channel: string; recipient_id: string | null; conversation_id: string | null };
 /** Is the record of `agentId`'s turn `turn` tied to the task: `yes` when that turn served the task, one of its runs or
  *  its request; `ambiguous` when a delivery `to` the asker also reaches the asker of another task whose open run the
