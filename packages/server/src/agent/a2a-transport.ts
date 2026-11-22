@@ -435,10 +435,11 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   const servedThreadId = !envelope.threadId && envelope.fromAgent !== 'system' && FINAL_REPLY_INTENTS.has(effectiveIntent)
     ? servedRequestThreadFrom(envelope.fromAgent, target.id) : null;   // a threadless reply goes on the request it answers
   // A named thread is stored under the full id the two agents' stores hold for its token, the exact id first.
-  const named = envelope.threadId ? (getDb().prepare(
+  const tok = envelope.threadId && envelope.threadId.length > A2A_THREAD_SHORT_LENGTH ? a2aThreadShort(envelope.threadId) : envelope.threadId;
+  const named = tok ? (getDb().prepare(
     `SELECT a2a_thread_id AS t FROM messages WHERE agent_id IN (?, ?) AND length(a2a_thread_id) > ${A2A_THREAD_SHORT_LENGTH}
        AND ${a2aThreadTokenMatchesSql('a2a_thread_id')} ORDER BY a2a_thread_id = ? DESC, rowid DESC LIMIT 1`,
-  ).get(envelope.fromAgent, target.id, a2aThreadShortLegacy(envelope.threadId), a2aThreadShort(envelope.threadId), envelope.threadId) as { t: string } | undefined)?.t : undefined;
+  ).get(envelope.fromAgent, target.id, tok, tok, envelope.threadId) as { t: string } | undefined)?.t : undefined;
   const threadId = named || envelope.threadId || reusedAssignThreadId || servedThreadId || uuidv4();
   // ⚠ READ BEFORE `ensureThread`, and the order is load-bearing: that insert stamps `datetime('now')`
   // when no row exists, so a later read would report a delivery that never happened.
