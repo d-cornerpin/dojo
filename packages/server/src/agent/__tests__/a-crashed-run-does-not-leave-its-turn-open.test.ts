@@ -131,7 +131,8 @@ describe('§1 the boot sweep closes the turn the dead process abandoned', () => 
     // agent, two turns. Every other clause here has them equal, so a refactor that returned
     // `turnsClosed` would pass them all and make `index.ts`'s boot line say "Reset 2 agent(s)"
     // about one agent. The two counts mean different things and the caller reads one of them.
-    expect(resetWorkingAgentsToIdleAtBoot(), 'the return is agents repaired, never turns closed').toBe(1);
+    // Both started after the dead process did, by its boot stamp: both are its turns.
+    expect(resetWorkingAgentsToIdleAtBoot(Date.now() - 3_600_000), 'the return is agents repaired, never turns closed').toBe(1);
     expect(rows().map((x) => x.exit_reason)).toEqual(['terminated', 'terminated']);
     expect(infos.filter((m) => /Closed 2 turn record\(s\)/.test(m)), 'and the turns are counted in the log')
       .toHaveLength(1);

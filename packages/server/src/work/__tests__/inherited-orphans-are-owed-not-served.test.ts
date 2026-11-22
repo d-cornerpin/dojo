@@ -136,6 +136,20 @@ describe('the first boot of this build', () => {
     expect(stateOf('m-fresh'), 'the dead process\'s own request is handed back').toBe('open');
   });
 
+  it('with no boot stamp, an older open turn of the agent left working is still not the dead process\'s: parked', () => {
+    ask('m-ancient', 'Did the plumber ever call back?', OWNER);
+    claimAsk(askIdForMessage('m-ancient'), AGENT);
+    stampClaimingTurn(askIdForMessage('m-ancient'), 4);
+    db().prepare(`INSERT INTO turns (agent_id, turn_number, kind, root_kind, root_id, started_at, answered)
+      VALUES (?, 4, 'user', 'ask', 'm-ancient', datetime('now', '-60 days'), 0)`).run(AGENT);
+    resetWorkingAgentsToIdleAtBoot(null);   // the first start after the update, or an unreadable stamp
+    sweepBootStaleness();
+    abandonUnservableAsks();
+    reconcileOrphanedClaims({ inheritedBacklog: true });
+    expect(stateOf('m-ancient')).toBe('blocked');
+    expect(stateOf('m-fresh'), 'the turn the dead process was running is its own').toBe('open');
+  });
+
   it('tells the agent ONCE, listing each owed message: who, which conversation, its age, a snippet', () => {
     boot(true);
     const n = owedNotices();

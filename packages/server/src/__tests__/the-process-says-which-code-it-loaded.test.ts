@@ -70,7 +70,7 @@ describe('the stamp names THIS process', () => {
     expect(s.pid).toBe(process.pid);
     expect(s.version).toBe('9.9.9-test');
     expect(s.stampVersion).toBe(1);
-    expect(new Date(s.startedAt).toString()).not.toBe('Invalid Date');
+    expect(s.startedAt, 'the process\'s own start, not the moment the file was written').toBe(new Date(Math.floor(performance.timeOrigin)).toISOString());
     expect(s.moduleDir.length).toBeGreaterThan(0);
   });
 

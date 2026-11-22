@@ -57,12 +57,15 @@ export function clearAgentLastError(agentId: string): void {
 }
 
 // Boot sweep: a dead process leaves rows 'working' and turns open; restart is the only thing that can know that.
-// No updated_at bump (the 75-minute reaper reads it). No turn survives a restart. A turn that started before the dead
-// process did (`previousStartMs`, its boot stamp; without one, a turn of an agent not left working) was left by an older
-// process: it is closed at its own start, so nothing reads it as the dead process's work.
+// No updated_at bump (the 75-minute reaper reads it). No turn survives a restart. A turn the dead process did not run
+// was left by an older one and is closed at its own start, so nothing reads it as the dead process's work: one that
+// started before the dead process (`previousStartMs`, its boot stamp) or, with no stamp, any but the newest open turn
+// of an agent left working.
 export function resetWorkingAgentsToIdleAtBoot(previousStartMs: number | null = null): number {
-  getDb().prepare(`UPDATE turns SET ended_at = started_at, exit_reason = 'terminated', answered = 0 WHERE ended_at IS NULL AND (unixepoch(started_at) < @prev
-    OR (@prev IS NULL AND agent_id NOT IN (SELECT id FROM agents WHERE status = 'working')))`).run({ prev: previousStartMs === null ? null : Math.floor(previousStartMs / 1000) });
+  getDb().prepare(`UPDATE turns SET ended_at = started_at, exit_reason = 'terminated', answered = 0 WHERE ended_at IS NULL
+    AND (unixepoch(started_at) < @prev OR (@prev IS NULL AND (agent_id NOT IN (SELECT id FROM agents WHERE status = 'working')
+      OR turn_number < (SELECT MAX(o.turn_number) FROM turns o WHERE o.agent_id = turns.agent_id AND o.ended_at IS NULL))))`)
+    .run({ prev: previousStartMs === null ? null : Math.floor(previousStartMs / 1000) });
   const open = getDb().prepare('SELECT DISTINCT agent_id AS id FROM turns WHERE ended_at IS NULL').all() as Array<{ id: string }>;
   let turnsClosed = 0;
   for (const c of open) turnsClosed += markTurnsTerminated(c.id);
