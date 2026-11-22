@@ -17,6 +17,7 @@ import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-ou
 import { continueTheJob } from './job-continues.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { heldExpr, workingExpr } from '../../../../work/done/hold.js';
+import { occurrenceOwesDeliverable } from '../../../../work/deliverable-declaration.js';
 
 const logger = createLogger('v2-loop');
 
@@ -153,28 +154,14 @@ export async function runGoingIdle(
     }
   }
 
-  // Reconciliation once the detector ran and the turn ended with a reply (nudged or not): a recurring
-  // task's run is failed and its schedule kept. A one-shot task stays visibly in progress for the check-in
-  // ladder; a reply is never taken as delivery evidence.
-  if (turnCtx.goingIdleDetectorRanThisTurn && replied) {
-    const recurringDanglers = db.prepare(`
-      SELECT w.id AS id FROM work w
-      WHERE ${taskScope('w')} AND w.agent_id = ?
-        AND ${workingExpr('w')}
-        AND w.is_paused = 0 AND NOT ${heldExpr('w')}
-        AND w.repeat_interval IS NOT NULL
-      ORDER BY w.updated_at DESC
-      LIMIT 10
-    `).all(agentId) as Array<{ id: string }>;
-    if (recurringDanglers.length > 0) {
-      const { forceResetStuckRecurringTask } = await import('../../../../scheduler/runner.js');
-      for (const r of recurringDanglers) {
-        try { forceResetStuckRecurringTask(r.id); } catch { /* best effort */ }
-      }
-      logger.info('v2 idle-with-in_progress: recurring dangler(s) failed THIS run and rejoined their schedule; one-shot danglers stay visibly in_progress for the drive boundary', {
-        agentId, recurringResetCount: recurringDanglers.length,
-      }, agentId);
-    }
+  // Reconciliation once the detector ran and the turn ended with a reply (nudged or not): this turn's own run of a
+  // repeating task is failed through the one run close and its schedule goes on. A run that owes a message is closed
+  // on its delivery once the turn ends; a one-shot task stays visibly in progress for the check-in ladder.
+  const run = turnCtx.root?.kind === 'occurrence' ? occurrenceOwesDeliverable(turnCtx.root.id) : null;
+  if (turnCtx.goingIdleDetectorRanThisTurn && replied && run?.taskId && !run.owes) {
+    const repeating = db.prepare(`SELECT 1 FROM work w WHERE w.id = ? AND w.repeat_interval IS NOT NULL AND NOT ${heldExpr('w')}`).get(run.taskId);
+    const { onTaskRunComplete } = await import('../../../../scheduler/runner.js');
+    if (repeating) await onTaskRunComplete(run.taskId, 'failed', 'its turn ended with a reply and the run was not handed in').catch(() => false);
   }
 
   return proceed(state);
