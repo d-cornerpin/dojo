@@ -35,6 +35,7 @@ import { initState, type AgentTurnState } from '../../../state.js';
 import type { TeardownContext } from '../index.js';
 import { openAsk, claimAsk, stampClaimingTurn, askIdForMessage } from '../../../../../work/store.js';
 import { openTrackerTask } from '../../../../../work/tracker-store.js';
+import { setHold } from '../../../../../work/done/hold.js';
 
 const AGENT = 'agent-strike0';
 const TURN = 812;
@@ -198,6 +199,19 @@ describe('(c) what the engine can count is handed in for its worker, never set d
     await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
     expect(states(tasks)).toEqual(['handed_in', 'claimed']);
     engineHandedIn(tasks[0]);
+  });
+
+  it('a task its worker paused in the same turn is not handed in, whatever was charged to it', async () => {
+    const { conv, tasks } = askAndTasks('dashboard');
+    const file = (await import('node:path')).join(process.env.DOJO_HOME ?? '/tmp', 'plan.md');
+    (await import('node:fs')).writeFileSync(file, 'The plan, with two open questions for the owner.');
+    db().prepare(`INSERT INTO audit_log (id, agent_id, action_type, target, result, root_kind, root_id) VALUES ('a-plan', ?, 'file_write', ?, 'success', 'ask', 'msg-ask')`).run(AGENT, file);
+    db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)`).run(tasks[0], `file:${file}`, Date.now(), Date.now());
+    expect(setHold(tasks[0], 'paused', "waiting on the owner's answers", AGENT).ok).toBe(true);
+    const only = line('d-paused', 'dashboard', conv, 'I need two answers from you before I can go on.');
+    await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
+    expect(states(tasks)).toEqual(['claimed', 'claimed']);
+    expect(db().prepare("SELECT COUNT(*) AS c FROM work_events WHERE work_id = ? AND kind = 'handed_in'").get(tasks[0])).toEqual({ c: 0 });
   });
 
   it('a measured task whose measure reads 0 is handed in; its unmeasured sibling stays open', async () => {

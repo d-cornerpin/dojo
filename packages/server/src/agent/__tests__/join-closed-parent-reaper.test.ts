@@ -216,13 +216,13 @@ describe('#19: the reaper reaches a join whose parent has already closed', () =>
     // *"and they answered."* The alternation had to go, and the lie it tolerated is now rejected
     // explicitly beside it.
     expect(msgs[0].content, 'the owner must be told no answer arrived')
-      .toMatch(/never answered|did not answer/i);
+      .toMatch(/nothing came back/i);
     expect(msgs[0].content, '⛔ and never that the silence was a reply (C1)')
       .not.toMatch(/\bthey answered\b|\band answered\b/i);
     expect(msgs[0].content, 'the piece here was abandoned, so nothing came back — do not claim a reply')
       .not.toMatch(/came back empty, failed or abandoned/i);
-    expect(msgs[0].content, 'and the delivery is not disowned: it was sent, nothing errored')
-      .toMatch(/delivered/i);
+    expect(msgs[0].content, 'and it claims nothing the state does not show')
+      .not.toMatch(/nothing errored/i);
     expect(msgs[0].content).toContain('Ana');
     expect(msgs[0].content, 'how long it waited — the report could not judge a retry without it')
       .toMatch(/waited \d+ (seconds|minutes?|minute|hours)/);

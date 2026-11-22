@@ -1,5 +1,5 @@
-// A helper's result for a request the owner stopped is kept in the history and starts nothing; a result for a
-// later, live request on the same thread still goes back to that request.
+// A helper's result for a request the owner stopped is refused at the door, and its question is kept and starts
+// nothing; a result for a later, live request on the same thread still goes back to that request.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -30,12 +30,12 @@ const helperDelivers = () => deliverA2AMessage({ intent: 'DELIVERABLE', threadId
 const resultRows = () => testDb().prepare("SELECT 1 FROM messages WHERE agent_id = ? AND a2a_intent = 'DELIVERABLE'").all(AGENT).length;
 
 describe("a helper's result for a stopped request starts no turn", () => {
-  it('the request and its piece end; the result is stored, wakes nobody and is owed to nobody', async () => {
+  it('the request and its piece end; the result is refused, wakes nobody and is owed to nobody', async () => {
     expect(stopByOwner(AGENT)).toMatchObject({ ended: 1 });
     expect(requestState()).toBe('abandoned');
     expect((testDb().prepare('SELECT state FROM work WHERE parent_id = ?').get(ASK) as { state: string }).state).toBe('abandoned');
-    expect((await helperDelivers()).delivered).toBe(true);
-    expect(resultRows()).toBe(1);
+    expect(await helperDelivers()).toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
+    expect(resultRows()).toBe(0);
     expect(handleMessage).not.toHaveBeenCalled();
     expect(findUnservedTerminalWake(AGENT)).toBeNull();
   });

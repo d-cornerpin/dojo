@@ -233,7 +233,7 @@ export function accessLine(agentId: string): string {
  *  in `a2a-transport.ts`. `SEMANTIC_DUPLICATE` is an explanation the sender already holds;
  *  `HOP_LIMIT_EXCEEDED` is the protocol's own bound.
  *  Keep this set and the handler's switch case in step, see `a2aDropOutcome` below. */
-const A2A_DROPS_THAT_ARE_POLICY: ReadonlySet<string> = new Set(['SEMANTIC_DUPLICATE', 'HOP_LIMIT_EXCEEDED']);
+const A2A_DROPS_THAT_ARE_POLICY: ReadonlySet<string> = new Set(['SEMANTIC_DUPLICATE', 'HOP_LIMIT_EXCEEDED', 'REQUEST_ENDED']);
 
 /** The honest ledger word for a refused A2A send. Unrecognised and absent reasons are `failed`. */
 function a2aDropOutcome(reason: string | undefined): 'suppressed' | 'failed' {
@@ -407,6 +407,9 @@ export async function sendToAgent(agentId: string, input: {
         content = intent === 'ASSIGN'
           ? `Assignment not re-sent: you already assigned essentially this same work to "${agentRef}" moments ago (thread ${result.threadId.slice(0, 8)}). The engine tracks it as a tracker task and you will be woken when they reply or complete it. Do not re-assign; end your turn and wait.`
           : 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
+        break;
+      case 'REQUEST_ENDED':
+        content = 'Not delivered: the request this answered was called off, so nothing was passed on. Send nothing more about it.';
         break;
       case 'AGENT_NOT_FOUND':
         content = `No agent found with ID or name "${agentRef}"; live agents: ${liveAgentNamesNear(String(agentRef)).join(', ') || '(none)'}.`;

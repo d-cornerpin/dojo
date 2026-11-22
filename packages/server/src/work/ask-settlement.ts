@@ -439,8 +439,14 @@ function undeliveredReply(ask: AskRow, turnNumber: number | null, atVerdict: boo
   ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded) as { id: string; outcome: string; detail: string | null } | undefined) ?? null;
 }
 
-function joinOutstanding(ask: AskRow): boolean {
-  return (ask.remaining_children ?? 0) > 0 || ask.compile_pending === 1;
+/** SQL: task `t` was called off by the owner (its move to abandoned was his). */
+export const CALLED_OFF_BY_OWNER = (t: string): string => `${t}.state = 'abandoned' AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = ${t}.id
+  AND e.kind = 'transition' AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = 'owner')`;
+
+/** The request (its row, or its id) waits on delegated work. */
+export function joinOutstanding(ask: AskRow | string): boolean {
+  const a = typeof ask === 'string' ? readAsk(ask) : ask;
+  return !!a && ((a.remaining_children ?? 0) > 0 || a.compile_pending === 1);
 }
 
 /** The authority: every ask transition into `done`, and every decision not to, goes through here.
@@ -883,9 +889,8 @@ function settleOnAsyncResult(
   if (heldAt && !linkedTaskOf(ask.agent_id, ask.root_id, { ownerHeldEnds: true })) {
     const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, heldAt.at);
     // The owner called the job off: so is the request (the async arm's own rule).
-    const calledOff = !late && !!getDb().prepare(`SELECT 1 FROM work t JOIN work_events e ON e.work_id = t.id AND e.kind = 'transition'
-      WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ? AND t.state = 'abandoned'
-        AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = 'owner' LIMIT 1`).get(ask.agent_id, ask.root_id);
+    const calledOff = !late && !!getDb().prepare(`SELECT 1 FROM work t WHERE t.kind = 'task' AND t.agent_id = ? AND t.source_message_id = ?
+      AND ${CALLED_OFF_BY_OWNER('t')} LIMIT 1`).get(ask.agent_id, ask.root_id);
     const r = late
       ? transition(ask.id, { to: 'done', by: 'agent', actorId, resultDeliveryId: late.id, expectedState: 'blocked', reason: `its job ended; answered via ${late.tool}` })
       : calledOff ? transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'blocked', reason: 'the owner called off the job this request waited on' })

@@ -4,6 +4,7 @@ import { getDb } from '../../db/connection.js';
 import { getAgentRuntime, stopByOwner } from '../../agent/runtime.js';
 import { liveWork } from '../../agent/live-work.js';
 import { terminateAgent } from '../../agent/spawner.js';
+import { decide } from '../../work/done/decide.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
@@ -475,6 +476,8 @@ agentsRouter.delete('/:id', (c) => {
     return c.json({ ok: false, error: 'Agent is already terminated' }, 400);
   }
 
+  const jobs = db.prepare("SELECT id FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id IS NOT NULL AND state NOT IN ('done','failed','abandoned')").all(id) as Array<{ id: string }>;
+  for (const j of jobs) decide({ workId: j.id, deciderAgentId: null, verdict: 'cancel', reason: 'the owner removed its agent' });
   terminateAgent(id, 'Terminated via dashboard');
   return c.json({ ok: true, data: { agentId: id, status: 'terminated' } });
 });

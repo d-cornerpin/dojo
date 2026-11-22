@@ -1,7 +1,7 @@
 // A helper made for a job is given it the way any agent is: one ASSIGN on its own thread carrying the job's
 // rules, which is one task on the board, handed in by its reply. A transfer's task rides that ASSIGN; a task
 // that already has a thread is refused before any agent is made, with a way forward; a kept helper's work is
-// its own task and it can finish; a helper spawned with a narrow tool list or web-only reach can still reply and finish; and an
+// its own task and it can finish; a helper spawned with a narrow tool list or web-only reach, or narrowed after, can still reply and finish; and an
 // undeclared task_id on send_to_agent is never read.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -145,6 +145,20 @@ describe('a spawned job is one task and one review', () => {
     expect(tasksHeldBy(helper)[0].state).toBe('handed_in');
     const done = await call(helper, 'complete_task', { status: 'complete', summary: 'Found it.' });
     expect(done.isError, done.content).toBeFalsy();
+  });
+
+  it('a helper spawned with the old allow list, then narrowed to Web by update_agent, can still load its tools and hand its job back', async () => {
+    await spawn({ task_id: 'task-mine-0001', task_handling: 'transfer', tools: { allow: ['web_search', 'web_fetch'] } });
+    const helper = helperId()!;
+    const narrowed = await call('main', 'update_agent', { agent_id: helper, grants: { tools: { categories: ['Web'] } } });
+    expect(narrowed.isError, narrowed.content).toBeFalsy();
+    expect(getFilteredTools(helper).map((t) => t.name)).toEqual(expect.arrayContaining(['web_search', 'load_tool_docs', 'continue_repeating', 'send_to_agent', 'complete_task']));
+    expect((await call(helper, 'load_tool_docs', { tools: ['web_search'] })).isError).toBeFalsy();
+    const reply = await call(helper, 'send_to_agent', { agent: 'main', intent: 'COMPLETE', thread_id: assignsTo(helper)[0].thread, payload: 'Three hikes found.' });
+    expect(reply.isError, reply.content).toBeFalsy();
+    expect(tasksHeldBy(helper)[0].state).toBe('handed_in');
+    await call('main', 'update_agent', { agent_id: helper, grants: { tools: { deny: ['send_to_agent', 'complete_task'] } } });
+    expect(getFilteredTools(helper).map((t) => t.name)).not.toContain('send_to_agent');
   });
 
   it('an agent with no job thread and an allow list without send_to_agent does not gain it', async () => {

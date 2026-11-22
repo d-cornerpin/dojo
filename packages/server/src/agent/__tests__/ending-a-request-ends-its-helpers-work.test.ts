@@ -1,6 +1,7 @@
 // A request that ends ends its helpers' work with it: called off ("never mind" in the person's words, or Stop),
-// its pieces are abandoned, each helper is told once to stop, and a later answer relays nothing; failed for want
-// of an answer, its pieces end, nobody is told, and a late answer still goes back to the agent for the person.
+// its pieces are abandoned, a helper's turn on that work is stopped, the owner's Stop cancels the helper's task in
+// his name, no note wakes a helper, and a later answer relays nothing; failed for want of an answer, its pieces end,
+// nobody is touched, and a late answer still goes back to the agent for the person.
 // Stop with nothing running ends a request waiting on a helper even when a later turn served something else; Stop
 // while a turn runs ends only that turn's request.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -16,30 +17,37 @@ import { stopByOwner, getAgentRuntime } from '../runtime.js';
 import { pressStop } from '../v2/__tests__/helpers/owner-stop.js';
 import { handleIMCommand } from '../../services/imessage-commands.js';
 import { clearPlatformConfigCache } from '../../config/platform.js';
-import { sweepExpiredJoins } from '../a2a-transport.js';
+import { sweepExpiredJoins, deliverA2AMessage } from '../a2a-transport.js';
+import { executeTool, toolResultOf } from '../tools/index.js';
+import { nextOwed } from '../v2/owed.js';
 import { trackerHandlers } from '../tools/cat/tracker.js';
-import { executeTool } from '../tools/index.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
 import { claimAsk } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperAnswers, helperTask, relayRows, requestState, HELPER, CONV, ASK } from './helpers/text-relay.js';
+import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shared-state.js';
+import { delegatedTextRequest, helperAnswers, helperTask, relayRows, requestState, HELPER, CONV, ASK, THREAD } from './helpers/text-relay.js';
 
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
 beforeEach(() => {
+  endTurnContext(HELPER); activeRuns.clear(); stoppedAgents.clear(); stopFencedRuns.clear();
   delegatedTextRequest();
   helperTask();
 });
 
 const pieceState = (): string => (testDb().prepare('SELECT state FROM work WHERE parent_id = ?').get(ASK) as { state: string }).state;
-const toldToStop = (): string[] => (testDb().prepare(
-  "SELECT content FROM messages WHERE agent_id = ? AND content LIKE '[Engine] The request this work was for was called off%'",
-).all(HELPER) as Array<{ content: string }>).map((r) => r.content);
+const helperTaskState = (): string => (testDb().prepare("SELECT state FROM work WHERE id = 'task-helper-1'").get() as { state: string }).state;
+const helperPrompts = (): number => (testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND lane = 'events'").get(HELPER) as { n: number }).n;
+const cancelledByOwner = (): boolean => !!testDb().prepare(
+  "SELECT 1 FROM work_events WHERE work_id = 'task-helper-1' AND kind = 'decided' AND actor = 'user' AND json_extract(payload, '$.verdict') = 'cancel'").get();
+/** The helper is in a turn on the request's thread. */
+const helperMidTurn = (): void => { Object.assign(openTurnContext(HELPER), { turnNumber: 1, root: { kind: 'a2a', id: THREAD, sourceMessageId: null } }); activeRuns.add(HELPER); };
 const settled = async (): Promise<void> => { await vi.dynamicImportSettled(); await vi.dynamicImportSettled(); };
 
 describe("ending a request ends its helpers' work", () => {
-  it('never mind in the person\'s words: the piece ends, the helper is told once, and its answer relays nothing', async () => {
+  it('never mind in the person\'s words: the piece ends, the helper mid-turn on it is stopped, and its answer relays nothing', async () => {
+    helperMidTurn();
     insertMessage({ id: 'm-2', agentId: AGENT, role: 'user', content: 'Never mind, we booked it already.', channel: 'imessage', senderId: PERSON, conversationId: CONV });
     const r = await trackerHandlers['work_close_request:commitment']({
       agentId: AGENT, args: { id: ASK, disposition: 'dropped', note: 'Never mind, we booked it already.' }, toolCallId: 'tc-1', turnNumber: 2,
@@ -47,26 +55,24 @@ describe("ending a request ends its helpers' work", () => {
     expect(r.isError, r.content).toBeFalsy();
     expect([requestState(), pieceState()]).toEqual(['abandoned', 'abandoned']);
     await settled();
-    expect(toldToStop()).toEqual(['[Engine] The request this work was for was called off. Stop working on "Check the venue" [task-helper-1]: '
-        + 'hand it in as can\'t be done (work_update action="hand_in", outcome="cant_be_done", proof=[{kind:"remainder", ref:"<what is left>", '
-        + 'reason:"the request it was for was called off"}]), or, if you were made for this job, '
-      + 'end with complete_task(status="fallen"). Send nothing more about it.']);
-    const handIn = await executeTool(HELPER, { id: 'tc-h', name: 'work_update', arguments: {
-      action: 'hand_in', task_id: 'task-helper-1', outcome: 'cant_be_done',
-      proof: [{ kind: 'remainder', ref: 'the venue check', reason: 'the request it was for was called off' }],
-    } });
-    expect(handIn.isError, handIn.content).toBeFalsy();   // the hand-in the helper is told to make is accepted
-    await helperAnswers('The venue is free on the 14th.');
+    expect(isStopFenced(HELPER)).toBe(true);
+    expect([cancelledByOwner(), helperPrompts()]).toEqual([false, 0]);   // a contact's words are not the owner's cancel
+    expect(await deliverA2AMessage({ intent: 'ANSWER', threadId: THREAD, requiresResponse: false, payload: 'Free on the 14th.', toAgent: AGENT, fromAgent: HELPER } as never))
+      .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
     expect(relayRows()).toEqual([]);
   });
 
-  it('Stop on the request: the helper is told the owner called it off', async () => {
+  it('Stop while the helper works on it: the owner\'s Stop cancels its task and stops its turn, and nothing wakes it', async () => {
+    helperMidTurn();
     testDb().prepare("INSERT INTO turns (agent_id, turn_number, root_kind, root_id, answered, effectful_calls) VALUES (?, 1, 'ask', 'm-ask', 0, 0)").run(AGENT);
     expect(stopByOwner(AGENT)).toMatchObject({ ended: 1 });
     expect(pieceState()).toBe('abandoned');
     await settled();
-    expect(toldToStop()).toHaveLength(1);
-    expect(toldToStop()[0]).toContain('was called off by the owner. Stop working on "Check the venue" [task-helper-1]');
+    expect([helperTaskState(), cancelledByOwner(), isStopFenced(HELPER), helperPrompts()]).toEqual(['abandoned', true, true, 0]);
+    // The send its turn had already made arrives: refused at the door, so the agent never sees it.
+    const sent = toolResultOf(await executeTool(HELPER, { id: 'tc-h', name: 'send_to_agent', arguments: { agent: AGENT, intent: 'COMPLETE', thread_id: THREAD, payload: 'The venue is free on the 14th.' } }));
+    expect(sent.content).toContain('the request this answered was called off, so nothing was passed on');
+    expect(testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND a2a_intent = 'COMPLETE'").get(AGENT)).toEqual({ n: 0 });
   });
 
   // The delegating turn, then a later turn on a quick question that is over; nothing is running when Stop comes.
@@ -79,7 +85,8 @@ describe("ending a request ends its helpers' work", () => {
   const helperToldOwnerEnded = async (): Promise<void> => {
     expect([requestState(), pieceState()]).toEqual(['abandoned', 'abandoned']);
     await settled();
-    expect(toldToStop()).toHaveLength(1);
+    expect([helperTaskState(), cancelledByOwner(), isStopFenced(HELPER), helperPrompts()]).toEqual(['abandoned', true, false, 0]);
+    expect(nextOwed(HELPER)).toEqual([]);   // its request is no longer served to it
   };
 
   it('the Stop button with nothing running ends a request waiting on a helper behind a later turn', async () => {
@@ -108,7 +115,7 @@ describe("ending a request ends its helpers' work", () => {
     endTurnContext(AGENT);
     expect([requestState(), pieceState()]).toEqual(before);
     await settled();
-    expect(toldToStop()).toEqual([]);
+    expect(helperTaskState()).toBe('claimed');
   });
 
   it('a request whose helper\'s job ended unanswered fails, tells no helper, and a late answer goes back to the agent', async () => {
@@ -117,7 +124,7 @@ describe("ending a request ends its helpers' work", () => {
     await sweepExpiredJoins();
     expect([requestState(), pieceState()]).toEqual(['failed', 'abandoned']);
     await settled();
-    expect(toldToStop()).toEqual([]);
+    expect([cancelledByOwner(), helperPrompts()]).toEqual([false, 0]);
     await helperAnswers('The venue is free on the 14th.');
     expect([requestState(), pieceState()]).toEqual(['open', 'done']);
     expect(newestPutBack(ASK)?.kind).toBe('late');

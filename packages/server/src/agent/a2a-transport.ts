@@ -9,10 +9,10 @@ import { endedMidRun } from './ended-mid-run.js';
 import {
   A2A_THREAD_SHORT_LENGTH, a2aThreadShort, a2aThreadShortLegacy, a2aThreadTokenMatchesSql, extractPayloadFromA2AMessage, OWNER_ALERT_DOJO_PREFIX,
 } from '@dojo/shared';
-import { postAgentNotice, redriveWithoutReply } from './agent-notice.js';
+import { postAgentNotice } from './agent-notice.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
-import { getAgentRuntime } from './runtime.js';
+import { getAgentRuntime, stopAgent } from './runtime.js';
 import {
   deliveredResult, insertMessageIfAbsent, insertEngineEventIfAbsent, type EngineEventWork,
 } from '../memory/message-store.js';
@@ -22,7 +22,7 @@ import { queueReply, recordDelivery } from './v2/deliveries.js';
 import { replyAddressFor } from './v2/channel-sender.js';
 import { resultForEndedRequest } from './v2/counterparty.js';
 import { recordAtDoor, recordedId } from './v2/outbound.js';
-import { asTurn } from './turn-context.js';
+import { asTurn, turnContext } from './turn-context.js';
 // The join lives in `work`; everything here is transport: it lands pieces and relays answers.
 import {
   THREAD_HOP_CAP, isTerminal,
@@ -37,7 +37,7 @@ import {
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, type PutBackKind } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, CALLED_OFF_BY_OWNER, type PutBackKind } from '../work/ask-settlement.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
 import { afterCommit, withUnit } from '../db/unit.js';
 import { serveLater } from './v2/serve-later.js';
@@ -253,12 +253,12 @@ export function payloadLooksDeliverable(payload: string): boolean {
 }
 
 
-// SENDER_TERMINATED is transport-local: intentionally NOT in the shared union.
-type A2ADropReasonLocal = A2ADropReason | 'SENDER_TERMINATED';
+// SENDER_TERMINATED and REQUEST_ENDED are transport-local: intentionally NOT in the shared union.
+type A2ADropReasonLocal = A2ADropReason | 'SENDER_TERMINATED' | 'REQUEST_ENDED';
 
 /** A drop is a RETURN most callers discard, so logDrops are loud; a semantic duplicate is exempt because
  * the sender is told synchronously in the tool result. Unknown future reasons land at warn. */
-const DROPS_THE_SENDER_IS_TOLD_ABOUT: ReadonlySet<A2ADropReasonLocal> = new Set(['SEMANTIC_DUPLICATE']);
+const DROPS_THE_SENDER_IS_TOLD_ABOUT: ReadonlySet<A2ADropReasonLocal> = new Set(['SEMANTIC_DUPLICATE', 'REQUEST_ENDED']);
 
 function logDrop(envelope: A2AEnvelope, reason: A2ADropReasonLocal, extra: Record<string, unknown> = {}): void {
   const say = DROPS_THE_SENDER_IS_TOLD_ABOUT.has(reason)
@@ -434,14 +434,18 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   }
   const servedThreadId = !envelope.threadId && envelope.fromAgent !== 'system' && FINAL_REPLY_INTENTS.has(effectiveIntent)
     ? servedRequestThreadFrom(envelope.fromAgent, target.id) : null;   // a threadless reply goes on the request it answers
-  // A thread named by its short marker token is stored under the full id the sender's own store holds.
-  const named = envelope.threadId && envelope.threadId.length <= A2A_THREAD_SHORT_LENGTH ? (getDb().prepare(
-    `SELECT a2a_thread_id AS t FROM messages WHERE agent_id = ? AND length(a2a_thread_id) > ${A2A_THREAD_SHORT_LENGTH}
-       AND ${a2aThreadTokenMatchesSql('a2a_thread_id')} ORDER BY rowid DESC LIMIT 1`,
-  ).get(envelope.fromAgent, envelope.threadId, envelope.threadId) as { t: string } | undefined)?.t : undefined;
+  // A named thread is stored under the full id the two agents' stores hold for its token, the exact id first.
+  const tok = envelope.threadId && envelope.threadId.length > A2A_THREAD_SHORT_LENGTH ? a2aThreadShort(envelope.threadId) : envelope.threadId;
+  const named = tok ? (getDb().prepare(
+    `SELECT a2a_thread_id AS t FROM messages WHERE agent_id IN (?, ?) AND length(a2a_thread_id) > ${A2A_THREAD_SHORT_LENGTH}
+       AND ${a2aThreadTokenMatchesSql('a2a_thread_id')} ORDER BY a2a_thread_id = ? DESC, rowid DESC LIMIT 1`,
+  ).get(envelope.fromAgent, target.id, tok, tok, envelope.threadId) as { t: string } | undefined)?.t : undefined;
   const threadId = named || envelope.threadId || reusedAssignThreadId || servedThreadId || uuidv4();
   // ⚠ READ BEFORE `ensureThread`, and the order is load-bearing: that insert stamps `datetime('now')`
   // when no row exists, so a later read would report a delivery that never happened.
+  // On a request that was called off a result is refused (it is never passed on as news); anything else wakes nobody.
+  const forEndedRequest = resultForEndedRequest(target.id, threadId);
+  if (forEndedRequest && FINAL_REPLY_INTENTS.has(effectiveIntent)) { logDrop(envelope, 'REQUEST_ENDED'); return { delivered: false, reason: 'REQUEST_ENDED', threadId }; }
   const lastDeliveryMs = threadLastDeliveryMs(threadId);
   ensureThread(threadId, envelope.fromAgent);
 
@@ -535,8 +539,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   let primaryDeliverableHint = '';
   // Read BEFORE the piece lands below: landing settles the child.
   const joinChild = findJoinChildByThread(target.id, threadId);
-  // A result for a request the owner stopped is stored and starts nothing: no hint, no wake.
-  const forEndedRequest = resultForEndedRequest(target.id, threadId);
   try {
     const { isPrimaryAgent, isPMAgent, isHealerAgent } = await import('../config/platform.js');
     const targetIsPrimary = isPrimaryAgent(target.id);
@@ -544,7 +546,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     const isDeliverableShape =
       autoPromotedFromFyi ||
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
-    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinChild && !forEndedRequest && !findFailedJoinForThread(target.id, threadId)
+    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinChild && !findFailedJoinForThread(target.id, threadId)
       && !sentBackPiece(target.id, threadId, envelope.fromAgent)) {
       primaryDeliverableHint = deliverableArrivedNote(senderName);
     }
@@ -742,7 +744,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   });
 
   // ── 13. Route based on requires_response ──
-  if (forEndedRequest) logger.info('A2A delivery: a result for a request the owner stopped; stored, no wake', { targetId: target.id, threadId });
+  if (forEndedRequest) logger.info('A2A delivery: a message on a request that was called off; stored, no wake', { targetId: target.id, threadId });
   else if (requiresResponse) {
     // Wake-block is paused-only: re-waking an error agent is safe; paused is the error-loop signal, which the main agent and the Healer may lift.
     const targetIsLockedOut = target.status === 'paused';
@@ -1287,6 +1289,9 @@ async function resolveOpenJoin(join: JoinState): Promise<'relayed' | 'failed-clo
     await resolveCompletedJoin(landed);
     return 'relayed';
   }
+  if (getDb().prepare(`SELECT 1 FROM work c JOIN work t ON t.kind = 'task' AND t.agent_id = c.assignee_agent AND t.a2a_thread_id = c.root_id
+      WHERE c.parent_id = ? AND ${CALLED_OFF_BY_OWNER('t')}`).get(landed.id)
+    && transition(landed.id, { to: 'abandoned', by: 'owner', actorId: 'owner', reason: 'the owner called off the work it waited on' }).kind === 'applied') return 'already-settled';
   for (const p of openPieces(landed.id)) if (!p.alive) await abandonPiece(p.childId, 'its helper\'s work on it has stopped', 'work-reaper');
   const state = joinState(landed.id);
   if (!state || state.complete) return state?.parentState === 'failed' ? 'failed-closed' : 'already-settled';
@@ -1416,21 +1421,17 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
   return out;
 }
 
-/** A request was called off: the helper on each of its pieces is told once to stop that work. */
+/** A request was called off: each helper's turn on that work stops, and the owner's call-off cancels its task. */
 export async function tellHelpersTheRequestEnded(pieces: Array<{ helper: string | null; thread: string }>, byOwner: boolean): Promise<void> {
+  const { decide } = await import('../work/done/decide.js');
   for (const piece of pieces) {
     if (!piece.helper) continue;
-    const task = getDb().prepare(
-      "SELECT id, title FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
-    ).get(piece.helper, piece.thread) as { id: string; title: string | null } | undefined;
-    const what = task ? `"${task.title ?? 'this work'}" [${task.id}]` : `the work on thread ${piece.thread.slice(0, A2A_THREAD_SHORT_LENGTH)}`;
-    await redriveWithoutReply({
-      toAgentId: piece.helper, fromAgentId: null, taskId: task?.id ?? null,
-      content: `[Engine] The request this work was for was called off${byOwner ? ' by the owner' : ''}. Stop working on ${what}: `
-        + 'hand it in as can\'t be done (work_update action="hand_in", outcome="cant_be_done", proof=[{kind:"remainder", ref:"<what is left>", '
-        + 'reason:"the request it was for was called off"}]), or, if you were made for this job, '
-        + 'end with complete_task(status="fallen"). Send nothing more about it.',
-    });
+    const task = (getDb().prepare(
+      "SELECT id FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
+    ).get(piece.helper, piece.thread) as { id: string } | undefined)?.id;
+    const live = turnContext(piece.helper);
+    if (live && [live.root?.id, live.servedJob, live.servedWork?.taskId].some((w) => w === piece.thread || (!!task && w === task))) stopAgent(piece.helper);
+    if (task && byOwner) decide({ workId: task, deciderAgentId: null, verdict: 'cancel', reason: 'the request it was for was called off by the owner' });
   }
 }
 

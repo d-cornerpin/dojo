@@ -591,7 +591,7 @@ describe('round 2 — delegated work cancelled midway, then re-asked (plan backw
   it('the re-asked result reaches the owner once, labelled with the request it answers — never the cancelled one', async () => {
     mockDb.current!.prepare(`INSERT INTO agents (id, name, model_id, status, config, classification) VALUES ('peer-agent', 'Peer', 'm', 'idle', '{}', 'sensei')`).run();
     const T1 = '7e1f2a3b-0000-4000-8000-0000000c0de1';
-    const T2 = '7e1f2a3b-0000-4000-8000-0000000c0de2';
+    const T2 = '8e1f2a3b-0000-4000-8000-0000000c0de2';   // a thread's token names it between two agents
     const delegate = async (text: string, thread: string): Promise<string> => {
       await submitUserMessage(AGENT, text);
       const ask = mockDb.current!.prepare(`SELECT id, conversation_id FROM messages WHERE role = 'user' ORDER BY seq DESC LIMIT 1`).get() as { id: string; conversation_id: string };
@@ -625,7 +625,7 @@ describe('round 2 — delegated work cancelled midway, then re-asked (plan backw
     // In view three times: the helper's own report on its thread, labelled as delegated work, the relay he has,
     // and the Dojo's note to the agent saying what it sent.
     expect(all.split('all clear at every site').length - 1, 'the helper\'s report, the relay and the note').toBe(3);
-    expect(all).toMatch(/work you delegated to Peer for the request of the person you are talking with\] \[A2A:DELIVERABLE thread:7e1f2a3b/);
+    expect(all).toMatch(/work you delegated to Peer for the request of the person you are talking with\] \[A2A:DELIVERABLE thread:8e1f2a3b/);
     expect(headerBefore(all, "Dojo: The helper's answer, as it was delivered:\n\nHERON report: all clear"), 'labelled with THE REQUEST it answers')
       // t196: the engine's relay says it was SENT, still naming the request it answers.
       .toMatch(/sent to TestUser on dashboard at [^\]]* as the result of the request of [^\]]*"Please try the HERON report again\."/);
