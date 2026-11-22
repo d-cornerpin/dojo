@@ -15,6 +15,7 @@ import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../s
 import { latestHandIn, workerOf, OWNER_ID, ENGINE_ID, type HandInRecord } from './record.js';
 import { decide } from './decide.js';
 import { inFlightOccurrence, owedRunDelivery } from '../occurrences.js';
+import { occurrenceOwesDeliverable } from '../deliverable-declaration.js';
 import { occurrenceRunStatus } from '../occurrence-runs.js';
 import type { Question } from '../../agent/decide.js';
 import { judgment } from '../../agent/decision-hooks.js';
@@ -26,16 +27,19 @@ const logger = createLogger('work-effects');
 /** The PM module, loaded once and shared, so a burst of hand-ins never races its own import. */
 let pmAgent: Promise<typeof import('../../tracker/pm-agent.js')> | null = null;
 
-/** The hand-in-time effects, in order. */
-export function onHandedIn(workId: string, handInEventId: number, wordsFollow?: true): void {
+/** The hand-in-time effects, in order; a run owing a message, handed in in its own turn, waits for that turn to end. */
+export function onHandedIn(workId: string, handInEventId?: number, wordsFollow?: true): void {
   const h = latestHandIn(workId, handInEventId);
   if (!h) return;
-  const advanced = h.scope !== 'run' ? Promise.resolve() : import('../../scheduler/runner.js')
+  const run = h.scope === 'run' ? inFlightOccurrence(workId) : null;
+  const atTurnEnd = !!run && occurrenceOwesDeliverable(run.id).owes
+    && !!getDb().prepare("SELECT 1 FROM turns WHERE root_kind = 'occurrence' AND root_id = ? AND ended_at IS NULL").get(run.id);
+  const advanced = h.scope !== 'run' || atTurnEnd ? Promise.resolve() : import('../../scheduler/runner.js')
     .then(({ onTaskRunComplete }) => onTaskRunComplete(workId, h.outcome === 'finished' ? 'complete' : 'failed', h.note))
     .catch((err: unknown) => logger.warn('run hand-in: the schedule did not advance', { workId, error: String(err) }));
   if (!wordsFollow) void handInHeard(workId, h).catch((err: unknown) => logger.warn('hand-in: last words failed', { workId, error: String(err) }));
   retireQueuedPrompts(workerOf(workId), workId);
-  void advanced.then(() => decideOrReview(workId, h));
+  if (!atTurnEnd) void advanced.then(() => decideOrReview(workId, h));
 }
 
 const OWES_IT: Question = { type: 'noul',

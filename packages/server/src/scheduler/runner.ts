@@ -111,6 +111,7 @@ export async function closeRunsThatDelivered(): Promise<number> {
     try { await (await import('../agent/tools/cat/measure-door.js')).remeasureTask('scheduler', row.taskId); }   // judge the run on a fresh reading
     catch (err) { logger.warn('Scheduler: re-reading a delivered run\'s measure failed; left for the next tick', { taskId: row.taskId, runId: row.occurrenceId, error: String(err) }); continue; }   // one row never stops the sweep
     logger.info('Scheduler: a run delivered, closing it on the message', { taskId: row.taskId, runId: row.occurrenceId, deliveryId: row.deliveryId });
+    if (row.handedIn) { (await import('../work/done/effects.js')).onHandedIn(row.taskId, undefined, true); closed += 1; continue; }
     const advanced = await onTaskRunComplete(row.taskId, 'complete', 'the run delivered its message without being handed in; closed on that delivery').catch((err: unknown) => {
       logger.warn('Scheduler: closing a delivered run failed (non-fatal)', {
         taskId: row.taskId, runId: row.occurrenceId,
