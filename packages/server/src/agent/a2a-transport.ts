@@ -37,7 +37,7 @@ import {
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, type PutBackKind } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, mediaJobs, type PutBackKind } from '../work/ask-settlement.js';
 import { endPiece } from '../work/call-off.js';
 import { servedBy } from '../work/task-turns.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
@@ -1082,6 +1082,7 @@ function applyDeclaredHandOff(
  *  fail-closed notice; else the answer goes back to the agent. */
 export async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
+    if (mediaJobs(join.rootId).out > 0) return;   // its pictures or songs still work: the request goes on with them
     const failReason = joinFailureReason(joinPieces(join.id));
     const claimed = failJoinClosed(join.id, { reason: failReason, expectedState: join.parentState });
     if (claimed.kind !== 'applied') return;

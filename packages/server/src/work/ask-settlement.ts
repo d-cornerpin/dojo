@@ -821,7 +821,7 @@ function settleOnJoin(
 // delegated work, no open linked tracker task, no turn serving it; whichever ends last
 // re-asks. A request whose every part the owner cancelled, with nothing delivered, ends as his (`endedByHim`).
 
-function mediaJobs(askRootId: string): { all: number; out: number } {
+export function mediaJobs(askRootId: string): { all: number; out: number } {
   const db = getDb();
   const t = { all: 0, out: 0 };
   for (const table of ['generation_jobs', 'video_jobs']) {
