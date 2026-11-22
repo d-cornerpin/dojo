@@ -65,7 +65,7 @@ export function runStartAck(
   `).get(agentId, turnNumber);
   const fireStartAckIfOwed = async (via: 'timer' | 'first-tool'): Promise<void> => {
     try {
-      if (!startAckArmed) return;
+      if (!startAckArmed || turnCtx.inboundClassifiedAsWork === false) return;   // a message judged not work gets no start line
       if (turnCtx.engineStartAckDeliveredThisTurn || turnCtx.startAckSteerRequested || turnCtx.startAckSteerArmedThisTurn || startAckRepliedNow()) return;
       // A working note shown, or the delivered start line, counts as heard.
       if (personShownALineThisTurn(agentId, turnNumber)) return;

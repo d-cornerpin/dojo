@@ -67,8 +67,9 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
       ).get(agentId, lastUserMessageContent);
       if (!bootstrapTwin && !looksLikeEngineMessage(lastUserMessageContent)) {
         const explicit = userExplicitlyAsksToCreateTracker(lastUserMessageContent);
-        const work = !explicit && await inboundIsWork(turnCtx, agentId, lastUserMessageContent) === true;
-        turnCtx.inboundClassifiedAsWork = work || explicit;
+        const verdict = explicit || await inboundIsWork(turnCtx, agentId, lastUserMessageContent);
+        const work = !explicit && verdict === true;
+        turnCtx.inboundClassifiedAsWork = verdict;
         logger.info('v2 inbound judged', { agentId, work, explicit }, agentId);
         // Nothing is created on a prediction: the >=6 engine floor opens the row only on OBSERVED work.
         if (work && !existingTask && thisOpenerMayArm()) state = arm(state);

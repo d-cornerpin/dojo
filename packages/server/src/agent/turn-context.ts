@@ -83,7 +83,7 @@ export interface TurnContext {
   // The start-ack timer reads this AT FIRE TIME: by value the timer stays quiet forever on a working turn.
   anyToolStartedThisTurn: boolean;
 
-  inboundClassifiedAsWork: boolean;
+  inboundClassifiedAsWork: boolean | undefined;
 
   // The start-ack timer reads the first at fire time and later iterations read the second: copies would double-send.
   engineStartAckDeliveredThisTurn: boolean;
@@ -148,7 +148,7 @@ export function openTurnContext(agentId: string): TurnContext {
     startAckSteersInjected: 0,
     startAckSteerInjectedAtLoop: 0,
     anyToolStartedThisTurn: false,
-    inboundClassifiedAsWork: false,
+    inboundClassifiedAsWork: undefined,
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
     earlyAnswerRowId: null,

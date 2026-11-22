@@ -17,6 +17,7 @@ import { advanceScheduleOnClaim } from './next-run.js';
 import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
 import { proofDelivery } from './done/proof.js';
+import { bumpWorkAttempts } from './tracker-store.js';
 
 const logger = createLogger('occurrences');
 
@@ -107,19 +108,19 @@ class LostClaim extends Error {}
 /** Run word for a run that owed a person a message and reached nobody (shown with a neutral badge). */
 export const RUN_STATUS_UNDELIVERED = 'undelivered';
 
-/** A run that owes a message and delivered it, but was never handed in. */
-export interface RunReadyToClose { occurrenceId: string; taskId: string; deliveryId: string }
+/** A run that owes a message and delivered it, or that was handed in during its own turn (delivered or not). */
+export interface RunReadyToClose { occurrenceId: string; taskId: string; deliveryId: string | null; handedIn: boolean }
 
-/** Open runs that owe a message, whose turn ended and whose window holds it (`proofDelivery`). */
+/** Open runs that owe a message, whose turn ended and whose window holds it (`proofDelivery`) or whose task was handed in. */
 export function runsReadyToCloseOnDelivery(): RunReadyToClose[] {
   const rows = getDb().prepare(`
-    SELECT w.id AS occurrence_id, w.parent_id AS task_id FROM work w JOIN work p ON p.id = w.parent_id
-     WHERE w.kind = ? AND w.state IN ('open','claimed') AND p.task_kind IS NOT NULL AND p.state <> 'handed_in'
+    SELECT w.id AS occurrence_id, w.parent_id AS task_id, p.state = 'handed_in' AS handed FROM work w JOIN work p ON p.id = w.parent_id
+     WHERE w.kind = ? AND w.state IN ('open','claimed') AND p.task_kind IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.root_kind = w.kind AND t.root_id = w.id AND t.ended_at IS NULL)
-  `).all(OCCURRENCE_KIND) as Array<{ occurrence_id: string; task_id: string }>;
+  `).all(OCCURRENCE_KIND) as Array<{ occurrence_id: string; task_id: string; handed: number }>;
   return rows.flatMap((row) => {
     const deliveryId = owedRunDelivery(row.occurrence_id);
-    return deliveryId ? [{ occurrenceId: row.occurrence_id, taskId: row.task_id, deliveryId }] : [];
+    return deliveryId || row.handed ? [{ occurrenceId: row.occurrence_id, taskId: row.task_id, deliveryId, handedIn: !!row.handed }] : [];
   });
 }
 
@@ -263,6 +264,7 @@ export function sweepOrphanedOccurrences(nowMs = Date.now()): number {
       'Auto-skipped: orphaned run (parent task not running this occurrence)',
     );
     if (runSettleApplied(settled)) {
+      bumpWorkAttempts(o.parent_id);   // the count advances with the run it closed, so the next run's sequence is free
       swept += 1;
       logger.warn('swept orphaned occurrence', {
         workId: o.parent_id, occurrenceId: o.id, sequence: o.sequence,

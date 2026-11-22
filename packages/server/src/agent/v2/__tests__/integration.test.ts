@@ -391,7 +391,7 @@ import { recordDelivery } from '../deliveries.js';
 import { runMigrations } from '../../../db/migrations.js';
 import '../../decision-ask.js';
 import { installDecisionModel, scriptDecisions, yes } from '../../__tests__/decision-fake.js';
-import { insertMessage } from '../../../memory/message-store.js';
+import { insertMessage, START_ACK_ORIGIN_INTENT } from '../../../memory/message-store.js';
 import { UPDATE_LABEL, EMPTIED_LABEL } from '../steps/call-llm/append-only-turn.js';
 import { claimAsk, askIdForMessage } from '../../../work/store.js';
 import { FX } from '../../../../../../deploy/checks/fixture-vocabulary.mjs';
@@ -4129,5 +4129,34 @@ describe('a stood-down request comes back when the person writes again, through 
     await runV2Turn('primary');
     expect(state('msg-user-2'), 'the backoff serve of the newer request ran').not.toBe('claimed');
     expect(state('msg-user-1'), 'a serve of another request lifts nothing').toBe('blocked');
+  });
+});
+
+// The owner's long job, the model making only tool calls: the start-line hint is ignored, the next pass's calls are held
+// once so the line is written first, and the same calls then run; nothing is held twice.
+describe('a start line comes when the hint is ignored', () => {
+  it('one held pass, then the line, then the held calls run once', async () => {
+    const step = (ids: string[], content = '') => ({
+      content, inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+      toolCalls: ids.map((id) => (id === 'open'
+        ? { id, name: 'work_open', arguments: { kind: 'project', title: 'Rename the archive' } }
+        : { id, name: 'file_read', arguments: { path: `/tmp/archive/${id}.txt` } })) as ToolCall[],
+    });
+    callModelSpy
+      .mockResolvedValueOnce(step(['open']))
+      .mockResolvedValueOnce(step(['a']))
+      .mockResolvedValueOnce(step(['b']))
+      .mockResolvedValueOnce(step(['b'], 'On it, renaming the archive now.'))
+      .mockResolvedValueOnce(step(['c']))
+      .mockResolvedValue({ content: 'All renamed.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' });
+    executeToolSpy.mockImplementation(async (_agent: string, tc: ToolCall) => ({ toolCallId: tc.id, name: tc.name, content: `read ${tc.id}`, isError: false }));
+
+    await runV2Turn('primary');
+
+    expect(executeToolSpy.mock.calls.map((c) => (c[1] as ToolCall).id)).toEqual(['open', 'a', 'b', 'c']);
+    const db = mockDb.current!;
+    expect(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'tool' AND content LIKE '%[Engine: nothing ran]%'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT content FROM messages WHERE role = 'assistant' AND origin_intent = ?").all(START_ACK_ORIGIN_INTENT))
+      .toEqual([{ content: 'On it, renaming the archive now.' }]);
   });
 });
