@@ -17,6 +17,7 @@ import { advanceScheduleOnClaim } from './next-run.js';
 import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
 import { proofDelivery } from './done/proof.js';
+import { bumpWorkAttempts } from './tracker-store.js';
 
 const logger = createLogger('occurrences');
 
@@ -263,6 +264,7 @@ export function sweepOrphanedOccurrences(nowMs = Date.now()): number {
       'Auto-skipped: orphaned run (parent task not running this occurrence)',
     );
     if (runSettleApplied(settled)) {
+      bumpWorkAttempts(o.parent_id);   // the count advances with the run it closed, so the next run's sequence is free
       swept += 1;
       logger.warn('swept orphaned occurrence', {
         workId: o.parent_id, occurrenceId: o.id, sequence: o.sequence,
