@@ -78,10 +78,11 @@ export async function runTerminalText(
       turnCtx.deferredNoteId = null;   // set below if a note is written for THIS text
       // noteTerminalAnswer is required: once the turn ends, settlement refuses an agent-text bubble the
       // turn's answer key does not name. A fresh row id: `messageId` holds this iteration's tool_use row.
-      // Start line: when a start ack is owed (steer armed, or threshold passed with nothing heard), the
-      // model's own words riding a tool call are delivered as the visible ack, consumed so nothing double-sends.
+      // Start line: when a start ack is owed (steer armed, or threshold passed with nothing heard), the model's own words
+      // riding a tool call are the visible ack, consumed so nothing double-sends; on a continued task only for work.
       if (
         (turnCtx.startAckSteerArmedThisTurn || turnCtx.startAckSteerRequested) &&
+        (!isHumanContinuation || turnCtx.inboundClassifiedAsWork === true) &&
         !turnCtx.engineStartAckDeliveredThisTurn &&
         stripMoodMarker(turnCtx.deferredUserReplyWithTools ?? '').trim() && !isRowLabelOnly(turnCtx.deferredUserReplyWithTools) &&   // a mood tag alone is no start line
         !startAckRepliedNow()

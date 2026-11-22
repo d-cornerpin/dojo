@@ -1,5 +1,7 @@
 // The "on it" line follows one rule on every channel: it is armed for a message judged to be work, never for a
-// chat question, whether it came by text or on the dashboard, and the start-line timer keeps the same rule.
+// chat question, whether it came by text or on the dashboard, and the start-line timer keeps the same rule. A chat
+// question whose turn carries a running job is still asked for its line, and that line, riding the job's calls, is
+// delivered as its answer, never stamped as a start line, whether it was judged not work or could not be judged.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const emptyStmt = { all: () => [], get: () => undefined, run: () => ({ changes: 0 }) };
@@ -7,11 +9,15 @@ vi.mock('../../../../../db/connection.js', () => ({ getDb: () => ({ prepare: () 
 vi.mock('../../../../../config/platform.js', () => ({ isPMAgent: () => false, isHealerAgent: () => false, isDreamerAgent: () => false }));
 const verdict = { work: false };
 vi.mock('../../../classifiers/inbound-routing.js', () => ({ inboundIsWork: async () => verdict.work }));
+vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: () => {} }));
+vi.mock('../../../../../memory/message-store.js', async (orig) => ({ ...(await orig<Record<string, unknown>>()), insertMessageIfAbsent: () => {} }));
+vi.mock('../../../../../services/imessage-bridge.js', () => ({ stripSystemTags: (s: string) => s }));
 
 import { initState } from '../../../state.js';
 import { detectMultistepAndScaffold } from '../multistep-detection.js';
 import { runStartAck } from '../../preflight/start-ack.js';
 import type { TurnCounterparty } from '../../../counterparty.js';
+import { runTerminalText } from '../../post-call-classify/terminal-text.js';
 
 const person = (channel: string, senderIsAgent = false): TurnCounterparty => ({
   kind: 'user', name: 'Owner Example', relation: 'owner', channel, senderId: channel === 'dashboard' ? null : '+15550000000', threadId: null, senderIsAgent,
@@ -67,4 +73,35 @@ describe('the start-line timer on a chat question', () => {
     expect(turnCtx.startAckSteerRequested).toBe(false);
     clearTimeout(turnCtx.startAckTimer as ReturnType<typeof setTimeout>);
   });
+});
+
+describe('a chat question whose turn carries a running job', () => {
+  async function pastTheTimer(turnCtx: Record<string, unknown>): Promise<void> {
+    vi.useFakeTimers();
+    const out = runStartAck(turnCtx as never, { agentId: 'the-agent', engineStartAckAfterMs: 30_000 } as never, {
+      db: { prepare: () => emptyStmt } as never, counterparty: person('dashboard'),
+      triggerRow: { rowid: 1, id: 'm-1', conversation_id: 'conv-1' } as never, turnNumber: 3,
+    });
+    vi.advanceTimersByTime(30_001);
+    await out.fireStartAckIfOwed('first-tool');
+    clearTimeout(turnCtx.startAckTimer as ReturnType<typeof setTimeout>);
+  }
+  for (const judged of [false, undefined]) {
+    it(`judged ${String(judged)}: the timer asks for its line, and the line is its answer`, async () => {
+      const turnCtx: Record<string, unknown> = { anyToolStartedThisTurn: true, engineStartAckDeliveredThisTurn: false, state: { explicitSendThisTurn: {} },
+        servedJob: 'task-hunt', inboundClassifiedAsWork: judged, startAckSteerRequested: false, root: { kind: 'ask', id: 'm-1' } };
+      await pastTheTimer(turnCtx);
+      expect(turnCtx.startAckSteerRequested).toBe(true);
+      turnCtx.deferredUserReplyWithTools = '77 clues deep, about two thirds of the way.';
+      const sent: Array<string | null> = [];
+      const c = { agentId: 'the-agent', turnCtx, turnNumber: 3, db: { prepare: () => emptyStmt }, agent: { id: 'the-agent', name: 'Agent' },
+        counterparty: person('dashboard'), counterpartyIsAgentSender: false, hasUnansweredUser: true, isHumanContinuation: true,
+        result: { content: '77 clues deep, about two thirds of the way.', toolCalls: [{ id: 'tc1', name: 'file_append', input: {} }], stopReason: 'tool_use' },
+        noteTerminalAnswer: vi.fn(), reArmIfStrandedNoAnswer: vi.fn(), startAckRepliedNow: () => false,
+        deliverEngineUserAck: vi.fn(async (_t: string, intent: string | null) => { sent.push(intent); }) };
+      const sc = { persistedContent: null, interAgentTurn: false, deliberateSurfaceTurn: false, deliveredAsStartLine: false, hasXmlFallbackTools: false, effectiveModelIdForPersist: 'm' };
+      await runTerminalText({ ...initState({ agentId: 'the-agent' } as Parameters<typeof initState>[0]), loopCount: 2 }, c as never, sc as never);
+      expect([sc.deliveredAsStartLine, sent]).toEqual([false, [null]]);
+    });
+  }
 });
