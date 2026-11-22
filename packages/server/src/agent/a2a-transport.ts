@@ -46,7 +46,7 @@ import { renderTokens } from '../memory/lanes.js';
 import { handInHeard } from '../work/done/effects.js';
 import { latestHandIn } from '../work/done/record.js';
 import { openPieces } from '../tracker/liveness.js';
-import { FINAL_REPLY_INTENTS, FINAL_REPLY_SQL, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
+import { FINAL_REPLY_INTENTS, FINAL_REPLY_SQL, REPLY_NEEDED_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
@@ -459,10 +459,10 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
 
   const isEngineEnvelope = envelope.fromAgent === 'system' || envelope.origin === 'engine';
 
-  // Completion intents skip dedup (checkpoints must land whatever the phrasing; dedup exists to
-  // silence ack loops). System-origin skips too: every engine alert is a fresh condition.
+  // Dedup silences ack loops, so only notes (FYI, STATUS) take it: a request or a final reply always lands
+  // whatever the phrasing. System-origin skips too: every engine alert is a fresh condition.
   const senderIsSystem = envelope.fromAgent === 'system';
-  if (!FINAL_REPLY_INTENTS.has(effectiveIntent) && !senderIsSystem) {
+  if (!FINAL_REPLY_INTENTS.has(effectiveIntent) && !REPLY_NEEDED_INTENTS.has(effectiveIntent) && !senderIsSystem) {
     const isDuplicate = await checkSemanticDedup(envelope.payload, threadId, envelope.fromAgent);
     if (isDuplicate) {
       logDrop(envelope, 'SEMANTIC_DUPLICATE');

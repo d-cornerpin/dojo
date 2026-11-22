@@ -402,11 +402,7 @@ export async function sendToAgent(agentId: string, input: {
         content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. This exchange has gone on long enough: stop, or bring it to the person you work for.`;
         break;
       case 'SEMANTIC_DUPLICATE':
-        // A duplicate-dropped ASSIGN means the work is ALREADY assigned; re-sending
-        // spawns nothing. Do NOT advise a fresh thread: that is the duplicate-task vector.
-        content = intent === 'ASSIGN'
-          ? `Assignment not re-sent: you already assigned essentially this same work to "${agentRef}" moments ago (thread ${result.threadId.slice(0, 8)}). The engine tracks it as a tracker task and you will be woken when they reply or complete it. Do not re-assign; end your turn and wait.`
-          : 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
+        content = 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
         break;
       case 'REQUEST_ENDED':
         content = 'Not delivered: the request this answered was called off, so nothing was passed on. Send nothing more about it.';
