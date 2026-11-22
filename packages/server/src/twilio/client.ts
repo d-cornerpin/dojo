@@ -104,7 +104,7 @@ export async function sendSms(
   body: string,
   from: string,
   signal?: AbortSignal,
-): Promise<{ ok: true; data: TwilioSmsResponse } | { ok: false; error: string }> {
+): Promise<{ ok: true; data: TwilioSmsResponse } | { ok: false; error: string; status?: number }> {
   if (!to.trim() || !body.trim() || !from.trim()) {
     return { ok: false, error: 'to, body, and from are all required.' };
   }
@@ -148,7 +148,7 @@ export async function sendSms(
   }), 'twilio: SMS door crossing', { to: recipientKind(to) });
   if (error !== null) {
     logger.warn('Twilio SMS send failed', { to: recipientKind(to), from, error, status: failedStatus });
-    return { ok: false, error };
+    return { ok: false, error, status: failedStatus };
   }
   // Every part went, so the first part has data.
   logger.info('Twilio SMS sent', { sid: first?.sid, to: recipientKind(to), from, parts: parts.length });
