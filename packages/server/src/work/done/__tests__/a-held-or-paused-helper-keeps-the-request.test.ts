@@ -60,6 +60,15 @@ describe('a held or paused helper keeps the request', () => {
     expect([cards.length, ...(await keptState(ask))]).toEqual([1, 'failed', 'abandoned']);
   });
 
+  for (const moved of [false, true]) {
+    it(`a helper gone quiet${moved ? ' on the card the main agent opened and moved to it' : ''}: its card ends the request, and the owner is told`, async () => {
+      if (moved) doneDb().prepare("UPDATE work SET requester_id = ?, source_message_id = 'm-kept' WHERE id = ?").run(MAIN, TASK);
+      await allTheWay();
+      const told = doneDb().prepare("SELECT COUNT(*) AS n FROM deliveries WHERE tool = 'a2a-join-failed'").get() as { n: number };
+      expect([cards.length, ...(await keptState(ask)), told.n]).toEqual([1, 'failed', 'abandoned', 1]);
+    });
+  }
+
   it("the main agent's own kept task: reminded while its delegation is open, and its card keeps the request", async () => {
     freshBoard(MAIN); anchorBack(2 * 60 * MIN); resetLadderWorld();
     ask = await keptRequest(WORKER, TASK, MAIN);
