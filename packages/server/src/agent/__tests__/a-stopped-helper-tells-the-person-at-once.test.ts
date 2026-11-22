@@ -64,15 +64,34 @@ describe('a stopped helper tells the person at once', () => {
     expect(await told()).toEqual(['abandoned', 0, 0]);
   });
 
-  it('a fan-out: the owner cancels one helper\'s task on the board, and the other helper\'s answer goes back to the agent', async () => {
-    const OTHER = 'agent-helper-2', T2 = 'thread-relay-0002';
+  const OTHER = 'agent-helper-2', T2 = 'thread-relay-0002';
+  /** A fan-out to two helpers, each with its task; the owner cancels the first helper's task on the board. */
+  async function fanOutFirstCancelled(): Promise<void> {
     delegatedTextRequest({}, [THREAD, T2]);
     testDb().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, 'Other', 'idle', 'standard')").run(OTHER);
     testDb().prepare('UPDATE work SET assignee_agent = ? WHERE parent_id = ? AND root_id = ?').run(OTHER, ASK, T2);
     testDb().prepare('UPDATE messages SET agent_id = ? WHERE a2a_thread_id = ?').run(OTHER, T2);
     helperTask();
+    testDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, a2a_thread_id, opened_at, updated_at)
+      VALUES ('task-helper-2', 'task', ?, 'agent', 'tracker', 'task-helper-2', 'claimed', 'ASSIGN', 0, 0, 'Check the garden', ?, ?, ?)`).run(OTHER, T2, Date.now(), Date.now());
     expect(decide({ workId: 'task-helper-1', deciderAgentId: null, verdict: 'cancel', reason: 'Not needed any more' }).kind).toBe('decided');
     expect(await told()).toEqual(['blocked', 0, 0]);
+  }
+
+  it('a fan-out: the owner cancels one helper\'s task and the other helper ends: the person is told nothing came back', async () => {
+    await fanOutFirstCancelled();
+    writeAgentStatus(OTHER, 'terminated');
+    expect(await told()).toEqual(['failed', 1, 1]);
+  });
+
+  it('a fan-out: the owner cancels both helpers\' tasks: called off by him, nobody is told', async () => {
+    await fanOutFirstCancelled();
+    expect(decide({ workId: 'task-helper-2', deciderAgentId: null, verdict: 'cancel', reason: 'Not needed either' }).kind).toBe('decided');
+    expect(await told()).toEqual(['abandoned', 0, 0]);
+  });
+
+  it('a fan-out: the owner cancels one helper\'s task on the board, and the other helper\'s answer goes back to the agent', async () => {
+    await fanOutFirstCancelled();
     await deliverA2AMessage({ intent: 'ANSWER', threadId: T2, requiresResponse: false, payload: 'The garden is free.', toAgent: AGENT, fromAgent: OTHER } as never);
     expect([await told(), newestPutBack(ASK)?.kind]).toEqual([[requestState(), 0, 0], 'compile']);
     expect(requestState()).not.toBe('abandoned');
