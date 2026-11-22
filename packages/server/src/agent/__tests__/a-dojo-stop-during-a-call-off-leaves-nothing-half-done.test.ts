@@ -38,4 +38,15 @@ describe('a Dojo stop during a call-off leaves nothing half done', () => {
     update();
     expect(stateOf('task-helper-1')).toBe('abandoned');
   });
+
+  it('the update leaves alone a job reused by a new piece on its thread', () => {
+    delegated();
+    testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?").run(Date.now(), pieceOf());
+    // A new job for the same helper reuses the thread and its task: a new piece is open on it.
+    testDb().prepare(`INSERT INTO work (id, kind, parent_id, agent_id, assignee_agent, requester, root_kind, root_id, state, intent, wakes, closes_thread, opened_at, updated_at)
+      VALUES ('piece:new', 'task', ?, ?, 'agent-helper', 'agent', 'a2a_thread', 'thread-relay-0001', 'open', 'ASSIGN', 1, 0, ?, ?)`).run(ASK, AGENT, Date.now(), Date.now());
+    testDb().prepare("DELETE FROM _migrations WHERE name = '910_end_jobs_of_called_off_pieces.sql'").run();
+    runMigrations();
+    expect(stateOf('task-helper-1')).toBe('claimed');
+  });
 });
