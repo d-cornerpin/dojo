@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: async () => {} }));
 const box = await import('./helpers/reminders-box.js');
-const { at, turn, line, reminder, openRun, runState, handIn, ghosts, checkScheduledTasks, closeRunsThatDelivered, otherTasksHint } = box;
+const { at, turn, line, reminder, openRun, runState, handIn, ghosts, checkScheduledTasks, closeRunsThatDelivered, otherTasksHint, freeCheckSays, decidedBy } = box;
 const { proofFor } = await import('../../work/done/proof.js');
 
 beforeAll(() => box.openBox());
@@ -17,7 +17,8 @@ const tick = async (iso: string): Promise<void> => { at(iso); await checkSchedul
 const tieOf = (task: string, delivery: string): unknown => proofFor(task).find((i) => i.ref === delivery)?.facts.tied;
 
 describe('a reminder closes on its own line when several fire together', () => {
-  it('the lived shop and stretch reminders: the shop run closes on its own line, the stretch text is ambiguous for it', async () => {
+  it('the lived shop and stretch reminders: the shop run waits for its turn, closes on its own line and is decided by the free check; the stretch text is ambiguous for it', async () => {
+    freeCheckSays(true);
     const day = '2026-03-02';
     at(`${day}T07:30:00Z`);
     const stretch = await reminder('Stretch reminder', `${day}T07:44:00Z`, 5, 3);
@@ -36,8 +37,13 @@ describe('a reminder closes on its own line when several fire together', () => {
       await checkScheduledTasks();
       shopLine = line('Time to call the shop.', 'dashboard');
       const r = await handIn(shop, shopLine); expect(r.isError, r.content).toBe(false);
+      await closeRunsThatDelivered();
+      expect(runState(shop).state, 'the turn that served the run is still running').toBe('open');
     });
     await closeRunsThatDelivered();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(decidedBy(shop), 'the free check read the line as the reminder').toBe('engine');
+    freeCheckSays(null);
     // The shop run's own turn sends the stretch text and hands the stretch reminder in on it.
     await tick(`${day}T07:54:25Z`);
     let stretchLine = '';
