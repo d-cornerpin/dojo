@@ -1,5 +1,6 @@
 // A task open for days, its worker busy with other things all that time: 120 turns, three lines to the owner in
 // each. Handing it in through the real tool reads each of those turns once, about this task alone, never each line.
+// What one turn served costs the same for a worker with months of finished work as for one with none.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -7,6 +8,7 @@ vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRo
 
 import { freshBoard, call, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
+import { servedBy } from '../../task-turns.js';
 
 const TURNS = 120;
 const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
@@ -44,5 +46,32 @@ describe('a hand-in on a long-open task reads each turn once', () => {
 
     expect(r.isError, r.content).toBe(false);
     expect(statements, 'one read per turn and a fixed number besides, never one per line').toBeLessThan(TURNS + 150);
+  });
+
+  it('what a turn served reads the same rows whatever the worker finished before it', () => {
+    freshBoard();
+    // Every payload the reader looks into, counted: one per row of the worker's it probes.
+    let reads = 0;
+    doneDb().function('json_extract', { deterministic: true }, (json: unknown, path: unknown) => {
+      reads++;
+      const v = json === null ? null : (JSON.parse(String(json)) as Record<string, unknown>)[String(path).slice(2)];
+      return v === undefined || v === null ? null : typeof v === 'object' ? JSON.stringify(v) : typeof v === 'boolean' ? Number(v) : v as string | number;
+    });
+    const old = Date.now() - 90 * 86_400_000;
+    let done = 0;
+    const finished = (count: number): void => {
+      for (let end = done + count; done < end; done++) {
+        doneDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, closed_at, updated_at)
+          VALUES (?, 'task', ?, 'owner', 'tracker', ?, 'abandoned', 'task', 0, 0, 'old', ?, ?, ?)`).run(`old-${done}`, WORKER, `old-${done}`, old, old + 1000, old + 1000);
+        doneDb().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'claim_turn', ?, 'engine', ?)")
+          .run(`old-${done}`, JSON.stringify({ turn_number: 1, agent_id: WORKER, how: 'job' }), Date.now() - 1000);
+      }
+    };
+    turnWithLines(1, Date.now() - 60_000, 1, null);
+    const cost = (): number => { reads = 0; servedBy(WORKER, 1); return reads; };
+    finished(10);
+    const few = cost();
+    finished(2000);
+    expect(cost(), 'two thousand finished tasks more read nothing more').toBe(few);
   });
 });

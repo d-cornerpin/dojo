@@ -17,8 +17,8 @@ export interface Served { id: string; how: ServedHow; kind: string | null; holde
 export const actedFor = (s: Served): boolean => s.how !== 'shown';
 const ACTED_SQL = "s.how <> 'shown'";
 
-// Every arm is filtered by agent and starts from an index; a mark that names its turn is read from the turn's start,
-// the rest in its window (to the next turn's start). `focused` keeps the agent's own rows to the ids in `@focus`.
+// Every arm is filtered by agent and starts from an index; the agent's own rows are those open in the turn or closed since
+// it began. Marks naming the turn are read from its start, the rest in its window; `focused` keeps them to `@focus`.
 const servedSql = (focused: boolean): string => `
 WITH t AS (SELECT agent_id, turn_number, root_kind, root_id, started_at, ended_at,
              unixepoch(started_at) * 1000 AS s_ms,
@@ -27,7 +27,8 @@ WITH t AS (SELECT agent_id, turn_number, root_kind, root_id, started_at, ended_a
            FROM turns WHERE agent_id = @a AND turn_number = @n),
 mine AS (SELECT w.id, w.kind, w.root_kind, w.a2a_thread_id, w.opened_at, w.origin_turn, w.requester_id, w.source_message_id,
                 w.result_delivery_id FROM work w
-          WHERE ${focused ? 'w.id IN (SELECT value FROM json_each(@focus)) AND +w.agent_id' : 'w.agent_id'} = @a AND w.kind IN ('ask', 'task')),
+          WHERE ${focused ? 'w.id IN (SELECT value FROM json_each(@focus)) AND +w.agent_id' : 'w.agent_id'} = @a AND w.kind IN ('ask', 'task')
+            AND (w.closed_at IS NULL OR w.closed_at >= COALESCE((SELECT s_ms FROM t), 0) - 1000)),
 direct(id, how) AS (
   SELECT 'ask:' || t.root_id, 'root' FROM t WHERE t.root_kind = 'ask'
   UNION SELECT t.root_id, 'root' FROM t WHERE t.root_kind = 'occurrence'
