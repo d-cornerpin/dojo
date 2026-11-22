@@ -13,8 +13,9 @@ export type ServedHow = 'root' | 'claimed' | 'job' | 'closed' | 'shown' | 'forwa
 /** One piece of work the turn served, how it served it, its row's kind and holder (null for a request's id with no row). */
 export interface Served { id: string; how: ServedHow; kind: string | null; holder: string | null }
 
-// Every arm is filtered by agent: turn numbers are per agent. The window runs from the turn's start to the next
-// turn's start (or a second past its end, or now while it runs).
+// Every arm is filtered by agent: turn numbers are per agent. A mark that names its turn needs only to be no older
+// than the turn; the rest are read in the turn's window, from its start to the next turn's start (or a second past its
+// end, or now while it runs).
 const SERVED_SQL = `
 WITH t AS (SELECT agent_id, turn_number, root_kind, root_id, started_at, ended_at,
              unixepoch(started_at) * 1000 AS s_ms,
@@ -31,14 +32,16 @@ direct(id, how) AS (
   UNION SELECT 'ask:' || m.root_id, 'root' FROM t JOIN messages m ON m.id = t.root_id WHERE t.root_kind = 'engine' AND m.root_kind = 'ask'
   UNION SELECT w.id, 'root' FROM t JOIN work w ON w.kind = 'task' AND w.a2a_thread_id = t.root_id
      AND COALESCE(w.assignee_agent, w.agent_id) = @a AND w.opened_at < t.s_ms + 1000 WHERE t.root_kind = 'a2a'
+  UNION SELECT p.parent_id, 'root' FROM t JOIN work p ON p.root_kind = 'a2a_thread' AND p.root_id = t.root_id AND p.agent_id = @a
+     AND p.parent_id IS NOT NULL AND p.opened_at < t.s_ms + 1000 WHERE t.root_kind = 'a2a'
   UNION SELECT e.work_id, COALESCE(json_extract(e.payload, '$.how'), 'claimed') FROM t, mine w
-     JOIN work_events e ON e.work_id = w.id AND e.kind = 'claim_turn' AND e.created_at >= t.s_ms - 1000 AND e.created_at < t.e_ms
+     JOIN work_events e ON e.work_id = w.id AND e.kind = 'claim_turn' AND e.created_at >= t.s_ms - 1000
      WHERE json_extract(e.payload, '$.turn_number') = @n AND (w.kind = 'ask'
        OR (json_extract(e.payload, '$.how') = 'job' AND json_extract(e.payload, '$.agent_id') = @a))
   UNION SELECT w.id, 'closed' FROM work w WHERE w.agent_id = @a AND w.kind = 'ask'
      AND w.result_delivery_id IN (SELECT d.id FROM deliveries d WHERE d.agent_id = @a AND d.turn_number = @n)
   UNION SELECT e.work_id, 'shown' FROM t, mine w JOIN work_events e ON e.work_id = w.id AND e.kind = 'audit'
-     AND e.created_at >= t.s_ms AND e.created_at < t.e_ms
+     AND e.created_at >= t.s_ms
      WHERE w.kind = 'ask' AND json_extract(e.payload, '$.marker') = 'pieces_shown' AND json_extract(e.payload, '$.turn') = @n
   UNION SELECT p.parent_id, 'forwarded' FROM deliveries d JOIN messages m ON m.id = d.message_id
      JOIN work p ON p.root_kind = 'a2a_thread' AND p.root_id = m.a2a_thread_id AND p.agent_id = @a AND p.parent_id IS NOT NULL
@@ -62,6 +65,10 @@ SELECT s.id, s.how, w.kind, COALESCE(w.assignee_agent, w.agent_id) AS holder
 /** Everything turn `turnNumber` of `agentId` served, with how. */
 export const servedBy = (agentId: string, turnNumber: number): Served[] =>
   getDb().prepare(SERVED_SQL).all({ a: agentId, n: turnNumber }) as Served[];
+
+/** The requests (ask ids) the turn took up: its root and the ones it claimed. */
+export const requestsTakenUpBy = (agentId: string, turnNumber: number): string[] =>
+  [...new Set(servedBy(agentId, turnNumber).filter((s) => s.id.startsWith('ask:') && (s.how === 'root' || s.how === 'claimed')).map((s) => s.id))];
 
 /** The tasks the turn (by default the running one) served that the agent holds, the turn's root first. */
 export function tasksServedBy(agentId: string, turnNumber = turnContext(agentId)?.turnNumber): string[] {

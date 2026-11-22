@@ -8,7 +8,7 @@ import { measureReadsZero } from '../measure-close-gate.js';
 import { ENGINE_SENT_TOOLS, ENGINE_JOIN_RELAY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlement.js';
 import { START_ACK_ORIGIN_INTENT } from '../../memory/origin-intents.js';
 import { askerOf, deliveredToAsker, type Asker } from './asker.js';
-import { servedBy } from '../task-turns.js';
+import { requestsTakenUpBy, servedBy } from '../task-turns.js';
 import { occurrenceOwesDeliverable } from '../deliverable-declaration.js';
 import { fileFacts } from './file-facts.js';
 
@@ -141,7 +141,7 @@ const isEngineTool = (tool: string): boolean => ENGINE_SENT_TOOLS.has(tool) || t
 function startLineOfItsTurn(ctx: ProofContext, ref: string, d: { agent_id: string; turn_number: number | null }): boolean {
   const ask = ctx.task.ask;
   if (d.turn_number === null || !ask || ref === ask.receipt
-    || !servedBy(d.agent_id, d.turn_number).some((s) => s.id === ask.id && (s.how === 'root' || s.how === 'claimed'))) return false;
+    || !requestsTakenUpBy(d.agent_id, d.turn_number).includes(ask.id)) return false;
   const db = getDb();
   // The worker's own lines to the asker only: never the engine's, never a tool chip or working note.
   const lines = (db.prepare(

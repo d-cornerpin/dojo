@@ -12,7 +12,7 @@ import { createLogger } from '../logger.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
-import { servedBy } from './task-turns.js';
+import { requestsTakenUpBy, servedBy } from './task-turns.js';
 import { ENGINE_SCAFFOLD_ROOT_KIND, PARKED_JOB_TITLE, handedInExpr, heldByOwnerSql } from './tracker-view.js';
 import { delegatedRelayEvidence, turnEndedInModelSilence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
@@ -828,13 +828,18 @@ function mediaJobs(askRootId: string): { all: number; out: number; cancelled: nu
 }
 
 /** Job hold: while the request's task (linked, or parked by this turn for it) runs, a progress text does not close it:
- *  held at send time while its turn is live; at the end (and at boot) held when parked, or by a job turn not ended on its answer. */
+ *  held at send time while its turn is live; at the end (and at boot) held when parked, or by a job turn not ended on its
+ *  answer. At boot a dead turn that carried the job (its job mark) parks the job again, so it resumes from its row. */
 function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: AskSettlementVerdict, d: string) => AskSettlementOutcome): AskSettlementOutcome | null {
   if (ctx.at !== 'delivery' && ctx.at !== 'finalize' && ctx.at !== 'boot') return null;
   const parked = ctx.parkedTask && ask.claimed_by_turn === ctx.turnNumber && taskNow(ctx.parkedTask).open ? ctx.parkedTask : null;
   const task = linkedTaskOf(ask.agent_id, ask.root_id) ?? parked;
   if (!task) return null;
   if (ctx.at === 'delivery') return turnContext(ask.agent_id)?.turnNumber === ask.claimed_by_turn ? out('held', 'its job is still running') : null;
+  const carried = ctx.at === 'boot' && ctx.turnNumber !== null && !taskNow(task).parked && taskNow(task).open
+    && servedBy(ask.agent_id, ctx.turnNumber).some((s) => s.id === task && s.how === 'job');
+  if (carried) serveLater({ kind: 'task', id: task }, Date.now(), 'its job turn died with the process; the job resumes from its row');
+  if (carried && !qualifyingDelivery(ask, ctx.turnNumber)) return null;   // nothing was said: the person is served, the job in view
   const jobTurnEnded = ctx.jobTurn === true
     && (handBackCauseOf(turnExitReason(ask.agent_id, ctx.turnNumber), ctx) !== 'silence' || !qualifyingDelivery(ask, ctx.turnNumber));
   if (!taskNow(task).parked && !jobTurnEnded) return null;
@@ -879,8 +884,7 @@ export function linkedTaskOf(agentId: string, messageId: string | null, opts: { 
 function stillOwed(ask: AskRow, ignoreTurn: number | null): string | null {
   if (linkedTaskOf(ask.agent_id, ask.root_id)) return 'a tracker task linked to this request is still open (its holder has not handed it in)';
   const live = turnContext(ask.agent_id)?.turnNumber;
-  const serving = live !== undefined && live !== ignoreTurn
-    && servedBy(ask.agent_id, live).some((s) => s.id === ask.id && (s.how === 'root' || s.how === 'claimed'));
+  const serving = live !== undefined && live !== ignoreTurn && requestsTakenUpBy(ask.agent_id, live).includes(ask.id);
   return serving ? 'a turn serving this request is running' : null;
 }
 

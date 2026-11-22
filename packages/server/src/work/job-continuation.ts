@@ -4,7 +4,7 @@ import { turnContext } from '../agent/turn-context.js';
 import { serveLater } from '../agent/v2/serve-later.js';
 import { openEngineScaffoldTask } from '../agent/v2/steps/execute/tracker-floors.js';
 import { linkedTaskOf } from './ask-settlement.js';
-import { servedBy, tasksServedBy } from './task-turns.js';
+import { requestsTakenUpBy, tasksServedBy } from './task-turns.js';
 import { PARKED_JOB_TITLE } from './tracker-view.js';
 
 const logger = createLogger('job-continuation');
@@ -19,9 +19,9 @@ export const jobOfTurn = (agentId: string, request: string | null): string | nul
 export function requestOfTurn(agentId: string): string | null {
   const bag = turnContext(agentId);
   if (bag?.turnNumber === undefined) return null;
-  const asks = new Set(servedBy(agentId, bag.turnNumber).filter((s) => s.id.startsWith('ask:') && (s.how === 'root' || s.how === 'claimed')).map((s) => s.id));
-  if (asks.size > 1) return null;
-  return asks.size === 1 ? [...asks][0]!.slice('ask:'.length) : bag.servedRequest?.messageId ?? null;
+  const asks = requestsTakenUpBy(agentId, bag.turnNumber);
+  if (asks.length > 1) return null;
+  return asks.length === 1 ? asks[0]!.slice('ask:'.length) : bag.servedRequest?.messageId ?? null;
 }
 
 /** THE ONE DEFINITION OF "PARK": the job's task gets its due time; with no task, a turn serving a request opens the

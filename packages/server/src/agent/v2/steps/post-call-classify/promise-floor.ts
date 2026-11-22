@@ -62,13 +62,11 @@ export function runPromiseFloor(
     const transitionedATaskThisTurn = state.toolResults.some(
       (tr) => !tr.isError && CLOSING_WORK_OPS.has(toolOpKey(tr.name, tr.arguments)),
     );
-    // A promise to start is not pushed past the owner's hold on the task behind this request, or past a request the
-    // turn served that waits on helpers or has ended.
-    const request = ctx.turnCtx.root?.kind === 'ask' ? ctx.turnCtx.root.sourceMessageId : null;
-    const notThisTurns = forwardPromise && servedBy(agentId, turnNumber).some((s) => s.kind === 'ask'
-      && ['root', 'claimed', 'forwarded'].includes(s.how) && (joinOutstanding(s.id) || requestEnded(s.id) !== null));
-    const ownerHoldsItsTask = forwardPromise && !!linkedTaskOf(agentId, request)
-      && !linkedTaskOf(agentId, request, { ownerHeldEnds: true });
+    // A promise to start is not pushed on a request the turn served that waits on helpers, has ended, or whose task the
+    // owner holds.
+    const requests = forwardPromise ? servedBy(agentId, turnNumber).filter((s) => s.id.startsWith('ask:') && ['root', 'claimed', 'forwarded'].includes(s.how)) : [];
+    const notThisTurns = requests.some((s) => joinOutstanding(s.id) || requestEnded(s.id) !== null);
+    const ownerHoldsItsTask = requests.some((s) => !!linkedTaskOf(agentId, s.id.slice(4)) && !linkedTaskOf(agentId, s.id.slice(4), { ownerHeldEnds: true }));
     // A promise backed by a row this turn opened with a future fire is the scheduler's to keep;
     // `origin_turn` is stamped on every tracker open, and a failed open leaves no row.
     let openedFutureScheduledWorkThisTurn = false;

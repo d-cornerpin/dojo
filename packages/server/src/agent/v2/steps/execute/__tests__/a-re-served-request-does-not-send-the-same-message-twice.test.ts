@@ -13,6 +13,7 @@ import { writeToolReceipt } from '../../../../../receipts/store.js';
 import { asTurn, type TurnRoot } from '../../../../turn-context.js';
 import { initState } from '../../../state.js';
 import { runRefusalGates } from '../refusal-gates.js';
+import { turnRow } from '../../../__tests__/helpers/live-turn.js';
 
 const AGENT = randomUUID();
 const ASK: TurnRoot = { kind: 'ask', id: randomUUID(), sourceMessageId: null };
@@ -20,6 +21,7 @@ const EMAIL = { to: 'person@example.com', subject: 'Plan', body: 'The plan for F
 
 /** Turn 1, serving `root`, sent a message: its door's receipt, unverified (as every iMessage receipt is). */
 function sentOnTurnOne(root: TurnRoot, tool = 'gmail_send', recipient = EMAIL.to, sentText = `${EMAIL.subject}: ${EMAIL.body}`): void {
+  turnRow(AGENT, 1, root);
   asTurn(AGENT, { turnNumber: 1, root, convKey: null }, () => writeToolReceipt({
     agentId: AGENT, tool, tier: 3, verified: false, basis: 'exit-code', recipient, sentText, skipAudit: true,
   }));
@@ -27,6 +29,7 @@ function sentOnTurnOne(root: TurnRoot, tool = 'gmail_send', recipient = EMAIL.to
 
 /** One send on turn 2, serving the same request: the refusal's words, or null when the call goes. */
 function sendOnTurnTwo(args: Record<string, unknown>, seen: Set<string>, name = 'gmail_send'): string | null {
+  turnRow(AGENT, 2, ASK, true);
   const state = initState({ agentId: AGENT, turnNumber: 2, lastUserMessageContent: null } as never);
   return runRefusalGates(state as never, { id: randomUUID(), name, arguments: args } as never,
     { agentId: AGENT, turnNumber: 2, turnCtx: { root: ASK, turnNumber: 2 }, refusedOnceSigs: seen } as never).refusal?.content ?? null;

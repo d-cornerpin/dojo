@@ -84,7 +84,7 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
   it("outcome 'brake' records ACTIVITY but never an ANSWER stamp", () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN, outcome: 'brake',
-      answerMessageId: 'msg-the-coerced-reply', rootSourceMessageId: null,
+      answerMessageId: 'msg-the-coerced-reply', 
       convKey: null, servedTaskId: null,
     });
     const t = ticket();
@@ -115,7 +115,7 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
   it('a braked turn can record a handover receipt but can NEVER satisfy the finished-work predicate', () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN, outcome: 'brake',
-      answerMessageId: 'msg-the-coerced-reply', rootSourceMessageId: null,
+      answerMessageId: 'msg-the-coerced-reply', 
       convKey: null, servedTaskId: null,
     });
     const t = ticket();
@@ -129,7 +129,7 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
   it("the SAME turn under outcome 'answered' does stamp — so the brake is what withholds it", () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN, outcome: 'answered',
-      answerMessageId: 'msg-a-real-answer', rootSourceMessageId: null,
+      answerMessageId: 'msg-a-real-answer', 
       convKey: null, servedTaskId: null,
     });
     const t = ticket();
@@ -140,12 +140,12 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
   it('a brake NEVER erases an earlier honest delivery stamp (COALESCE, not overwrite)', () => {
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN, outcome: 'answered',
-      answerMessageId: 'msg-a-real-answer', rootSourceMessageId: null,
+      answerMessageId: 'msg-a-real-answer', 
       convKey: null, servedTaskId: null,
     });
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: TURN + 1, outcome: 'brake',
-      answerMessageId: 'msg-the-coerced-reply', rootSourceMessageId: null,
+      answerMessageId: 'msg-the-coerced-reply', 
       // tied by served ticket: TURN+1 is a different turn, so origin_turn no
       // longer matches and the stamper would otherwise skip the ticket entirely.
       convKey: null, servedTaskId: 't-braked',

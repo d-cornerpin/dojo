@@ -27,7 +27,7 @@ const OLD_TASK = 'task-old-0000-1111-2222-33334444555';
 let db: Database.Database;
 
 const finalize = (turnNumber: number, servedTaskId: string | null = null): void =>
-  stampTasksAtTurnFinalize({ agentId: WORKER, turnNumber, outcome: 'answered', answerMessageId: null, rootSourceMessageId: null, convKey: null, servedTaskId });
+  stampTasksAtTurnFinalize({ agentId: WORKER, turnNumber, outcome: 'answered', answerMessageId: null, convKey: null, servedTaskId });
 
 beforeEach(() => {
   db = new Database(':memory:');

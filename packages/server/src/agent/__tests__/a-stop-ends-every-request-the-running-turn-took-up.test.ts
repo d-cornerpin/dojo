@@ -1,5 +1,5 @@
 // Stop while a turn runs ends every request that turn took up: the poem it was started on and the older bicycle
-// request it revived. The request waiting on a helper is left alone, the message queued behind the turn is answered
+// request it revived, held on its picture since. The request waiting on a helper is left alone, the message queued behind the turn is answered
 // next, and each ended request's row says so in every later view.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -13,7 +13,7 @@ vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => ne
 import { stopByOwner, getAgentRuntime } from '../runtime.js';
 import { executeTool } from '../tools/index.js';
 import { insertMessage } from '../../memory/message-store.js';
-import { claimAsk, stampClaimingTurn } from '../../work/store.js';
+import { claimAsk, stampClaimingTurn, transition } from '../../work/store.js';
 import { endTurnContext } from '../turn-context.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
 import { liveTurn } from '../v2/__tests__/helpers/live-turn.js';
@@ -38,7 +38,8 @@ describe('a stop ends every request the running turn took up', () => {
     }
     insertMessage({ id: 'm-next', agentId: AGENT, role: 'user', content: 'What time is it in Tokyo?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
     liveTurn(AGENT, { turnNumber: 2, root: { kind: 'ask', id: 'm-quick', sourceMessageId: 'm-quick' } });
-    stampClaimingTurn('ask:m-bike', 2);   // the turn revived the older bicycle request
+    stampClaimingTurn('ask:m-bike', 2);   // the turn revived the older bicycle request, and started its picture
+    transition('ask:m-bike', { to: 'blocked', by: 'agent', actorId: AGENT, expectedState: 'claimed', reason: 'held: its picture is still being made' });
     await executeTool(AGENT, { id: 'tc-own', name: 'work_open', arguments: { kind: 'task', title: 'Autumn poem', goal: 'The person has the poem' } });
     expect(stopByOwner(AGENT)).toMatchObject({ ended: 2 });
     expect([stateOf('ask:m-bike'), stateOf('ask:m-quick'), requestState()]).toEqual(['abandoned', 'abandoned', 'blocked']);

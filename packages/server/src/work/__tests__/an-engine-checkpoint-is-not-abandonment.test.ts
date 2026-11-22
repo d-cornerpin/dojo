@@ -107,7 +107,7 @@ describe('an engine checkpoint carries the job and notes it, without moving it',
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
     const { stampTasksAtTurnFinalize } = await import('../../tracker/task-stamps.js');
     liveTurn(AGENT, { turnNumber: 8, root: null });   // an unrelated wake: no root, no served work, and it does not park
-    stampTasksAtTurnFinalize({ agentId: AGENT, turnNumber: 8, outcome: 'answered', answerMessageId: null, rootSourceMessageId: null, convKey: null, servedTaskId: null });
+    stampTasksAtTurnFinalize({ agentId: AGENT, turnNumber: 8, outcome: 'answered', answerMessageId: null, convKey: null, servedTaskId: null });
     endTurnContext(AGENT);
     mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(stale, 'w-job');
     expect(park('turn-budget', 9, null)).toBe(1); // the job's own turn still names the job

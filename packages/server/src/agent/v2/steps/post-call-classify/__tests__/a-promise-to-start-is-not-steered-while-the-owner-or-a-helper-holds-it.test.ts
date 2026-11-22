@@ -20,7 +20,12 @@ import { turnRow } from '../../../__tests__/helpers/live-turn.js';
 import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const PROMISE = 'On it. I will start on the move plan now.';
-const servingRequest = (id: string) => ({ root: { kind: 'ask', id, sourceMessageId: id, conversationId: 'conv-1' } });
+/** The kit's turn 7, recorded as serving request `id`. */
+const servingRequest = (id: string) => {
+  getDb().prepare('DELETE FROM turns WHERE agent_id = ?').run(FXID.n4);
+  turnRow(FXID.n4, 7, { kind: 'ask', id }, true);
+  return { root: { kind: 'ask', id, sourceMessageId: id, conversationId: 'conv-1' } };
+};
 const taskFor = (request: string): string => openTrackerTask({
   title: 'Plan the move', status: 'in_progress', assignedTo: FXID.n4, createdBy: FXID.n4,
   origin: { kind: 'user', sourceMessageId: request, turn: 7, convKey: 'ck-1' },
@@ -52,10 +57,8 @@ describe('a promise to start and the owner\'s hold', () => {
     claimAsk(ask, FXID.n4);
     openDelegationJoin({ parentWorkId: ask, agentId: FXID.n4, replyConversationId: null, ttlAt: Date.now() + 3_600_000,
       threads: [{ threadId: randomUUID(), assigneeAgent: 'agent-helper', intent: 'ASSIGN', hopCount: 0 }] });
-    turnRow(FXID.n4, 7, { kind: 'ask', id: request }, true);   // the kit's turn, on the request
     modelSays({ only_promises_to_start: true });
     expect(steered(await endTurn("Helper's on it; I'll text you the short list when she reports back.", [], undefined, servingRequest(request)))).not.toContain('promise-floor');
-    getDb().prepare('DELETE FROM turns WHERE agent_id = ?').run(FXID.n4);
   });
 
   it('a hold the agent set itself is not the owner\'s: the promise is steered', async () => {
