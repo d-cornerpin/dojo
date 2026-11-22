@@ -38,7 +38,7 @@ describe('the owner texts "kill <name>"', () => {
 
   it('another live agent\'s name still ends that agent', async () => {
     expect(await handleIMCommand('kill scout', OWNER)).toBe(`Dojo: Terminated agent "Scout" (${HELPER}).`);
-    expect(calls.terminateAgent).toHaveBeenCalledWith(HELPER, 'Killed via iMessage command');
+    expect(calls.terminateAgent).toHaveBeenCalledWith(HELPER, 'Killed via iMessage command', true);   // his kill is his end
     expect(calls.stopByOwner).not.toHaveBeenCalled();
   });
 

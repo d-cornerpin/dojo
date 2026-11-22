@@ -1,5 +1,6 @@
-// The owner removing a helper on the dashboard (round two, S08) calls off every piece it was given as his: its jobs
-// end with them, the request it was the only part of ends as his, and nobody is told "no answer".
+// A helper ended by the owner calls off every piece it was given as his: on the dashboard (round two, S08), by his
+// texted kill, or by the main agent on his quoted words. Its jobs end with them, the request it was the only part of
+// ends as his, and nobody is told "no answer". The main agent's kill without his words stays a plain end.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -14,7 +15,8 @@ vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
 
 import { agentsRouter } from '../../gateway/routes/agents.js';
 import { failedNotices } from './helpers/text-relay.js';
-import { delegated, expectEndedAsHis, pieceOf, settled, ASK, HELPER } from './helpers/call-off-world.js';
+import { handleConfirmedOwnerEmailWords } from '../../services/imessage-commands.js';
+import { call, delegated, endedBy, expectEndedAsHis, ownerTurn, pieceOf, settled, ASK, AGENT, HELPER } from './helpers/call-off-world.js';
 
 describe("removing a helper calls off its pieces as the owner's", () => {
   it('his removal: the piece, its job and the request end as his, with no notice', async () => {
@@ -23,5 +25,28 @@ describe("removing a helper calls off its pieces as the owner's", () => {
     await settled();
     expectEndedAsHis(pieceOf(), 'task-helper-1', ASK);
     expect(failedNotices()).toBe(0);
+  });
+
+  it('his texted kill: the same as his removal', async () => {
+    delegated();
+    expect(await handleConfirmedOwnerEmailWords('kill helper')).toContain('Terminated agent');
+    await settled();
+    expectEndedAsHis(pieceOf(), 'task-helper-1', ASK);
+    expect(failedNotices()).toBe(0);
+  });
+
+  it('the main agent ends it on his words: his end; with no words of his, a plain end', async () => {
+    delegated();
+    ownerTurn('m-kill', 'Kill the helper, we do not need it.');
+    const r = await call(AGENT, 'kill_agent', { agent_id: HELPER, user_quote: 'Kill the helper, we do not need it.' });
+    expect(r.isError, String(r.content)).toBeFalsy();
+    await settled();
+    expectEndedAsHis(pieceOf(), 'task-helper-1', ASK);
+    expect(failedNotices()).toBe(0);
+    delegated();
+    ownerTurn('m-other', 'What is on my calendar?');
+    await call(AGENT, 'kill_agent', { agent_id: HELPER, user_quote: 'Kill the helper, we do not need it.' });
+    await settled();
+    expect(endedBy(pieceOf())).toEqual({ state: 'abandoned', by: 'agent' });
   });
 });

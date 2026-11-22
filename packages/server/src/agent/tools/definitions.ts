@@ -790,6 +790,7 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'The ID of the agent to terminate',
         },
+        user_quote: { type: 'string', description: 'When the owner asked for this: his exact words, from the message you are answering. Checked against that message; the work the agent was given then ends as his.' },
       },
       required: ['agent_id'],
     },

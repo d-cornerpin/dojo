@@ -46,7 +46,7 @@ import { validateManifest } from '../../scope.js';
 import { isNoWakeIntent, deliverA2AMessage, deliverA2AMessage as deliverBc, type A2AIntent } from '../../a2a-transport.js';
 import { onAgentRecovered } from '../../../healer/injury-recovery.js';
 import { resolveTaskId, getTask, formatResolveError } from '../../../tracker/schema.js';
-import { moveAssignee, planSpawnTask, type SpawnTaskPlan } from '../../../work/row-authority.js';
+import { moveAssignee, ownerAskedInThisTurn, planSpawnTask, type SpawnTaskPlan } from '../../../work/row-authority.js';
 import { setAgentModel } from '../../model-switch.js';
 import { updateGroup as doUpdateGroup, SYSTEM_GROUP_ID as SYS_GROUP_U, getGroupDetail, getGroups as listAllGroups, deleteGroup as doDeleteGroup, SYSTEM_GROUP_ID as SYS_GROUP } from '../../groups.js';
 import { writeTaskLog } from '../../../tracker/task-log.js';
@@ -586,7 +586,7 @@ export const agentsHandlers: ToolHandlerMap = {
       content = `Agent ${targetId} is already terminated. No action taken.`;
       return { content, isError };
     }
-    terminateAgent(targetId, `Killed by agent ${agentId}`);
+    terminateAgent(targetId, `Killed by agent ${agentId}`, ownerAskedInThisTurn(agentId, args.user_quote).ok);
     content = `Agent ${targetId} has been terminated.`;
     return { content, isError };
   },

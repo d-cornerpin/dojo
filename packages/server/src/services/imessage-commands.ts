@@ -180,7 +180,7 @@ function killAllAgents(): string {
     }
 
     for (const agent of agents) {
-      terminateAgent(agent.id, 'Killed via iMessage command');
+      terminateAgent(agent.id, 'Killed via iMessage command', true);
     }
 
     return `Terminated ${agents.length} agent(s): ${agents.map(a => a.name).join(', ')}`;
@@ -205,7 +205,7 @@ async function killNamedAgent(name: string, tooOld: boolean): Promise<string | n
     if (tooOld) return OLD_COMMAND_REPLY;
     if (agent.id === getPrimaryAgentId()) return stopPrimaryWork(() => `Stopped ${agent.name}'s work. ${agent.name} is still here.`);
 
-    terminateAgent(agent.id, 'Killed via iMessage command');
+    terminateAgent(agent.id, 'Killed via iMessage command', true);
     return `Terminated agent "${agent.name}" (${agent.id}).`;
   } catch (err) {
     logger.error('Failed to kill named agent', {
