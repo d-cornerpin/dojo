@@ -102,9 +102,8 @@ export function runCloseoutFloors(
     }
   }
 
-  // A round the owed-interrupt step granted after a reply had landed was bought to ask about the arrival,
-  // which its own turn answers, so that round's text becomes a note and whatever it already sent (a voice
-  // burst speaks the stream before this hold) is recorded as not the arrival's answer: the ask stays owed.
+  // A round granted after a reply had landed was bought to ask about the arrival, which its own turn answers: its text
+  // becomes a note and its voice burst (spoken before this hold) is no answer, though a send it made still is.
   // `afterReply` guards the mirror case: a round granted before any reply carries the turn's one answer.
   const grant = state.owedInterruptGrant;
   if (
@@ -120,7 +119,7 @@ export function runCloseoutFloors(
     demoteToWorkingNote({ agentId, messageId, turnNumber, text: persistedContent }, {
       why: 'a second answer to a message that arrived mid-turn; that message is answered by its own turn', owed,
     });
-    try { recordOwedInterruptSubjects(agentId, grant.messageIds, turnNumber); } catch { /* the hold still stands */ }
+    try { recordOwedInterruptSubjects(agentId, grant.messageIds, turnNumber, true); } catch { /* the hold still stands */ }
     persistedContent = null;
   }
 

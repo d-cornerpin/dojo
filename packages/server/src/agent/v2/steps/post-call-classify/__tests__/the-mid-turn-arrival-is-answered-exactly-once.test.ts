@@ -336,7 +336,8 @@ describe('§3 a second bubble about the arrival never reaches the person', () =>
     expect(b.persistedContent).toBeNull();
   });
 
-  it('the arrival stays owed when the held round was already spoken by the voice burst', () => {
+  for (const sent of [false, true]) it(sent ? 'a send the granted round made still answers the arrival; its voice burst does not'
+    : 'the arrival stays owed when the held round was already spoken by the voice burst', () => {
     const inbound = (id: string, content: string): void => {
       insertMessage({ id, agentId: AGENT, role: 'user', content, lane: 'owner', channel: 'dashboard', senderId: 'owner',
         authorized: true, conversationId: CONV, inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }) } as never);
@@ -351,6 +352,7 @@ describe('§3 a second bubble about the arrival never reaches the person', () =>
     inbound('m-b', 'For a picnic, roughly?');
     delivered('d-weather', 'dashboard', 'dashboard', 'msg-weather');
     recordOwedInterruptSubjects(AGENT, ['m-b'], TURN);   // the seam's record when it grants the round
+    if (sent) delivered('d-sent', 'send_message', 'dashboard', 'msg-sent');
     delivered('d-spoken', 'speech-out', 'voice', 'tts-burst');
     runCloseoutFloors(freshState({ loopCount: 5, owedInterruptGrant: grantedAfterReply(3) }), ctxFor(),
       scratchFor({ persistedContent: 'That reading is for one city; say which spot you mean.' }));
@@ -359,7 +361,8 @@ describe('§3 a second bubble about the arrival never reaches the person', () =>
     settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: TURN, assembled: [{ workId: askIdForMessage('m-b'), rowid: 0 }] });
     const work = (id: string): unknown => db().prepare('SELECT state, result_delivery_id AS receipt FROM work WHERE id = ?').get(askIdForMessage(id));
     expect(work('m-a')).toMatchObject({ state: 'done' });
-    expect(work('m-b'), 'the picnic question is still owed its own answer').toEqual({ state: 'open', receipt: null });
+    expect(work('m-b'), 'the picnic question is owed its own answer unless the round sent one')
+      .toEqual(sent ? { state: 'done', receipt: 'd-sent' } : { state: 'open', receipt: null });
   });
 
   it('CONTROL — no grant, no hold: an ordinary reply is untouched', () => {

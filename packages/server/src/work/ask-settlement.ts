@@ -254,19 +254,20 @@ function taskNow(id: string): { open: boolean; parked: boolean } {
 }
 
 /** A delivery at or below the rowid high-water `recordOwedInterruptSubjects` stored for this ask predates
- *  the re-prompt that told the model it was still owed. Rowid, not the clock: `created_at` is whole seconds
- *  and can tie. Refusing it cannot park the ask: finalize hands it back open. */
+ *  the re-prompt that told the model it was still owed (a `spokenOnly` mark voids only voice bursts). Rowid, not
+ *  the clock: `created_at` is whole seconds and can tie. Refusing it cannot park the ask: finalize hands it back open. */
 const NOT_OWED_PAST_THIS_DELIVERY =
   `NOT EXISTS (SELECT 1 FROM work_events oi
                 WHERE oi.work_id = ? AND oi.kind = 'owed_interrupt'
                   AND json_extract(oi.payload, '$.turnNumber') = ?
-                  AND d.rowid <= json_extract(oi.payload, '$.deliveryHighWater'))`;
+                  AND d.rowid <= json_extract(oi.payload, '$.deliveryHighWater')
+                  AND (json_extract(oi.payload, '$.spokenOnly') IS NULL OR d.tool = 'speech-out'))`;
 
 /** The owed-interrupt receipt, written here because `work/` is the spine's single writer and read by the
  *  narrowing above. Best-effort: an owed message with no ask row is skipped; a failure must not cost
  *  the re-prompt. */
 export function recordOwedInterruptSubjects(
-  agentId: string, owedMessageIds: readonly string[], turnNumber: number,
+  agentId: string, owedMessageIds: readonly string[], turnNumber: number, spokenOnly?: true,
 ): void {
   if (owedMessageIds.length === 0) return;
   const db = getDb();
@@ -277,7 +278,7 @@ export function recordOwedInterruptSubjects(
     const workId = askIdForMessage(messageId);
     const exists = db.prepare('SELECT 1 FROM work WHERE id = ?').get(workId);
     if (!exists) continue;
-    appendWorkEvent(workId, 'owed_interrupt', 'engine', { turnNumber, deliveryHighWater: water });
+    appendWorkEvent(workId, 'owed_interrupt', 'engine', { turnNumber, deliveryHighWater: water, spokenOnly });
     logger.info('owed mid-turn ask recorded on its own ledger: this turn\'s earlier deliveries are not its answer', {
       agentId, workId, turnNumber, deliveryHighWater: water,
     }, agentId);
