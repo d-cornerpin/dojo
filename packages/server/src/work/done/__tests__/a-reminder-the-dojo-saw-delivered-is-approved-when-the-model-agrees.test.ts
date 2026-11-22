@@ -1,6 +1,7 @@
 // A finished run of a task that owes a person a message, whose delivered message the engine tied to the run, is
 // approved by the engine when the small local model reads that message as what the task owes. A no, no answer, no
-// model, or a task that owes no message: the run goes to the manager as before.
+// model, or a task that owes no message: the run goes to the manager as before. A one-time reminder's only run is its
+// final one, decided the same way on whichever channel it went.
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -9,27 +10,29 @@ vi.mock('../../../agent/runtime.js', async () => (await import('./helpers/ladder
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import '../../../agent/decision-ask.js';
-import { onTaskRunComplete } from '../../../scheduler/runner.js';
+import { closeRunsThatDelivered, onTaskRunComplete } from '../../../scheduler/runner.js';
 import { freshBoard, deliveredToOwner, stateOf, eventCount, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 import { installDecisionModel, scriptDecisions, yes, type DecisionCall } from '../../../agent/__tests__/decision-fake.js';
 
 const REMINDER = 'Time to stretch: stand up and roll your shoulders.';
 
-/** A live daily schedule of kind `kind` worked by WORKER, whose open run delivered REMINDER to the owner. */
-function aDeliveredRun(kind: string, model = true): void {
+/** A live daily schedule of kind `kind` (or a one-time reminder) worked by WORKER, whose open run delivered REMINDER
+ *  to the owner on `channel`. */
+function aDeliveredRun(kind: string, model = true, once = false, channel = 'dashboard'): void {
   freshBoard();
   if (model) installDecisionModel(doneDb());
   const at = Date.now() - 30_000;
   doneDb().prepare(
     `UPDATE work SET task_kind = ?, title = 'Stretch reminder', goal = 'Remind me every hour to stretch',
-       repeat_interval = 1, repeat_unit = 'days', schedule_status = 'running', next_run_at = ? WHERE id = ?`,
-  ).run(kind, Date.now() + 86_400_000, TASK);
+       repeat_interval = ?, repeat_unit = 'days', schedule_status = 'running', next_run_at = ? WHERE id = ?`,
+  ).run(kind, once ? null : 1, once ? null : Date.now() + 86_400_000, TASK);
   doneDb().prepare(
     `INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, sequence, opened_at, updated_at)
      VALUES ('run-1', 'occurrence', ?, ?, 'schedule', 'schedule', ?, 'open', 'occurrence', 0, 0, 'a run', 1, ?, ?)`,
   ).run(TASK, WORKER, TASK, at, at);
-  doneDb().prepare("UPDATE deliveries SET root_kind = 'occurrence', root_id = 'run-1' WHERE id = ?").run(deliveredToOwner(WORKER, REMINDER));
+  doneDb().prepare("UPDATE deliveries SET root_kind = 'occurrence', root_id = 'run-1', channel = ?, tool = ? WHERE id = ?")
+    .run(channel, channel === 'dashboard' ? 'auto-route' : channel, deliveredToOwner(WORKER, REMINDER));
 }
 
 async function runFinishes(): Promise<void> {
@@ -79,4 +82,15 @@ describe('a reminder the Dojo saw delivered is approved when the model agrees', 
     expect(asked(calls)).toHaveLength(0);
     expect([stateOf(), eventCount('decided')]).toEqual(['handed_in', 0]);
   });
+
+  for (const channel of ['dashboard', 'imessage', 'sms']) {
+    it(`a one-time reminder delivered by ${channel} is closed on its delivery and approved by the engine, not the manager`, async () => {
+      aDeliveredRun('reminder', true, true, channel);
+      scriptDecisions(() => yes(0.9));
+      expect(await closeRunsThatDelivered()).toBe(1);
+      await vi.dynamicImportSettled();
+      await new Promise((r) => setTimeout(r, 100));
+      expect([stateOf(), decidedBy()]).toEqual(['done', 'engine']);
+    });
+  }
 });

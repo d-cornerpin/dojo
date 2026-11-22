@@ -63,7 +63,7 @@ async function deliveredWhatItOwes(workId: string): Promise<boolean> {
  *  confirms, after its schedule advanced; anything the engine does not decide goes to its decider's review. */
 async function decideOrReview(workId: string, h: HandInRecord): Promise<void> {
   try {
-    if (h.scope === 'run' && h.outcome === 'finished') {
+    if (h.scope && h.outcome === 'finished') {   // a run's hand-in: a live schedule's, or the final run's
       await remeasureTask(ENGINE_ID, workId);
       if (decide({ workId, deciderAgentId: ENGINE_ID, verdict: 'approve', reason: 'its own count reads 0 for this run' }).kind === 'decided') return;
       if (await deliveredWhatItOwes(workId) && decide({

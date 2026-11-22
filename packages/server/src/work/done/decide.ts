@@ -94,7 +94,7 @@ function agentRefusal(agentId: string, workId: string, name: string, verdict: Ve
   if (agentId === ENGINE_ID) {
     const h = latestHandIn(workId);
     const run = inFlightOccurrence(workId, { anyState: true });
-    const ok = verdict === 'approve' && h?.scope === 'run' && h.outcome === 'finished'
+    const ok = verdict === 'approve' && !!h?.scope && h.outcome === 'finished'
       && !!run && occurrenceRunStatus(run.id) === 'complete' && (basis === 'delivered'
       ? owedRunDelivery(run.id) !== null
       : engineProof(workId).some((i) => i.kind === 'measure') && measureSetByCreator(workId));
