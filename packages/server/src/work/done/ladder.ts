@@ -13,16 +13,16 @@
 // Each wake marks one of its entries; the PM is not armed again until a PM turn finishes after its last arm.
 // Left alone: a hold the owner set (its clock restarts when it lifts), a hold already on the row at the upgrade
 // (until the row moves), a Working row whose worker no longer exists, and a Working row already idle 14 days when
-// this box first ran the ladder. Every other hold, dated or not, is a stall.
+// this box first ran the ladder. A pause its worker set waits on the owner: his card only. Every other hold is a stall.
 import { DORMANT_MS } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { getPrimaryAgentId, getPMAgentId } from '../../config/platform.js';
-import { taskScope, msToUtcText, heldByOwnerSql, holdWordsSql } from '../tracker-view.js';
+import { taskScope, msToUtcText, heldByOwnerSql, holdWordsSql, holdSetBySql } from '../tracker-view.js';
 import { taskMovedAtSql, stallSinceSql, cardedSinceStallSql, LADDER_ANCHOR_SQL } from '../task-freshness.js';
 import { appendAuditEntry, AUDIT_KIND } from '../audit-trail.js';
 import { recordValidationEscalation } from '../tracker-store.js';
-import { WORKING_STATES } from './hold.js';
+import { WORKING_STATES, heldExpr } from './hold.js';
 import { latestHandIn, workerOf } from './record.js';
 import { whoDecides, sendBacks, questionsHoldUntil, REVIEW_MISS_ENTRY, SEND_BACKS_BEFORE_ESCALATION } from './who-decides.js';
 import { workerBusy } from '../../tracker/liveness.js';
@@ -76,9 +76,10 @@ const isKind = (kind: string) => (e: Ev): boolean => e.kind === kind;
 /** Where the row stands on the ladder and the step now due, from its own records. */
 function ladderStep(workId: string, now: number): LadderStep {
   const row = getDb().prepare(`SELECT w.state, w.updated_at, w.a2a_thread_id AS thread, ${stallSinceSql('w')} AS since, ${cardedSinceStallSql('w')} AS carded,
+      ${heldExpr('w', 'paused')} AND ${holdSetBySql('w')} IS NOT 'engine' AS paused,
       ${LADDER_ANCHOR_SQL} AS anchor, (SELECT MIN(r.created_at) FROM work_events r WHERE r.work_id = w.id AND r.kind = 'audit'
         AND json_extract(r.payload, '$.entry_kind') = 'directive' AND r.created_at >= ${stallSinceSql('w')}) AS retask
-      FROM work w WHERE w.id = ?`).get(workId) as { state: string; updated_at: number; thread: string | null; since: number; carded: number; anchor: number; retask: number | null } | undefined;
+      FROM work w WHERE w.id = ?`).get(workId) as { state: string; updated_at: number; thread: string | null; since: number; carded: number; paused: number; anchor: number; retask: number | null } | undefined;
   if (!row || !(LIVE.includes(row.state) || (row.state === 'open' && row.thread))) return { reached: 0, due: null };
   const evs = eventsOf(workId);
   // `asked` ends the owner step for the hand-in his card was raised for (`carded`, for a stall); the day window in
@@ -119,7 +120,7 @@ function ladderStep(workId: string, now: number): LadderStep {
   const hint = newest(evs, isEntry(LADDER_ENTRY.hint), since);
   const pm = evs.find((e) => e.entry === LADDER_ENTRY.pm && e.at >= since);
   const floor = now - since >= OWNER_FLOOR_MS;
-  if (row.carded || row.retask) return { reached: 4, thread: row.thread, due: row.carded ? null : owner(floor) };
+  if (row.carded || row.retask || row.paused) return { reached: 4, thread: row.thread, due: row.carded ? null : owner(floor) };
   if (pm) return { reached: 2, thread: row.thread, due: !pmCanRun() || pmReviewed(pm.at, workId) ? owner(floor) : workerBusy(getPMAgentId(), {}) ? null : 'pm' };
   if (hint) return { reached: 1, thread: row.thread, due: !pmCanRun() ? owner(floor) : now - hint.at >= bound ? 'pm' : null };
   return { reached: 0, due: now - since >= bound ? 'hint' : null };
