@@ -1,7 +1,8 @@
 // The owner asks how his long job is going while it runs: his question's turn carries the job (one turn chain, so a
 // second question ends its stretch at the next step), the question is answered and closed on its own delivery, and
 // the job goes on in its own turn from its row. Worked six calls deep, that turn opens no second task: the six-call
-// floor finds the job's task carrying it.
+// floor finds the job's task carrying it. A job the question's turn hands in keeps no due time, so its send-back
+// starts no extra job turn.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('./helpers/agent-requests.js')).connectionMock());
@@ -16,6 +17,8 @@ import { turnContext } from '../turn-context.js';
 import { countTrackerWorkThisIteration } from '../v2/steps/execute/tracker-counting.js';
 import { runTrackerFloors } from '../v2/steps/execute/tracker-floors.js';
 import type { ExecuteContext } from '../v2/steps/execute/index.js';
+import { engineHandIn } from '../../work/done/hand-in.js';
+import { decide } from '../../work/done/decide.js';
 import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
 import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
 
@@ -73,5 +76,16 @@ describe('how is it going gets an answer and the job goes on', () => {
     await ownerAsks('m-2', 'how is it going?');
     await stretch('parks', sixWorkCalls);
     expect(tasks()).toBe(1);
+  });
+
+  it('the question\'s turn hands the job in: no due is left, so its send-back starts no job turn', async () => {
+    await ownerAsks('m-1');
+    await stretch('parks');
+    const [task] = tasksOf('m-1');
+    await ownerAsks('m-2', 'how is it going?');
+    await stretch('answers', () => expect(engineHandIn(task, 'the hunt is finished', { outcome: 'cant_be_done' }).kind).toBe('handed_in'));
+    expect(rowOf(task).due).toBeNull();
+    expect(decide({ workId: task, deciderAgentId: null, verdict: 'send_back', reason: 'Two clues are still missing' }).kind).toBe('decided');
+    expect(nextOwed(HELPER).filter((i) => i.kind === 'job')).toEqual([]);
   });
 });
