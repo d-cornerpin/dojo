@@ -44,6 +44,8 @@ direct(id, how) AS (
      WHERE t.root_kind = 'a2a'
   UNION SELECT p.parent_id, 'root' FROM t JOIN work p ON p.root_kind = 'a2a_thread' AND p.root_id = t.root_id AND p.agent_id = @a
      AND p.parent_id IS NOT NULL AND p.opened_at < t.s_ms + 1000 WHERE t.root_kind = 'a2a'
+  UNION SELECT p.id, 'root' FROM t JOIN work p ON p.root_kind = 'a2a_thread' AND p.root_id = t.root_id AND p.assignee_agent = @a
+     AND p.opened_at < t.e_ms WHERE t.root_kind = 'a2a'
   UNION SELECT e.work_id, COALESCE(json_extract(e.payload, '$.how'), 'claimed') FROM t, mine w
      JOIN work_events e ON e.work_id = w.id AND e.kind = 'claim_turn' AND e.created_at >= t.s_ms - 1000
      WHERE json_extract(e.payload, '$.turn_number') = @n AND (w.kind = 'ask'
@@ -69,7 +71,7 @@ served(id, how) AS (
   UNION SELECT o.id, 'run' FROM direct s CROSS JOIN work o ON o.kind = 'occurrence' AND o.parent_id = s.id, t
     WHERE ${ACTED_SQL} AND o.opened_at < t.e_ms AND (o.closed_at IS NULL OR o.closed_at >= t.s_ms)
 )
-SELECT s.id, s.how, w.kind, COALESCE(w.assignee_agent, w.agent_id) AS holder
+SELECT s.id, s.how, CASE WHEN w.root_kind = 'a2a_thread' THEN 'piece' ELSE w.kind END AS kind, COALESCE(w.assignee_agent, w.agent_id) AS holder
   FROM served s LEFT JOIN work w ON w.id = s.id ORDER BY s.how = 'root' DESC, s.id, s.how`;
 
 /** Everything turn `turnNumber` of `agentId` served, with how; with `focus`, only what touches those rows of the agent. */

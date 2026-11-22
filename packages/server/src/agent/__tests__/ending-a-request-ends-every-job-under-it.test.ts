@@ -15,9 +15,10 @@ import { deliverA2AMessage } from '../a2a-transport.js';
 import { nextOwed } from '../v2/owed.js';
 import { initState } from '../v2/state.js';
 import { runDelegationTurnEnd } from '../v2/steps/execute/delegation-exit.js';
-import { openTurnContext, endTurnContext, turnContext } from '../turn-context.js';
+import { endTurnContext, turnContext } from '../turn-context.js';
 import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shared-state.js';
 import { runLadder, LADDER_ENTRY } from '../../work/done/ladder.js';
+import { liveTurn } from '../v2/__tests__/helpers/live-turn.js';
 import { testDb } from '../v2/__tests__/helpers/reply-sender.js';
 import { delegatedTextRequest, helperTask, relayRows, textsSent, HELPER, THREAD } from './helpers/text-relay.js';
 
@@ -31,7 +32,7 @@ const settled = async (): Promise<void> => { for (let i = 0; i < 6; i++) { await
 
 /** The helper's turn on the request hands a job on to the second helper, through the real send and the real turn end. */
 async function helperHandsOn(): Promise<void> {
-  Object.assign(openTurnContext(HELPER), { turnNumber: 1, kind: 'a2a', root: { kind: 'a2a', id: THREAD, sourceMessageId: null } });
+  liveTurn(HELPER, { turnNumber: 1, kind: 'a2a', root: { kind: 'a2a', id: THREAD, sourceMessageId: null } });
   activeRuns.add(HELPER);
   const sent = await deliverA2AMessage({ intent: 'ASSIGN', threadId: THREAD2, requiresResponse: true, payload: 'Check the hall too', toAgent: SECOND, fromAgent: HELPER } as never);
   testDb().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, message_id, outcome, created_at)
@@ -43,7 +44,7 @@ async function helperHandsOn(): Promise<void> {
   } as never);
   expect(step.directive, 'the helper goes on with its own work').toBe('proceed');
   endTurnContext(HELPER); activeRuns.delete(HELPER);
-  Object.assign(openTurnContext(SECOND), { turnNumber: 1, kind: 'a2a', root: { kind: 'a2a', id: THREAD2, sourceMessageId: null } });
+  liveTurn(SECOND, { turnNumber: 1, kind: 'a2a', root: { kind: 'a2a', id: THREAD2, sourceMessageId: null } });
   activeRuns.add(SECOND);
 }
 

@@ -1393,7 +1393,7 @@ export function endTheWorkUnder(workId: string, byOwner: boolean, actorId: strin
   if (w?.kind === 'ask' || !w?.helper) return;
   const jobs = (getDb().prepare("SELECT id FROM work WHERE kind = 'task' AND root_kind <> 'a2a_thread' AND agent_id = ? AND a2a_thread_id = ?")
     .all(w.helper, w.root) as Array<{ id: string }>).map((t) => t.id);
-  if (turnContext(w.helper)?.root?.id === w.root || serving(w.helper, jobs)) stopAgent(w.helper);
+  if (serving(w.helper, [workId, ...jobs])) stopAgent(w.helper);
 }
 
 /** When the engine gives up a request the asked agent never answered (its pickup past the budget), the asker

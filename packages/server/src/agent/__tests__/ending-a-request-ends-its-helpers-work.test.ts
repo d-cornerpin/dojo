@@ -24,7 +24,8 @@ import { nextOwed } from '../v2/owed.js';
 import { trackerHandlers } from '../tools/cat/tracker.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
-import { openTurnContext, endTurnContext } from '../turn-context.js';
+import { endTurnContext } from '../turn-context.js';
+import { liveTurn } from '../v2/__tests__/helpers/live-turn.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
 import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shared-state.js';
 import { runLadder, LADDER_ENTRY } from '../../work/done/ladder.js';
@@ -43,7 +44,7 @@ const helperPrompts = (): number => (testDb().prepare("SELECT COUNT(*) AS n FROM
 const cancelledByOwner = (): boolean => !!testDb().prepare(
   "SELECT 1 FROM work_events WHERE work_id = 'task-helper-1' AND kind = 'decided' AND actor = 'user' AND json_extract(payload, '$.verdict') = 'cancel'").get();
 /** The helper is in a turn on the request's thread. */
-const helperMidTurn = (): void => { Object.assign(openTurnContext(HELPER), { turnNumber: 1, root: { kind: 'a2a', id: THREAD, sourceMessageId: null } }); activeRuns.add(HELPER); };
+const helperMidTurn = (): void => { liveTurn(HELPER, { turnNumber: 1, root: { kind: 'a2a', id: THREAD, sourceMessageId: null } }); activeRuns.add(HELPER); };
 const settled = async (): Promise<void> => { await vi.dynamicImportSettled(); await vi.dynamicImportSettled(); };
 
 describe("ending a request ends its helpers' work", () => {
@@ -65,6 +66,14 @@ describe("ending a request ends its helpers' work", () => {
     expect(await deliverA2AMessage({ intent: 'ANSWER', threadId: THREAD, requiresResponse: false, payload: 'Free on the 14th.', toAgent: AGENT, fromAgent: HELPER } as never))
       .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
     expect(relayRows()).toEqual([]);
+  });
+
+  it('Stop while the helper answers a question it holds no task for: its turn on that piece is stopped', async () => {
+    testDb().prepare("DELETE FROM work WHERE id = 'task-helper-1'").run();
+    helperMidTurn();
+    expect(stopByOwner(AGENT)).toMatchObject({ ended: 1 });
+    await settled();
+    expect([pieceState(), isStopFenced(HELPER)]).toEqual(['abandoned', true]);
   });
 
   it('Stop while the helper works on it: the owner\'s Stop cancels its task and stops its turn, and nothing wakes it', async () => {
