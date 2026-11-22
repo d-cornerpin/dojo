@@ -10,7 +10,7 @@ import { getDb } from '../../db/connection.js';
 import { getPMAgentId, isPrimaryAgent } from '../../config/platform.js';
 import { ownerAskedInThisTurn } from '../row-authority.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
-import { transition, appendWorkEvent, isTerminal, askIdForMessage, type Actor, type WorkOutcome, type WorkState } from '../store.js';
+import { transition, appendWorkEvent, isTerminal, askIdForMessage, jobOfPieceSql, type Actor, type WorkOutcome, type WorkState } from '../store.js';
 import { taskScope, projectScope } from '../tracker-view.js';
 import { tellUnfinishedTasks } from './project-state.js';
 import { latestHandIn, workerOf, workersOf, unitOrRollback, recordAdjudication, OWNER_ID, ENGINE_ID } from './record.js';
@@ -144,9 +144,8 @@ function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): 
 /** A helper's piece called off ends the job on it in the same unit (`transition`'s cascade): the piece's end is the
  *  ground, recorded as the owner's when that end was his, else the engine's. */
 function endJobsOfPiece(pieceId: string, byOwner: boolean): void {
-  const jobs = getDb().prepare(`SELECT t.id, t.state FROM work p JOIN work t ON t.kind = 'task' AND t.root_kind <> 'a2a_thread'
-      AND t.agent_id = p.assignee_agent AND t.a2a_thread_id = p.root_id AND t.opened_at <= p.closed_at AND t.state NOT IN ('done', 'failed', 'abandoned')
-    WHERE p.id = ?`).all(pieceId) as Array<{ id: string; state: WorkState }>;
+  const jobs = getDb().prepare(`SELECT t.id, t.state FROM work p JOIN work t ON ${jobOfPieceSql('t', 'p')} AND t.opened_at <= p.closed_at
+      AND t.state NOT IN ('done', 'failed', 'abandoned') WHERE p.id = ?`).all(pieceId) as Array<{ id: string; state: WorkState }>;
   for (const t of jobs) {
     applyDecision(t.id, t.state, 'abandoned', { verdict: 'cancel', reason: 'the job it was for was called off', deciderId: byOwner ? OWNER_ID : ENGINE_ID, by: byOwner ? 'owner' : 'agent', outcome: 'cant_be_done', run: false });
   }

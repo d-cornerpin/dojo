@@ -2,7 +2,7 @@
 // resolved by what the row is; everything under it ends in `transition`'s cascade, in this one unit.
 import { getDb } from '../db/connection.js';
 import { afterCommit, withUnit } from '../db/unit.js';
-import { isTerminal, settlePieceWithoutResult, transition, type Actor, type PieceSettleResult } from './store.js';
+import { isTerminal, jobOfPieceSql, settlePieceWithoutResult, transition, type Actor, type PieceSettleResult } from './store.js';
 import { decide, refused, type DecideResult } from './done/decide.js';
 import { cardOfSql, requestParts } from './ask-settlement.js';
 import { clearReferencesToWork } from './work-refs.js';
@@ -40,9 +40,9 @@ export function callOff(workId: string, by: CallOffBy, reason: string): DecideRe
     const w = getDb().prepare(`SELECT w.kind, w.root_kind AS rootKind,
         (SELECT a.id FROM work a WHERE a.kind = 'ask' AND a.agent_id = w.requester_id AND a.root_id = w.source_message_id
            AND a.state NOT IN ('done', 'failed', 'abandoned')) AS request,
-        (SELECT COUNT(*) FROM work c WHERE c.kind = 'task' AND c.root_kind <> 'a2a_thread' AND c.requester_id = w.requester_id
-           AND c.source_message_id = w.source_message_id) AS cards,
-        (SELECT p.id FROM work p WHERE p.root_kind = 'a2a_thread' AND p.root_id = w.a2a_thread_id AND p.assignee_agent = w.agent_id
+        (SELECT COUNT(*) FROM work a JOIN work c ON ${cardOfSql('c', 'a')}
+          WHERE a.kind = 'ask' AND a.agent_id = w.requester_id AND a.root_id = w.source_message_id) AS cards,
+        (SELECT p.id FROM work p WHERE p.root_kind = 'a2a_thread' AND ${jobOfPieceSql('w', 'p')}
            AND p.state IN ('open', 'claimed', 'blocked') ORDER BY p.opened_at DESC LIMIT 1) AS piece
       FROM work w WHERE w.id = ?`).get(workId) as { kind: string; rootKind: string; request: string | null; cards: number; piece: string | null } | undefined;
     if (!w) return refused(`there is no work ${workId}.`);

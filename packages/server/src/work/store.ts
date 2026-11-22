@@ -428,6 +428,10 @@ export function firstServedAt(workId: string): number | null {
 export const abandonedBySql = (w: string, by: string): string => `EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = ${w}.id
   AND e.kind = 'transition' AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = '${by}')`;
 
+/** SQL: task `t` is the helper's own job on piece `p` (its board task on the piece's thread). */
+export const jobOfPieceSql = (t: string, p: string): string => `${t}.kind = 'task' AND ${t}.root_kind <> 'a2a_thread'
+  AND ${t}.agent_id = ${p}.assignee_agent AND ${t}.a2a_thread_id = ${p}.root_id`;
+
 /** SQL: a helper still works on a piece of request `w`; the engine's reaps never end such a request. */
 export const helperWorksOnSql = (w: string): string => `EXISTS (SELECT 1 FROM work x WHERE x.parent_id = ${w}.id
   AND x.root_kind = 'a2a_thread' AND x.state IN ('open', 'claimed', 'blocked'))`;
@@ -680,7 +684,6 @@ export function findJoinChildByThread(agentId: string, threadId: string): JoinCh
       FROM work
      WHERE agent_id = ? AND kind = 'task' AND root_kind = 'a2a_thread' AND root_id = ?
        AND parent_id IS NOT NULL AND state IN ${CHILD_OPEN_STATES}
-       AND NOT EXISTS (SELECT 1 FROM work p WHERE p.id = work.parent_id AND p.state = 'failed')
      ORDER BY opened_at DESC LIMIT 1
   `).get(agentId, threadId) as
     | { id: string; parent_id: string; agent_id: string; root_id: string; state: WorkState;

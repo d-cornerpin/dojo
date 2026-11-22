@@ -14,7 +14,7 @@ import {
 } from '../../memory/message-store.js';
 import { conversationIdentityOf, type ConversationIdentity } from '../../memory/conversations.js';
 import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
-import { abandonedBySql, askIdForMessage } from '../../work/store.js';
+import { abandonedBySql, askIdForMessage, jobOfPieceSql } from '../../work/store.js';
 import { spentRun, spentTask, spentWakeAsk } from './work-lineage.js';
 import { postAgentNotice } from '../agent-notice.js';
 import { spendServe } from './serve-later.js';
@@ -396,8 +396,8 @@ export const TERMINAL_WAKE_WINDOW_MS = 45 * 60_000;
 export const RESULT_FOR_ENDED_REQUEST = (m: string): string => `EXISTS (SELECT 1 FROM work p
   WHERE p.id = (SELECT n.id FROM work n WHERE (n.agent_id = ${m}.agent_id OR n.assignee_agent = ${m}.agent_id) AND n.root_kind = 'a2a_thread'
                   AND n.root_id = ${m}.a2a_thread_id ORDER BY n.opened_at DESC LIMIT 1)
-    AND p.state = 'abandoned' AND (NOT ${abandonedBySql('p', 'scheduler')} OR EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task'
-      AND t.root_kind <> 'a2a_thread' AND t.agent_id = p.assignee_agent AND t.a2a_thread_id = p.root_id AND t.state = 'abandoned' AND ${abandonedBySql('t', 'owner')})))`;
+    AND p.state = 'abandoned' AND (NOT ${abandonedBySql('p', 'scheduler')}
+      OR EXISTS (SELECT 1 FROM work t WHERE ${jobOfPieceSql('t', 'p')} AND t.state = 'abandoned' AND ${abandonedBySql('t', 'owner')})))`;
 export const resultForEndedRequest = (agentId: string, threadId: string): boolean => !!getDb().prepare(
   `SELECT 1 FROM (SELECT ? AS agent_id, ? AS a2a_thread_id) m WHERE ${RESULT_FOR_ENDED_REQUEST('m')}`).get(agentId, threadId);
 

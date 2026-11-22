@@ -32,7 +32,7 @@ import {
   dueJoinsUnderClosedParent,
   failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
-  extendJoinTtl,
+  extendJoinTtl, jobOfPieceSql,
   type JoinState, type JoinPiece, type PieceSettleResult,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
@@ -1382,16 +1382,16 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
 /** After an end commits, a live turn still serving the ended work stops: a piece's helper on that thread or job, and
  *  a request's asker when the owner ended it (never the turn that relayed his words). */
 export function endTheWorkUnder(workId: string, byOwner: boolean, actorId: string): void {
-  const w = getDb().prepare('SELECT kind, agent_id AS asker, assignee_agent AS helper, root_id AS root FROM work WHERE id = ?')
-    .get(workId) as { kind: string; asker: string; helper: string | null; root: string } | undefined;
+  const w = getDb().prepare('SELECT kind, agent_id AS asker, assignee_agent AS helper FROM work WHERE id = ?')
+    .get(workId) as { kind: string; asker: string; helper: string | null } | undefined;
   const serving = (agentId: string, ids: string[]): boolean => {
     const live = turnContext(agentId)?.turnNumber;
     return live !== undefined && servedBy(agentId, live).some((s) => ids.includes(s.id));
   };
   if (w?.kind === 'ask' && byOwner && actorId !== w.asker && serving(w.asker, [workId])) stopAgent(w.asker);
   if (w?.kind === 'ask' || !w?.helper) return;
-  const jobs = (getDb().prepare("SELECT id FROM work WHERE kind = 'task' AND root_kind <> 'a2a_thread' AND agent_id = ? AND a2a_thread_id = ?")
-    .all(w.helper, w.root) as Array<{ id: string }>).map((t) => t.id);
+  const jobs = (getDb().prepare(`SELECT t.id FROM work p JOIN work t ON ${jobOfPieceSql('t', 'p')} WHERE p.id = ?`)
+    .all(workId) as Array<{ id: string }>).map((t) => t.id);
   if (serving(w.helper, [workId, ...jobs])) stopAgent(w.helper);
 }
 
