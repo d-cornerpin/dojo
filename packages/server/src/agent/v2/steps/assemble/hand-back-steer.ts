@@ -1,9 +1,10 @@
 // A dead run's ask is handed back with what it left behind, and a delegated ask with its helpers' answers; both
 // reach the turn whose root is that ask, delivered whole through the drain, never gisted as an events-lane row.
-// The turn is also shown every other owed request of its conversation whose helper answered, since it sees those rows.
+// The turn is also shown every other request in its assembled view whose helper answered, since it sees those rows.
 import { askIdForMessage } from '../../../../work/store.js';
 import { handBackFactsFor } from '../../../../work/hand-back-facts.js';
 import { joinOrderFor } from '../../../a2a-transport.js';
+import { assembledContextAsks } from '../../counterparty.js';
 import { inheritedOwedListFor, INHERITED_NOTICE_INTENT } from '../../../../work/inherited-backlog.js';
 import { getDb } from '../../../../db/connection.js';
 import { steerFired } from '../../steer-queue.js';
@@ -16,7 +17,8 @@ export function withHandBackFacts(state: AgentTurnState, turnCtx: TurnContext, a
   const root = turnCtx.root;
   const askId = root?.kind === 'ask' && root.id ? askIdForMessage(root.id) : null;
   // The newest put-back of each request shown, every piece quoted whole.
-  const orders = (askId ? asksOfConversation(askId) : []).flatMap((id) => { const o = joinOrderFor(id); return o ? [{ askId: id, ...o }] : []; });
+  const inView = askId && turnCtx.convKey ? assembledContextAsks(agentId, turnCtx.convKey, new Date().toISOString()).map((a) => a.workId) : [];
+  const orders = (askId ? [askId, ...inView.filter((id) => id !== askId)] : []).flatMap((id) => { const o = joinOrderFor(id); return o ? [{ askId: id, ...o }] : []; });
   const key = orders.length > 0 ? orders.map((o) => o.putBackId).join(',') : undefined;   // a latch only; nothing parses it
   if (steerFired(state.steerQueue, 'handed-back-ask', key)) return state;
   const facts = [askId ? handBackFactsFor(askId) : inheritedListDrivingThisTurn(turnCtx), ...orders.map((o) => o.text)].filter(Boolean).join('\n\n');
@@ -25,13 +27,6 @@ export function withHandBackFacts(state: AgentTurnState, turnCtx: TurnContext, a
     agentId, content: facts, rowContent: orders.map((o) => o.firstLine).join('\n') || undefined, turnNumber, floor: 'handed-back-ask', key, atLoop: state.loopCount,
     shown: orders.map(({ askId: id, putBackId }) => ({ askId: id, putBackId })),
   }, { broadcast });
-}
-
-/** The root ask, then every other open or claimed ask of the same agent and conversation. */
-function asksOfConversation(askId: string): string[] {
-  return (getDb().prepare(`SELECT o.id FROM work r JOIN work o ON o.kind = 'ask' AND o.agent_id = r.agent_id AND (o.id = r.id
-    OR (o.conversation_id = r.conversation_id AND o.state IN ('open', 'claimed'))) WHERE r.id = ? ORDER BY o.id = r.id DESC, o.opened_at`)
-    .all(askId) as Array<{ id: string }>).map((r) => r.id);
 }
 
 /** The inherited list, only on the turn the notice row drives (its stored row holds ids only). */

@@ -15,6 +15,7 @@ import { claimAsk, stampClaimingTurn, openDelegationJoin } from '../../work/stor
 import { owedAtTurnEnd, recordPiecesShown, settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
 import { deliverA2AMessage } from '../a2a-transport.js';
 import { withHandBackFacts } from '../v2/steps/assemble/hand-back-steer.js';
+import { getWaitingHumanConversations } from '../v2/counterparty.js';
 import { initState } from '../v2/state.js';
 import { markSteerDelivered, nextSteer } from '../v2/steer-queue.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
@@ -27,7 +28,8 @@ const asks = () => testDb().prepare('SELECT id, state, result_delivery_id AS ans
 
 beforeEach(async () => {
   delegatedTextRequest();   // the first question, asked of the helper on THREAD by turn 1
-  insertMessage({ id: 'm-towels', agentId: AGENT, role: 'user', content: 'And ask her how many towels', channel: 'imessage', senderId: PERSON, conversationId: CONV });
+  insertMessage({ id: 'm-towels', agentId: AGENT, role: 'user', content: 'And ask her how many towels', channel: 'imessage', senderId: PERSON, conversationId: CONV,
+    inboundMeta: JSON.stringify({ channel: 'imessage', sender: PERSON, relation: 'known_contact' }) });
   claimAsk(TOWELS, AGENT);
   stampClaimingTurn(TOWELS, 2);
   await helperAnswers('1. Sunscreen 2. A hat 3. Water');   // lands on the first question while turn 2 runs
@@ -42,9 +44,11 @@ beforeEach(async () => {
 describe('two quick questions to one helper', () => {
   for (const [root, other] of [['m-ask', TOWELS], ['m-towels', ASK]] as const) {
     it(`the turn serving ${root} is shown both answers, and its one reply closes both`, () => {
+      // The turn's conversation key, read as the turn start reads it, before its own claim.
+      const convKey = getWaitingHumanConversations(AGENT)[0]!.key;
       claimAsk(`ask:${root}`, AGENT);
       stampClaimingTurn(`ask:${root}`, 3);
-      const turnCtx = { root: { kind: 'ask', id: root, sourceMessageId: root, conversationId: CONV } } as never;
+      const turnCtx = { root: { kind: 'ask', id: root, sourceMessageId: root, conversationId: CONV }, convKey } as never;
       const steered = withHandBackFacts(initState({ agentId: AGENT } as never), turnCtx, AGENT, 3);
       const entry = nextSteer(steered.steerQueue)!;
       expect(entry.content).toContain('Sunscreen');
