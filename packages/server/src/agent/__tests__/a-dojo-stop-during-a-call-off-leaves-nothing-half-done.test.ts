@@ -39,6 +39,20 @@ describe('a Dojo stop during a call-off leaves nothing half done', () => {
     expect(stateOf('task-helper-1')).toBe('abandoned');
   });
 
+  it('the update keeps the job of a helper the engine gave up on, and ends the one his call-off left', () => {
+    const update = (): void => { testDb().prepare("DELETE FROM _migrations WHERE name = '910_end_jobs_of_called_off_pieces.sql'").run(); runMigrations(); };
+    for (const by of ['scheduler', 'owner']) {
+      delegated();
+      const piece = pieceOf();
+      testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?").run(Date.now(), piece);
+      testDb().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'transition', ?, 'engine', ?)")
+        .run(piece, JSON.stringify({ from: 'open', to: 'abandoned', by }), Date.now());
+      testDb().prepare("UPDATE work SET state = 'failed', closed_at = ? WHERE id = ?").run(Date.now(), ASK);   // its request settled, the helper still working
+      update();
+      expect(stateOf('task-helper-1'), by).toBe(by === 'scheduler' ? 'claimed' : 'abandoned');
+    }
+  });
+
   it('the update leaves alone a job reused by a new piece on its thread', () => {
     delegated();
     testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?").run(Date.now(), pieceOf());
