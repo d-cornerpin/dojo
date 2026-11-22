@@ -4,7 +4,7 @@
 // for want of an answer, its pieces end,
 // nobody is touched, and a late answer still goes back to the agent for the person.
 // Stop with nothing running ends a request waiting on a helper even when a later turn served something else; Stop
-// while a turn runs ends only that turn's request.
+// while a turn runs ends only that turn's request, and the agent's next turn is told which request was stopped.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -29,6 +29,7 @@ import { openTurnContext, endTurnContext } from '../turn-context.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
 import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shared-state.js';
 import { runLadder, LADDER_ENTRY } from '../../work/done/ladder.js';
+import { assembleContext } from '../../memory/assembler.js';
 import { delegatedTextRequest, helperAnswers, helperTask, relayRows, requestState, HELPER, CONV, ASK, THREAD } from './helpers/text-relay.js';
 
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
@@ -111,7 +112,7 @@ describe("ending a request ends its helpers' work", () => {
     await helperToldOwnerEnded();
   });
 
-  it('Stop while a turn runs on a quick question leaves the request waiting on a helper alone', async () => {
+  it('Stop while a turn runs on a quick question leaves the request waiting on a helper alone and names the stopped one', async () => {
     const before = [requestState(), pieceState()];
     insertMessage({ id: 'm-quick', agentId: AGENT, role: 'user', content: 'What time is it in Tokyo?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
     claimAsk('ask:m-quick', AGENT);
@@ -121,6 +122,11 @@ describe("ending a request ends its helpers' work", () => {
     expect([requestState(), pieceState()]).toEqual(before);
     await settled();
     expect(helperTaskState()).toBe('claimed');
+    testDb().prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('p', 'P', 'anthropic', 'api_key')").run();
+    testDb().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES ('m', 'p', 'M', 'm-1', '["tools"]', 40000, 1)`).run();
+    insertMessage({ id: 'm-next', agentId: AGENT, role: 'user', content: 'And the weather?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
+    const { messages } = await assembleContext(AGENT, 'm');
+    expect(JSON.stringify(messages.at(-1)?.content)).toContain('your previous work on \\"What time is it in Tokyo?\\" was stopped');
   });
 
   it('a request whose helper\'s job ended unanswered fails, tells no helper, and a late answer goes back to the agent', async () => {
