@@ -26,14 +26,15 @@ export function ownerTexts(content: string): string {
   return id;
 }
 
-/** One ended turn of the main agent rooted on `root`; `work` runs inside it. Returns the turn's number. */
-export async function turn(root: Root, work: () => Promise<void> | void = () => {}): Promise<number> {
+/** One turn of the main agent rooted on `root`; `work` runs inside it. Returns the turn's number. `endRecorded` false:
+ *  the turn stops running without its end on record, as a throw past its end would leave it. */
+export async function turn(root: Root, work: () => Promise<void> | void = () => {}, endRecorded = true): Promise<number> {
   const t = ++n;
   db().prepare('INSERT INTO turns (agent_id, turn_number, started_at, answered, root_kind, root_id) VALUES (?, ?, ?, 0, ?, ?)')
     .run(MAIN, t, sqlNow(), root?.kind ?? null, root?.id ?? null);
   Object.assign(openTurnContext(MAIN), { turnNumber: t, root: root && { ...root, sourceMessageId: root.kind === 'ask' ? root.id : null } });
   try { await work(); } finally { endTurnContext(MAIN); }
-  db().prepare("UPDATE turns SET ended_at = ?, exit_reason = 'answered' WHERE agent_id = ? AND turn_number = ?").run(sqlNow(), MAIN, t);
+  if (endRecorded) db().prepare("UPDATE turns SET ended_at = ?, exit_reason = 'answered' WHERE agent_id = ? AND turn_number = ?").run(sqlNow(), MAIN, t);
   await vi.dynamicImportSettled();
   return t;
 }

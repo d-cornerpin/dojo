@@ -19,6 +19,7 @@ import { occurrenceOwesDeliverable } from './deliverable-declaration.js';
 import { proofDelivery } from './done/proof.js';
 import { bumpWorkAttempts } from './tracker-store.js';
 import { servedBy } from './task-turns.js';
+import { turnContext } from '../agent/turn-context.js';
 
 const logger = createLogger('occurrences');
 
@@ -112,11 +113,12 @@ export const RUN_STATUS_UNDELIVERED = 'undelivered';
 /** A run that owes a message and delivered it, or that was handed in during its own turn (delivered or not). */
 export interface RunReadyToClose { occurrenceId: string; taskId: string; deliveryId: string | null; handedIn: boolean }
 
-/** Is a turn that served this run still open: an open turn of its worker with the run in its served set. */
+/** Is a turn that served this run still running: the turn its worker is running now in this process, with the run in
+ *  its served set. A row nothing runs any more never holds a run. */
 export function runServedByOpenTurn(runId: string): boolean {
   const worker = (getDb().prepare('SELECT agent_id FROM work WHERE id = ?').get(runId) as { agent_id: string } | undefined)?.agent_id;
-  return !!worker && (getDb().prepare('SELECT turn_number AS n FROM turns WHERE agent_id = ? AND ended_at IS NULL').all(worker) as Array<{ n: number }>)
-    .some((t) => servedBy(worker, t.n).some((s) => s.id === runId));
+  const live = worker ? turnContext(worker)?.turnNumber : undefined;
+  return live !== undefined && servedBy(worker!, live).some((s) => s.id === runId);
 }
 
 /** Open runs that owe a message, no turn serving them still open, whose window holds it (`proofDelivery`) or that were handed in. */

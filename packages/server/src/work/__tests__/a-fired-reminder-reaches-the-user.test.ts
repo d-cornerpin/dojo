@@ -53,6 +53,8 @@ import {
 import { declareDeliverableOnSchedule } from '../deliverable-declaration.js';
 import { seedTrackerTask } from './work-fixture.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
+import { liveTurn } from '../../agent/v2/__tests__/helpers/live-turn.js';
+import { endTurnContext } from '../../agent/turn-context.js';
 
 const AGENT = FXID.n4;
 const CONV = 'conv-1';
@@ -281,8 +283,10 @@ describe('D6 — a run closes on the delivery whether or not anybody steered it'
   it('a run whose own turn is still RUNNING is not closed out from under it', () => {
     const run = claim();
     seedTurn(4621, { ended_at: null, exit_reason: null, root_id: run });
+    liveTurn(AGENT, { turnNumber: 4621 });   // the worker is running it now
     deliverInRun('d-real', 'agent-text', 4621, run);
     expect(runsReadyToCloseOnDelivery().map((r) => r.occurrenceId)).not.toContain(run);
+    endTurnContext(AGENT);
   });
 
   // ⚠ THE DRIVEN CATCH, PINNED. The first draft of the in-flight guard asked "does this AGENT
