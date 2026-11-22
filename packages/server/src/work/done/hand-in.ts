@@ -55,11 +55,13 @@ function rowRefusal(row: DoorRow, by: HandInBy): string | null {
   return by.because.trim() === '' ? `An engine hand-in of ${label(row)} must say why the engine is handing it in.` : null;
 }
 
-/** Was a line these items cite already handed in, and so judged, for the task's newest run? */
-const judgedForItsRun = (workId: string, items: readonly ProofItemInput[]): boolean => !!getDb().prepare(
+/** Does a line these items cite stand judged for the task's newest run: handed in for it, and not sent back since? */
+export const judgedForItsRun = (workId: string, items: readonly ProofItemInput[]): boolean => !!getDb().prepare(
   `SELECT 1 FROM work_events h, json_each(h.payload, '$.items') i WHERE h.work_id = ? AND h.kind = 'handed_in'
       AND h.created_at >= (SELECT MAX(o.opened_at) FROM work o WHERE o.parent_id = h.work_id AND o.kind = 'occurrence')
-      AND json_extract(i.value, '$.kind') = 'delivery' AND json_extract(i.value, '$.ref') IN (SELECT value FROM json_each(?))`,
+      AND json_extract(i.value, '$.kind') = 'delivery' AND json_extract(i.value, '$.ref') IN (SELECT value FROM json_each(?))
+      AND NOT EXISTS (SELECT 1 FROM work_events b WHERE b.work_id = h.work_id AND b.kind = 'decided' AND b.id > h.id
+        AND json_extract(b.payload, '$.verdict') = 'send_back')`,
 ).get(workId, JSON.stringify(items.filter((i) => i.kind === 'delivery').map((i) => i.ref)));
 
 const refused = (row: DoorRow | undefined, whys: string[]): HandInResult => ({
@@ -86,7 +88,7 @@ export function handIn(input: HandInInput): HandInResult {
   if (left > 0) whys.push(`Its measure still lists ${left} item${left === 1 ? '' : 's'}, so it is not finished. Finish them, or hand it in as can't be done with a remainder item naming them and why.`);
   const proof = checkProof(row.id, row.worker, input.outcome, input.items, engine);
   if (!proof.ok) whys.push(...proof.refusals.map((r) => r.why));
-  else if (judgedForItsRun(row.id, proof.items)) whys.push("This line was already judged for this run; cite another line or hand it in as can't be done.");
+  else if (judgedForItsRun(row.id, proof.items)) whys.push("This line was already judged for this run and no decider sent it back; cite another line or hand it in as can't be done.");
   if (!proof.ok || whys.length > 0) {
     appendWorkEvent(row.id, 'hand_in_refused', filedBy, { outcome: input.outcome, reasons: whys.map((w) => redactHandedCredentials(row.worker, w)) });
     return refused(row, whys);
