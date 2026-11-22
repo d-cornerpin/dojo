@@ -24,7 +24,7 @@ import { broadcast } from '../gateway/ws.js';
 import { announceAgentLiveWork, serveLater } from '../agent/v2/serve-later.js';
 import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import {
-  abandonedBySql, appendWorkEvent, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState, stampClaimingTurn,
+  abandonedBySql, appendWorkEvent, jobOfPieceSql, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState, stampClaimingTurn,
   transition,
   type WorkState,
 } from './store.js';
@@ -457,10 +457,11 @@ export function requestEnded(ask: AskRow | string): 'called_off' | 'failed' | nu
 export const cardOfSql = (c: string, a: string): string =>
   `${c}.kind = 'task' AND ${c}.root_kind <> 'a2a_thread' AND ${c}.requester_id = ${a}.agent_id AND ${c}.source_message_id = ${a}.root_id`;
 
-/** What is left of request `askId`'s parts (its helpers' pieces, the cards its agent holds, its pictures and songs): one
- *  still works, every one was ended by the owner, or neither. A card moved to a helper is that helper's job: its piece. */
+/** What is left of request `askId`'s parts (its helpers' pieces, its cards, its pictures and songs): one still works,
+ *  every one was ended by the owner, or neither. A card that is a piece's job is stood for by that piece. */
 export function requestParts(askId: string): 'working' | 'his' | 'ended' {
-  const part = `((x.parent_id = a.id AND x.root_kind = 'a2a_thread') OR (${heldCardSql('x', 'a')}))`;
+  const part = `((x.parent_id = a.id AND x.root_kind = 'a2a_thread') OR (${cardOfSql('x', 'a')} AND NOT EXISTS (SELECT 1 FROM work p
+    WHERE p.parent_id = a.id AND p.root_kind = 'a2a_thread' AND ${jobOfPieceSql('x', 'p')})))`;
   const media = (cond: string): string => ['generation_jobs', 'video_jobs']
     .map((t) => `EXISTS (SELECT 1 FROM ${t} g WHERE g.source_message_id = a.root_id AND ${cond})`).join(' OR ');
   const r = getDb().prepare(`SELECT EXISTS (SELECT 1 FROM work x WHERE ${part} AND x.state NOT IN ('done', 'failed', 'abandoned', 'handed_in'))
@@ -881,11 +882,10 @@ function handInCardsOf(ask: AskRow, deliveryId: string, agentsCards: boolean): v
   if (ids.length > 0) handInOnDelivery(ask.agent_id, async () => ids, 'the request this task was opened for was answered', deliveryId);
 }
 
-/** SQL: task `t` is a card the agent of request `a` holds for it (opened for its message). */
-const heldCardSql = (t: string, a: string): string => `${t}.kind = 'task' AND ${t}.agent_id = ${a}.agent_id AND ${t}.source_message_id = ${a}.root_id`;
 /** A tracker task `t` linked to the request of ask `a` by its message, not ended and not handed in. */
 export const LINKED_OPEN_TASK = (a: string): string =>
-  `${heldCardSql('t', a)} AND t.state NOT IN ('done', 'failed', 'abandoned') AND ${handedInExpr('t')} = 0`;
+  `t.kind = 'task' AND t.agent_id = ${a}.agent_id AND t.source_message_id = ${a}.root_id`
+  + ` AND t.state NOT IN ('done', 'failed', 'abandoned') AND ${handedInExpr('t')} = 0`;
 
 /** The open task linked to `agentId`'s request `messageId`, or null; with `ownerHeldEnds` a task the owner holds
  *  counts as ended. */

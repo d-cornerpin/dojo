@@ -96,4 +96,17 @@ describe('one part ended while another works: the request goes on', () => {
     expect([endedBy('card-1'), stateOf(ASK)]).toEqual([{ state: 'abandoned', by: 'owner' }, 'blocked']);
     expect(testDb().prepare("SELECT state FROM work WHERE id = 'card-2'").get()).toEqual({ state: 'claimed' });
   });
+
+  it('his agent hands one of its two cards to a second agent, then the owner cancels the other: the handed card goes on', async () => {
+    delegated();
+    testDb().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, 'Second', 'idle', 'standard')").run(SECOND);
+    task('card-a'); task('card-b');
+    const moved = await call(AGENT, 'work_update', { action: 'reassign', task_id: 'card-b', assigned_to: SECOND, cause: 'coordination' });
+    expect(moved.isError, String(moved.content)).toBeFalsy();
+    await helperAnswers('The venue is free on the 14th.');
+    await settled();
+    expect(await boardCancel('card-a')).toBe(200);
+    await settled();
+    expect([stateOf(ASK) === 'abandoned', stateOf('card-b')]).toEqual([false, 'claimed']);
+  });
 });
