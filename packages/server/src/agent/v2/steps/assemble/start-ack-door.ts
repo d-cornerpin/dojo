@@ -60,10 +60,9 @@ export function runStartAckLadder(
   input: StartAckDoorInput & { readonly startAckRepliedNow: () => boolean },
 ): AgentTurnState {
   const { agentId, turnNumber, turnCtx, engineStartAckDeliveredThisTurn, startAckRepliedNow } = input;
-  // "Heard" also counts a working note the person was shown and the delivered start line.
+  // A line is owed only to a person waiting on the turn (the timer is armed only for one); "heard" counts a shown note or start line.
   const shownALine = (): boolean => personShownALineThisTurn(agentId, turnNumber);
 
-  // A requested line is owed only to a person waiting on this turn: the start-line timer is armed only for one.
   if (turnCtx.startAckSteerRequested && turnCtx.startAckTimer !== null && startAckDoorOpen(turnCtx, engineStartAckDeliveredThisTurn)
       && !shownALine() && !startAckRepliedNow()) {
     state = armStartAck(state, input);
