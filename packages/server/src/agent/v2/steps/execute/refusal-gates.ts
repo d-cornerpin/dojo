@@ -1,5 +1,5 @@
 // The gates that can refuse a call before it runs: the reminder-delivery lane, the main agent's warn-once
-// hurdle, the repeat-send stop and the start-line hold, plus the hoarding advisory, which refuses nothing.
+// hurdle, the repeat-send stop, the never-mind hold and the start-line hold, plus the hoarding advisory, which refuses nothing.
 // A refusal comes back as `{ state, refusal }` and `run-one.ts` returns it as the call's result.
 
 import { broadcast } from '../../../../gateway/ws.js';
@@ -18,6 +18,8 @@ import { getDb } from '../../../../db/connection.js';
 import { SENT_TEXT_MAX_CHARS } from '../../../../receipts/store.js';
 import { recipientIdsMatch } from '../../../recipient-identity.js';
 import { outboundRecipientForTool } from '../../outbound.js';
+import { resolveAgentRef, resolveAgentDisplayName } from '../../../tool-helpers.js';
+import { ownerWords, ROW_COLS } from '../../../../tracker/owner-words.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { ToolCall } from '@dojo/shared';
 import type { ExecuteContext, PendingToolResult } from './index.js';
@@ -64,6 +66,24 @@ function repeatSend(agentId: string, tc: ToolCall, turnCtx: TurnContext, refused
     + `message to ${recipient} for this request. If you mean to send it again, repeat the exact same call now and it will go.` };
 }
 
+/** "Never mind", with no model: in a turn on the owner's new message, the main agent's first message (not a new job)
+ *  to a helper still working another of his requests is held once, naming that request and the door that ends it. */
+function neverMindHold(agentId: string, tc: ToolCall, turnCtx: TurnContext, refusedOnceSigs: Set<string>): PendingToolResult | null {
+  const a = (tc.arguments ?? {}) as Record<string, unknown>;
+  const helper = tc.name === 'send_to_agent' && String(a.intent).toUpperCase() !== 'ASSIGN' ? resolveAgentRef(String(a.agent ?? '')) : null;
+  if (!helper?.ok || !isPrimaryAgent(agentId) || turnCtx.root?.kind !== 'ask' || !turnCtx.address?.isOwner || refusedOnceSigs.has('never-mind')) return null;
+  const other = (getDb().prepare(`SELECT a.id, a.title, m.* FROM work p JOIN work a ON a.id = p.parent_id AND a.kind = 'ask' AND a.id <> ?
+      AND a.state IN ('blocked', 'claimed', 'open') JOIN (SELECT id AS mid, ${ROW_COLS} FROM messages) m ON m.mid = a.root_id
+    WHERE p.root_kind = 'a2a_thread' AND p.agent_id = ? AND p.assignee_agent = ? AND p.state IN ('open', 'claimed', 'blocked') ORDER BY p.opened_at DESC`)
+    .all(`ask:${turnCtx.root.id}`, agentId, helper.id) as Array<Parameters<typeof ownerWords>[0] & { id: string; title: string | null }>).find((r) => ownerWords(r, 0) !== null);
+  if (!other) return null;
+  refusedOnceSigs.add('never-mind');
+  const name = resolveAgentDisplayName(helper.id) ?? 'that helper';
+  return { toolCallId: tc.id, name: tc.name, isError: true, content: `[Engine: not sent yet] ${name} is working on his earlier request "${other.title ?? other.id}" [${other.id}]. `
+    + `If his message calls it off, end it with work_close_request(id="${other.id}", disposition="dropped", note=<his exact words>): the Dojo stops ${name} `
+    + 'and cancels the job, and nothing more comes back. If not, send your message again; it will go.' };
+}
+
 /** `refusal` non-null means the call does NOT run and this is its result. */
 export function runRefusalGates(
   state: AgentTurnState,
@@ -80,7 +100,7 @@ export function runRefusalGates(
   }
   const warning = hurdle(agentId, tc, refusedOnceSigs);
   if (warning) return { state, refusal: warning };
-  const repeated = repeatSend(agentId, tc, turnCtx, refusedOnceSigs);
+  const repeated = repeatSend(agentId, tc, turnCtx, refusedOnceSigs) ?? neverMindHold(agentId, tc, turnCtx, refusedOnceSigs);
   if (repeated) return { state, refusal: repeated };
 
   // Reminder lane: a turn serving a kind='reminder' task delivers to whoever asked for it (the owner when no one

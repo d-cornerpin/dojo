@@ -37,7 +37,9 @@ import {
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, linkedTaskOf, CALLED_OFF_BY_OWNER, type PutBackKind } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, endedByHim, type PutBackKind } from '../work/ask-settlement.js';
+import { callOff, OWNER } from '../work/call-off.js';
+import { servedBy } from '../work/task-turns.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
 import { afterCommit, withUnit } from '../db/unit.js';
 import { serveLater } from './v2/serve-later.js';
@@ -1076,13 +1078,12 @@ function applyDeclaredHandOff(
   };
 }
 
-/** The countdown reached zero: nothing came back, the fail-closed notice, unless the owner called off every one of
- *  its pieces, which ends the request as his with nobody told; else the answer goes back to the agent. */
-async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
+/** The countdown reached zero: nothing came back, the fail-closed notice, unless the owner called off every part of
+ *  it, which ends the request as his with nobody told; else the answer goes back to the agent. */
+export async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
-    if (!getDb().prepare(`SELECT 1 FROM work c WHERE c.parent_id = ? AND NOT (${CALLED_OFF_BY_OWNER('c')} OR EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task'
-        AND t.agent_id = c.assignee_agent AND t.a2a_thread_id = c.root_id AND t.closed_at >= c.opened_at AND ${CALLED_OFF_BY_OWNER('t')}))`).get(join.id)) {
-      transition(join.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: join.parentState, reason: 'the owner called off the work it waited on' });
+    if (endedByHim(join.id)) {
+      callOff(join.id, OWNER, 'the owner called off the work it waited on');
       return;
     }
     const failReason = joinFailureReason(joinPieces(join.id));
@@ -1359,6 +1360,11 @@ export async function sweepExpiredJoins(): Promise<{ failedClosed: number; relay
 export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; failedClosed: number; leftOpen: number }> {
   const out = { relayedReplies: 0, failedClosed: 0, leftOpen: 0 };
   const joins = openJoins(JOIN_BOOT_BATCH);
+  // A job left open under a piece called off before the cascade ended them together ends now (`endJobsOfPiece`).
+  const { endJobsOfPiece } = await import('../work/done/decide.js');
+  for (const p of getDb().prepare(`SELECT p.id, EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = p.id AND e.kind = 'transition'
+      AND json_extract(e.payload, '$.by') = 'owner') AS his FROM work p WHERE p.root_kind = 'a2a_thread' AND p.state = 'abandoned'`)
+    .all() as Array<{ id: string; his: number }>) endJobsOfPiece(p.id, p.his === 1);
   for (const join of joins) {
     try {
       const outcome = await resolveOpenJoin(join);
@@ -1377,28 +1383,20 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
   return out;
 }
 
-/** Work was called off: a piece's helper stops its turn on that work and its task is cancelled; a request's asker has
- *  its own task for it cancelled and, when the owner ended it, its turn still serving it stopped. As his when the owner's. */
-export async function endTheWorkUnder(workId: string, byOwner: boolean): Promise<void> {
-  const { decide } = await import('../work/done/decide.js');
+/** After an end commits, a live turn still serving the ended work stops: a piece's helper on that thread or job, and
+ *  a request's asker when the owner ended it (never the turn that relayed his words). */
+export function endTheWorkUnder(workId: string, byOwner: boolean, actorId: string): void {
   const w = getDb().prepare('SELECT kind, agent_id AS asker, assignee_agent AS helper, root_id AS root FROM work WHERE id = ?')
     .get(workId) as { kind: string; asker: string; helper: string | null; root: string } | undefined;
-  if (!w) return;
-  const cancel = (task: string | null | undefined): void => {
-    if (task) decide({ workId: task, deciderAgentId: byOwner ? null : w.asker, verdict: 'cancel', reason: `the request it was for was called off${byOwner ? ' by the owner' : ''}` });
+  const serving = (agentId: string, ids: string[]): boolean => {
+    const live = turnContext(agentId)?.turnNumber;
+    return live !== undefined && servedBy(agentId, live).some((s) => ids.includes(s.id));
   };
-  if (w.kind === 'ask') {
-    const live = turnContext(w.asker);
-    if (byOwner && live?.root?.kind === 'ask' && live.root.id === w.root) stopAgent(w.asker);
-    return cancel(linkedTaskOf(w.asker, w.root));
-  }
-  if (!w.helper) return;
-  const task = (getDb().prepare(
-    "SELECT id FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ? AND state NOT IN ('done','failed','abandoned')",
-  ).get(w.helper, w.root) as { id: string } | undefined)?.id;
-  const live = turnContext(w.helper);
-  if (live && [live.root?.id, live.servedJob, live.servedWork?.taskId].some((t) => t === w.root || (!!task && t === task))) stopAgent(w.helper);
-  cancel(task);
+  if (w?.kind === 'ask' && byOwner && actorId !== w.asker && serving(w.asker, [workId])) stopAgent(w.asker);
+  if (w?.kind === 'ask' || !w?.helper) return;
+  const jobs = (getDb().prepare("SELECT id FROM work WHERE kind = 'task' AND root_kind <> 'a2a_thread' AND agent_id = ? AND a2a_thread_id = ?")
+    .all(w.helper, w.root) as Array<{ id: string }>).map((t) => t.id);
+  if (turnContext(w.helper)?.root?.id === w.root || serving(w.helper, jobs)) stopAgent(w.helper);
 }
 
 /** When the engine gives up a request the asked agent never answered (its pickup past the budget), the asker
@@ -1427,20 +1425,18 @@ export async function failJoinPieceForAbandonedAsk(
 }
 
 /** End a piece as abandoned; a request still open whose last piece this was is answered or told, once. */
-async function abandonPiece(childId: string, reason: string, actorId: string | null, by?: 'owner'): Promise<PieceSettleResult> {
-  const s = settlePieceWithoutResult(childId, { to: 'abandoned', reason, actorId, by });
+async function abandonPiece(childId: string, reason: string, actorId: string | null): Promise<PieceSettleResult> {
+  const s = settlePieceWithoutResult(childId, { to: 'abandoned', reason, actorId });
   if (s.result.kind === 'applied' && s.join.complete && !isTerminal(s.join.parentState)) await resolveCompletedJoin(s.join, resolveAgentDisplayName(actorId) ?? undefined);
   return s;
 }
 
-/** A helper's work changed (its task ended or was deleted, the owner was carded, the helper ended): judge now every open
- *  request with a piece assigned to it or on that thread. The agent or thread bounds it: no age floor, no row limit.
- *  The owner's own end of that work first calls off the helper's open pieces (on that thread) as his. */
-export async function judgeKeptRequests(agentId: string, threadId: string | null = null, byOwner = false): Promise<void> {
+/** A helper's work changed (its task ended, the owner was carded, the helper ended): judge now every open request with a
+ *  piece assigned to it or on that thread. The agent or thread bounds it: no age floor, no row limit. */
+export async function judgeKeptRequests(agentId: string, threadId: string | null = null): Promise<void> {
   try {
-    const pieces = getDb().prepare(`SELECT id, parent_id AS ask, assignee_agent AS helper, root_id AS thread FROM work WHERE kind = 'task' AND root_kind = 'a2a_thread'
-        AND parent_id IS NOT NULL AND state IN ('open', 'claimed', 'blocked') AND (assignee_agent = ? OR root_id = ?)`).all(agentId, threadId) as Array<{ id: string; ask: string; helper: string | null; thread: string }>;
-    for (const p of pieces) if (byOwner && p.helper === agentId && (threadId === null || p.thread === threadId)) await abandonPiece(p.id, 'its helper\'s work was called off by the owner', 'owner', 'owner');
+    const pieces = getDb().prepare(`SELECT parent_id AS ask FROM work WHERE kind = 'task' AND root_kind = 'a2a_thread'
+        AND parent_id IS NOT NULL AND state IN ('open', 'claimed', 'blocked') AND (assignee_agent = ? OR root_id = ?)`).all(agentId, threadId) as Array<{ ask: string }>;
     for (const id of new Set(pieces.map((p) => p.ask))) {
       const j = joinState(id);
       if (j && !isTerminal(j.parentState)) await resolveOpenJoin(j);

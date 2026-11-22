@@ -24,7 +24,7 @@ import { deliverDueReplies } from '../v2/channel-sender.js';
 import { writeAgentStatus } from '../agent-status.js';
 import { decide } from '../../work/done/decide.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
-import { deleteTrackerRow } from '../../work/tracker-store.js';
+import { deleteTrackerRow } from '../../work/call-off.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
 import { setHold } from '../../work/done/hold.js';
 import { runLadder } from '../../work/done/ladder.js';

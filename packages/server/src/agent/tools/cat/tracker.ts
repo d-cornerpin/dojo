@@ -25,6 +25,7 @@ import { turnContext } from '../../turn-context.js';
 import { checkRequired, friendlyDbError, pauseActionMissing } from '../../tool-helpers.js';
 import { terminalDeliveryForTurn } from '../../v2/answered-edge.js';
 import { openCommitment, resolveCommitment, dismissCommitment, findObligationByTypedId } from '../../../work/store.js';
+import { callOff } from '../../../work/call-off.js';
 import { moveAssignee } from '../../../work/row-authority.js';
 import { inheritedAskDoor } from '../../../work/inherited-backlog.js';
 import { resolveTaskId, resolveProjectId, formatResolveError } from '../../../tracker/schema.js';
@@ -487,21 +488,18 @@ const tableOfHandlers: ToolHandlerMap = {
         isError = true;
         return { content, isError };
       }
-      // Only the person's own words call a request off: the owner's, or those of whoever sent it.
+      // Only the person's own words call a request off: the owner's (his, for good), or those of whoever sent it.
       const asked = getDb().prepare('SELECT sent_at, sender_id FROM messages WHERE id = (SELECT root_id FROM work WHERE id = ?)')
         .get(crRow.id) as { sent_at: number; sender_id: string | null } | undefined;
-      if (!asked || !ownerSaidSince(asked.sent_at, normalizeQuote(crNote), agentId, { sender: asked.sender_id })) {
+      const his = !!asked && ownerSaidSince(asked.sent_at, normalizeQuote(crNote), agentId);
+      if (!asked || (!his && !ownerSaidSince(asked.sent_at, normalizeQuote(crNote), agentId, { sender: asked.sender_id }))) {
         content = 'Not dropped: quote what they said when they called it off, word for word, as the note.';
         isError = true;
         return { content, isError };
       }
-      const withdrawn = dismissCommitment(crRow.id, { agentId, reason: `cancelled by the user: ${crNote}` });
-      if (withdrawn.kind === 'applied') {
-        content = `[OK] Dropped: ${crRow.title ?? crRow.id} — recorded as cancelled by the user, not answered.`;
-      } else {
-        content = `Error: could not drop ${crRow.id} (${withdrawn.kind}).`;
-        isError = true;
-      }
+      const withdrawn = callOff(crRow.id, his ? { deciderAgentId: null, via: agentId } : { deciderAgentId: agentId }, `cancelled by the user: ${crNote}`);
+      content = withdrawn.kind === 'decided' ? `[OK] Dropped: ${crRow.title ?? crRow.id} — recorded as cancelled by the user, not answered.` : `Error: could not drop ${crRow.id} (${withdrawn.text}).`;
+      isError = withdrawn.kind !== 'decided';
       return { content, isError };
     }
     if (String(args.disposition) === 'dropped') {
@@ -539,10 +537,10 @@ const tableOfHandlers: ToolHandlerMap = {
     if (err) return { content: err, isError: true };
     const r = resolveAnyBoardId(String(args.task_id), agentId);
     if (!r.ok) return { content: r.text, isError: true };
-    const out = decide({
-      workId: r.id, deciderAgentId: agentId, verdict: String(args.verdict) as Verdict, reason: typeof args.reason === 'string' ? args.reason : '',
-      ownerQuote: typeof args.user_quote === 'string' ? args.user_quote : undefined,
-    });
+    const reason = typeof args.reason === 'string' ? args.reason : '';
+    const ownerQuote = typeof args.user_quote === 'string' ? args.user_quote : undefined;
+    const out = args.verdict === 'cancel' ? callOff(r.id, { deciderAgentId: agentId, ownerQuote }, reason)
+      : decide({ workId: r.id, deciderAgentId: agentId, verdict: String(args.verdict) as Verdict, reason, ownerQuote });
     return { content: out.text, isError: out.kind === 'refused' };
   },
 

@@ -6,7 +6,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { setConfigValue } from '../config/config-value.js';
 import { createLogger } from '../logger.js';
-import { appendWorkEvent, dismissCommitment, transition } from './store.js';
+import { appendWorkEvent, transition } from './store.js';
+import { callOff } from './call-off.js';
 import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { ageInWords } from './hand-back-facts.js';
 import { INHERITED_BACKLOG_MARKER, REPLY_IN_FLIGHT, settleAsk } from './ask-settlement.js';
@@ -151,8 +152,8 @@ export function inheritedAskDoor(workId: string, disposition: string, note: stri
     return { isError: true, content: `Not dropped: pass \`note\` with your own reason why ${workId} no longer needs an answer. `
       + 'It goes on the record as your judgement (nobody called it off).' };
   }
-  const r = dismissCommitment(workId, { agentId, reason: `no longer needs an answer — the agent's judgement on an inherited message (nobody called it off): ${note}` });
-  return r.kind === 'applied'
+  const r = callOff(workId, { deciderAgentId: agentId }, `no longer needs an answer — the agent's judgement on an inherited message (nobody called it off): ${note}`);
+  return r.kind === 'decided'
     ? { isError: false, content: `[OK] Stood down: ${workId} — recorded as your judgement that it no longer needs an answer, not as answered.` }
-    : { isError: true, content: `Error: could not stand down ${workId} (${r.kind}).` };
+    : { isError: true, content: `Error: could not stand down ${workId} (${r.text}).` };
 }

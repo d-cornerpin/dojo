@@ -138,7 +138,7 @@ vi.mock('../../logger.js', () => {
 });
 
 import { runMigrations } from '../../db/migrations.js';
-import { deleteTrackerRow } from '../tracker-store.js';
+import { deleteTrackerRow } from '../call-off.js';
 import { deleteAllWorkForAgent } from '../purge-sweep.js';
 import { deleteOccurrencesOf, OCCURRENCE_KIND } from '../occurrences.js';
 
@@ -190,7 +190,7 @@ const HELPER_CALL_RE = /clearReferencesToWork\(\s*[^)\s]/;
 const DRIVERS: Record<string, string> = {
   'work/occurrences.ts': 'deleteOccurrencesOf',
   'work/purge-sweep.ts': 'deleteAllWorkForAgent',
-  'work/tracker-store.ts': 'deleteTrackerRow',
+  'work/call-off.ts': 'deleteTrackerRow',
 };
 
 // ── THE FIXTURE: ONE BODY CARRYING ALL FOUR REFERENCES AT ONCE ───────────────────────────
