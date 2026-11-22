@@ -16,7 +16,6 @@ interface SourceRow {
   a2a_intent: string | null; a2a_requires_response: number | null; inbound_meta: string | null; origin_intent: string | null;
   conversation_id: string | null; sender_id: string | null; sent_at: number;
 }
-export type SourceRowLike = Omit<SourceRow, 'id' | 'conversation_id' | 'sent_at'>;
 
 /** The task's asker. */
 export function askerOf(taskId: string): Asker {
@@ -66,12 +65,4 @@ export function deliveredToAsker(
 export function sendReachesAsker(taskId: string, recipients: readonly string[]): boolean {
   const a = askerOf(taskId);
   return a.kind === 'agent' && a.id !== null && recipients.length > 0 && recipients.every((r) => agentIdOf(r) === a.id);
-}
-
-/** Is this inbound message (role user, in the worker's store) from the asker? */
-export function writtenByAsker(a: Asker, m: SourceRowLike, openedAt: number): boolean {
-  if (a.kind === 'agent') return a.id !== null && m.source_agent_id === a.id;
-  if (m.source_agent_id !== null) return false;
-  if (a.senderId && m.sender_id && m.channel === a.channel && addressesMatch(a.senderId, m.sender_id)) return true;
-  return a.owner && ownerWords(m, openedAt) !== null;
 }

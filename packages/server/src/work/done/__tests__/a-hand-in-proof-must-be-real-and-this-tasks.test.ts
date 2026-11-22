@@ -1,8 +1,8 @@
 // The one proof check. A hand-in's proof is a list of references the engine resolves against its own
 // rows, never prose. Each item must be real (its row exists), made by this worker and made after the
 // task was opened. A status claim never resolves, a worker's own message is shown for exactly what it
-// is ("the worker's own message to the asker"), and the can't-be-done kinds (failure, remainder,
-// withdrawal) never prove a task finished. `proofFor` is the engine's finder, held to the same rule.
+// is ("the worker's own message to the asker"), and the can't-be-done kinds (failure, remainder)
+// never prove a task finished. `proofFor` is the engine's finder, held to the same rule.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import crypto from 'node:crypto';
@@ -127,7 +127,7 @@ describe('a hand-in proof must be real and this task\'s', () => {
     expect(refusal(finished([]))).toMatch(/no proof items/);
   });
 
-  it('refuses a can\'t be done hand-in whose only item is a delivery (no failure, remainder or withdrawal)', () => {
+  it('refuses a can\'t be done hand-in whose only item is a delivery (no failure or remainder)', () => {
     delivery('d1');
     expect(refusal(cantBeDone([{ kind: 'delivery', ref: 'd1' }]))).toMatch(/can't be done.*needs/i);
   });
@@ -242,21 +242,6 @@ describe('a hand-in proof must be real and this task\'s', () => {
     expect(refusal(cantBeDone([{ kind: 'failure', ref: 'a-err' }]))).toContain('a-err');
   });
 
-  it('refuses a withdrawal written by someone who is not the asker', () => {
-    askedByAgent();
-    message('m-stranger', { role: 'user', lane: 'a2a', from: STRANGER, content: 'We no longer need the report, drop it.' });
-    const why = refusal(cantBeDone([{ kind: 'withdrawal', ref: 'm-stranger' }]));
-    expect(why).toContain('m-stranger');
-    expect(why).toMatch(/not from the asker/);
-  });
-
-  it('accepts a withdrawal from the agent that asked, written after the start', () => {
-    askedByAgent();
-    message('m-asker', { role: 'user', lane: 'a2a', from: ASKER_AGENT, content: 'We no longer need the report, drop it.' });
-    const r = cantBeDone([{ kind: 'withdrawal', ref: 'm-asker' }]);
-    expect(r.ok).toBe(true);
-  });
-
   it('refuses an engine acknowledgement as a delivery', () => {
     delivery('d-ack', { tool: 'engine-ack', text: 'On it: the 12-section report.' });
     expect(refusal(finished([{ kind: 'delivery', ref: 'd-ack' }]))).toMatch(/engine's own line or acknowledgement/);
@@ -282,43 +267,12 @@ describe('a hand-in proof must be real and this task\'s', () => {
       .toMatch(/already listed in this hand-in/);
   });
 
-  it('refuses a withdrawal that is the request the task was opened for', () => {
-    askedByAgent();
-    message('m-src', { role: 'user', lane: 'a2a', from: ASKER_AGENT, content: 'Please write the report.' });
-    doneDb().prepare("UPDATE work SET source_message_id = 'm-src' WHERE id = ?").run(TASK);
-    expect(refusal(cantBeDone([{ kind: 'withdrawal', ref: 'm-src' }]))).toMatch(/the request the task was opened for/);
-  });
-
-  it('refuses a withdrawal written in the same second the task was opened, before it', () => {
-    askedByAgent();
-    const exact = Math.floor(Date.now() / 1000) * 1000 + 500;
-    doneDb().prepare('UPDATE work SET opened_at = ? WHERE id = ?').run(exact, TASK);
-    message('m-same-second', { role: 'user', lane: 'a2a', from: ASKER_AGENT, content: 'Drop it.', at: exact });
-    expect(refusal(cantBeDone([{ kind: 'withdrawal', ref: 'm-same-second' }]))).toMatch(/before the task was opened/);
-  });
-
-  it('labels a withdrawal "the asker\'s message" and never judges its wording', () => {
-    askedByAgent();
-    message('m-any', { role: 'user', lane: 'a2a', from: ASKER_AGENT, content: 'any update?' });
-    const r = cantBeDone([{ kind: 'withdrawal', ref: 'm-any' }]);
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.items[0].label).toBe("the asker's message");
-  });
-
   it('for a person asker, refuses a delivery to a third party and accepts one to that person', () => {
     askedByPerson();
     delivery('d-third', { channel: 'imessage', recipient: '+15550002222', tool: 'imessage_send' });
     delivery('d-person', { channel: 'imessage', recipient: PERSON, tool: 'imessage_send' });
     expect(refusal(finished([{ kind: 'delivery', ref: 'd-third' }]))).toMatch(/not addressed to the asker/);
     expect(finished([{ kind: 'delivery', ref: 'd-person' }]).ok).toBe(true);
-  });
-
-  it('accepts a withdrawal from a person asker who is not the owner', () => {
-    askedByPerson();
-    message('m-person', { role: 'user', channel: 'imessage', sender: PERSON, content: 'Never mind the report.' });
-    message('m-stranger-person', { role: 'user', channel: 'imessage', sender: '+15550002222', content: 'Never mind the report.' });
-    expect(cantBeDone([{ kind: 'withdrawal', ref: 'm-person' }]).ok).toBe(true);
-    expect(refusal(cantBeDone([{ kind: 'withdrawal', ref: 'm-stranger-person' }]))).toMatch(/not from the asker/);
   });
 
   it('hashes a large file in chunks, never reading it whole, and keeps an excerpt of at most 8 KB', () => {

@@ -12,7 +12,7 @@ export type { HandInOutcome, ProofItemInput, ProofKind, ResolvedItem } from './p
 export type ProofRefusal = { index: number; why: string };
 
 const FINISHED_KINDS: ReadonlySet<ProofKind> = new Set(['file', 'delivery', 'command', 'receipt', 'measure']);
-const CANT_BE_DONE_KINDS: ReadonlySet<ProofKind> = new Set(['failure', 'remainder', 'withdrawal']);
+const CANT_BE_DONE_KINDS: ReadonlySet<ProofKind> = new Set(['failure', 'remainder']);
 
 /** The task as the rules read it, with the agent working it; null when there is no such row. A
  *  scheduled task opens at its newest run, so one run's proof never counts for another. */
@@ -60,7 +60,7 @@ export function checkProof(
     refusals.push({ index: -1, why: 'A finished hand-in needs at least one file, message to the asker, command, receipt or measure.' });
   }
   if (refusals.length === 0 && outcome === 'cant_be_done' && !resolved.some(showsFailure)) {
-    refusals.push({ index: -1, why: "A can't be done hand-in needs proof of why: a failed attempt, a named remainder, the asker's withdrawal, a command that did not exit 0, or a receipt carrying an error." });
+    refusals.push({ index: -1, why: "A can't be done hand-in needs proof of why: a failed attempt, a named remainder, a command that did not exit 0, or a receipt carrying an error." });
   }
   return refusals.length > 0 ? { ok: false, refusals } : { ok: true, items: resolved };
 }
@@ -124,7 +124,6 @@ function summarize(i: ResolvedItem): string {
     case 'measure': return `${fact(f, 'left')} ${fact(f, 'unit')} left, from ${fact(f, 'initial')}`;
     case 'remainder': return `${i.ref}: ${fact(f, 'reason')}`;
     case 'failure': return `${fact(f, 'action')} ${fact(f, 'target')}: ${fact(f, 'error')}`.trim();
-    case 'withdrawal': return `from ${fact(f, 'from')}: "${fact(f, 'excerpt')}"`;
   }
 }
 

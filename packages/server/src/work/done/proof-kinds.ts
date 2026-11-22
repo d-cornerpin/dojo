@@ -7,11 +7,11 @@ import { getDb } from '../../db/connection.js';
 import { measureReadsZero } from '../measure-close-gate.js';
 import { ENGINE_SENT_TOOLS, ENGINE_JOIN_RELAY_TOOLS, NON_ANSWERING_DISPLAY_KINDS } from '../ask-settlement.js';
 import { START_ACK_ORIGIN_INTENT } from '../../memory/origin-intents.js';
-import { deliveredToAsker, writtenByAsker, type Asker } from './asker.js';
+import { deliveredToAsker, type Asker } from './asker.js';
 import { fileFacts } from './file-facts.js';
 
 export type HandInOutcome = 'finished' | 'cant_be_done';
-export type ProofKind = 'file' | 'delivery' | 'command' | 'receipt' | 'measure' | 'remainder' | 'failure' | 'withdrawal';
+export type ProofKind = 'file' | 'delivery' | 'command' | 'receipt' | 'measure' | 'remainder' | 'failure';
 type Facts = Record<string, string | number>;
 
 /** A proof item as the worker names it: a kind, a reference the engine resolves, and for a remainder its `reason`. */
@@ -37,9 +37,8 @@ export const PROOF_LABELS: Record<ProofKind, string> = {
   measure: "the task's measure",
   remainder: 'what was left undone, and why',
   failure: 'a failed attempt',
-  withdrawal: "the asker's message",
 };
-const CANT_BE_DONE_ONLY: ReadonlySet<ProofKind> = new Set(['remainder', 'failure', 'withdrawal']);
+const CANT_BE_DONE_ONLY: ReadonlySet<ProofKind> = new Set(['remainder', 'failure']);
 /** The shortest reason a remainder may give. */
 export const MIN_REASON = 15;
 
@@ -239,24 +238,6 @@ function failure(ctx: ProofContext, ref: string): Facts | string {
   return ownRow(ctx, r.agent_id, sqlTimeMs(r.created_at)) ?? { source: 'receipt', action: r.tool, target: r.recipient ?? '', error, at: r.created_at };
 }
 
-/** The asker's own message after the task was opened. Its wording is never judged here: the decider
- *  opens it and decides whether it withdraws the work. */
-function withdrawal(ctx: ProofContext, ref: string): Facts | string {
-  const m = getDb().prepare(
-    `SELECT agent_id, role, content, lane, channel, sender_id, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
-            inbound_meta, origin_intent, created_at FROM messages WHERE id = ?`,
-  ).get(ref) as { agent_id: string; role: string; content: string; lane: string; channel: string; sender_id: string | null;
-    source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null; a2a_requires_response: number | null;
-    inbound_meta: string | null; origin_intent: string | null; created_at: number } | undefined;
-  if (!m) return '';
-  if (m.agent_id !== ctx.workerId || m.role !== 'user') return 'is not a message the worker received';
-  if (ctx.asker.sourceMessageId === ref) return 'is the request the task was opened for';
-  if (!(m.created_at > ctx.task.openedAt)) return 'was written before the task was opened';
-  if (!writtenByAsker(ctx.asker, m, ctx.task.openedAt)) return 'is not from the asker';
-  if (!m.content.trim()) return 'is empty';
-  return { from: m.source_agent_id ?? m.sender_id ?? 'the owner', at: m.created_at, excerpt: excerpt(m.content) };
-}
-
 function file(ctx: ProofContext, ref: string): Facts | string {
   const w = getDb().prepare(
     `SELECT MAX(created_at) AS at, MAX(created_at >= @floor AND ${ROOT_SERVES_TASK('a')}) AS tied FROM audit_log a
@@ -268,7 +249,7 @@ function file(ctx: ProofContext, ref: string): Facts | string {
   return f.ok ? { ...f.facts, tied: tied(w.tied) } : f.why;
 }
 
-const RESOLVERS: Record<ProofKind, Resolver> = { file, delivery, command, receipt, measure, remainder, failure, withdrawal };
+const RESOLVERS: Record<ProofKind, Resolver> = { file, delivery, command, receipt, measure, remainder, failure };
 
 /** Resolve one item against its row, or say plainly why it does not resolve. */
 export function resolveItem(ctx: ProofContext, input: ProofItemInput): Resolution {
