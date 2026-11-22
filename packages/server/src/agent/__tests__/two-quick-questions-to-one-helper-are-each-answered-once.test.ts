@@ -44,6 +44,7 @@ beforeEach(async () => {
 describe('two quick questions to one helper', () => {
   for (const [root, other] of [['m-ask', TOWELS], ['m-towels', ASK]] as const) {
     it(`the turn serving ${root} is shown both answers, and its one reply closes both`, () => {
+      vi.advanceTimersByTime(60_000);   // the turn starts a minute later, after both texts and both answers
       // The turn's conversation key, read as the turn start reads it, before its own claim.
       const convKey = getWaitingHumanConversations(AGENT)[0]!.key;
       claimAsk(`ask:${root}`, AGENT);

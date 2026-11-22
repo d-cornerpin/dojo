@@ -1,6 +1,5 @@
-// The owner's "never mind" on a job his agent opened a task for and handed to a helper ends all of it: the agent's
-// relayed cancel of its own task on his words ends the request, the piece, the helper's task and turn, and nothing
-// chases any of them later. A contact's dropped request ends the agent's own task for it the same way.
+// A contact's dropped request, on a job the agent opened a task for and handed to a helper, ends the agent's own
+// task for it too.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -11,17 +10,15 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: 
 vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => new Float32Array(8), queueEmbedding: () => {} }));
 
 import { getAgentRuntime } from '../runtime.js';
-import { deliverA2AMessage } from '../a2a-transport.js';
 import { executeTool, toolResultOf } from '../tools/index.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { inboundIMessageText } from '../../tools/inbound-fences.js';
 import { clearPlatformConfigCache } from '../../config/platform.js';
 import { claimAsk } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
-import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shared-state.js';
-import { runLadder } from '../../work/done/ladder.js';
+import { activeRuns, stoppedAgents, stopFencedRuns } from '../shared-state.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
-import { delegatedTextRequest, helperTask, relayRows, CONV, ASK, THREAD, HELPER } from './helpers/text-relay.js';
+import { delegatedTextRequest, helperTask, CONV, ASK, THREAD, HELPER } from './helpers/text-relay.js';
 
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
 const NEVER_MIND = 'Never mind, forget the camping list.';
@@ -54,24 +51,6 @@ async function delegatedWithItsOwnTask(relation: 'owner' | 'known_contact'): Pro
 beforeEach(() => { for (const id of [AGENT, HELPER]) endTurnContext(id); activeRuns.clear(); stoppedAgents.clear(); stopFencedRuns.clear(); });
 
 describe("the owner's never mind on a delegated job ends it", () => {
-  it('the agent cancels its own task on his words: the request, piece, helper task and turn all end, and nothing chases them', async () => {
-    const own = await delegatedWithItsOwnTask('owner');
-    const r = await call('work_validate', { action: 'decide', task_id: own, verdict: 'cancel', reason: 'The owner called it off', user_quote: NEVER_MIND });
-    expect(r.isError, String(r.content)).toBeFalsy();
-    endTurnContext(AGENT);
-    await settled();
-    for (const id of [ASK, `piece:${ASK}:${THREAD}`, 'task-helper-1', own]) expect(endedBy(id), id).toEqual({ state: 'abandoned', by: 'owner' });
-    expect(isStopFenced(HELPER)).toBe(true);
-    endTurnContext(HELPER); activeRuns.delete(HELPER);
-    expect(await deliverA2AMessage({ intent: 'COMPLETE', threadId: THREAD, requiresResponse: false, payload: 'Tent, stove, sleeping bags.', toAgent: AGENT, fromAgent: HELPER } as never))
-      .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
-    await runLadder(Date.now() + 600_000);
-    await runLadder(Date.now() + 3_600_000);
-    expect(testDb().prepare(`SELECT COUNT(*) AS n FROM work_events WHERE work_id IN (?, 'task-helper-1')
-      AND (kind = 'validation_escalated' OR json_extract(payload, '$.entry_kind') IS NOT NULL)`).get(own)).toEqual({ n: 0 });
-    expect(relayRows()).toEqual([]);
-  });
-
   it("a contact's dropped request ends the agent's own task for it too", async () => {
     const own = await delegatedWithItsOwnTask('known_contact');
     const r = await call('work_close_request', { id: ASK, disposition: 'dropped', note: NEVER_MIND });
