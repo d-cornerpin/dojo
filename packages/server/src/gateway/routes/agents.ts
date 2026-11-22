@@ -4,7 +4,7 @@ import { getDb } from '../../db/connection.js';
 import { getAgentRuntime, stopByOwner } from '../../agent/runtime.js';
 import { liveWork } from '../../agent/live-work.js';
 import { terminateAgent } from '../../agent/spawner.js';
-import { callOffHelpersWork, OWNER } from '../../work/call-off.js';
+import { OWNER } from '../../work/call-off.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { refuseStaleWholeDocument } from './whole-document-guard.js';
 import { readAgentPromptSurface, writeAgentPromptSurface } from '../../prompt/agent-prompt-surface.js';
@@ -476,8 +476,7 @@ agentsRouter.delete('/:id', async (c) => {
     return c.json({ ok: false, error: 'Agent is already terminated' }, 400);
   }
 
-  callOffHelpersWork(id, OWNER);
-  terminateAgent(id, 'Terminated via dashboard');
+  terminateAgent(id, 'Terminated via dashboard', OWNER);
   return c.json({ ok: true, data: { agentId: id, status: 'terminated' } });
 });
 
