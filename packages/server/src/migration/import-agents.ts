@@ -1,7 +1,6 @@
 // Migration import: stops the agents an import interrupts and resumes them if it fails. They are
 // stopped, never terminated (a termination would be written into the database a failed import puts back).
 
-import { getDb } from '../db/connection.js';
 import { stopAgent } from '../agent/runtime.js';
 import { activeRuns, stoppedAgents, isStopFenced, queueSelfWake } from '../agent/shared-state.js';
 import { createLogger } from '../logger.js';
@@ -37,16 +36,6 @@ export function resumeAgentsAfterFailedImport(ids: readonly string[]): void {
   ownerStopsDuringImport.clear();
   for (const id of ids.filter((x) => !ownerStopped.has(x))) {
     stoppedAgents.delete(id);
-    try {
-      const row = getDb().prepare('SELECT config FROM agents WHERE id = ?').get(id) as { config: string | null } | undefined;
-      if (row?.config) {
-        const config = JSON.parse(row.config) as Record<string, unknown>;
-        if ('stopMarkerPending' in config) {
-          delete config.stopMarkerPending;
-          getDb().prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(config), id);
-        }
-      }
-    } catch (e) { logger.warn('Could not clear the import stop marker', { error: String(e) }, id); }
     queueSelfWake(id, 'import-failed-resume');
   }
 }

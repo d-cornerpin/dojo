@@ -160,7 +160,7 @@ const REQUEST_ROW = `SELECT seq AS rowid, id AS messageId, a2a_thread_id AS thre
     created_at AS createdAt
   FROM messages WHERE agent_id = ? AND role = 'user' AND a2a_intent IN ('QUESTION', 'ASSIGN', 'BLOCK') AND swept_at IS NULL`;
 
-/** Which request a Stop ends: the live turn's; else every parked job's, every ask waiting on a helper, and the latest
+/** Which request a Stop ends: the live turn's (every ask it claimed); else every parked job's, every ask waiting on a helper, and the latest
  *  turn's while still started (an ask claimed, held, or open with a due; another agent's request unanswered or its
  *  job parked); and their job tasks. */
 export function stoppedRequestsOf(agentId: string): StoppedRequests {
@@ -200,7 +200,8 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
   const waiting = live ? [] : (db.prepare(`SELECT a.id FROM work a WHERE a.agent_id = ? AND a.kind = 'ask' AND a.state = 'blocked'
     AND EXISTS (SELECT 1 FROM work p WHERE p.parent_id = a.id AND p.kind = 'task' AND p.state IN ('open', 'claimed', 'blocked'))`)
     .all(agentId) as Array<{ id: string }>).map((a) => a.id);
-  const asks = [...new Set([ask?.id, ...parkedAsks, ...waiting])]
+  const claimed = live ? db.prepare("SELECT id FROM work WHERE agent_id = ? AND kind = 'ask' AND claimed_by_turn = ?").all(agentId, live.turnNumber) as Array<{ id: string }> : [];
+  const asks = [...new Set([ask?.id, ...claimed.map((a) => a.id), ...parkedAsks, ...waiting])]
     .filter((id): id is string => !!id && !!one(`SELECT id FROM work WHERE id = ?
       AND (state IN ('claimed', 'blocked') OR (state = 'open' AND next_attempt_at IS NOT NULL))`, id));
   const candidates = [request,

@@ -287,19 +287,18 @@ describe('t166 (ii-seam) — a tool call by a terminated agent is refused', () =
 });
 
 describe('t166 (iii) — the owner\'s Stop on a live agent is unchanged', () => {
-  it('stops the loop, cancels the rest of the batch, and the agent ends idle (not terminated)', async () => {
+  it('stops the loop, cancels the rest of the batch, and the agent ends idle (not terminated); a second stop is harmless', async () => {
     const { run } = await startRunMidTool([
       reply([call('c1', 'shell', { command: 'ls' }), call('c2', 'work_open', { title: 'x' })]),
     ]);
     stopAgent(WORKER);
+    stopAgent(WORKER);   // an ended request stops the turn serving it after the owner's own Stop already did
     expect((await shared()).stopFencedRuns.has(WORKER), 'the run\'s fence is raised').toBe(true);
     gate.open();
     await run;
     expect(executed).toEqual(['shell']);
     expect(callModelSpy).toHaveBeenCalledTimes(1);
     expect(statusOf()).toBe('idle');
-    const cfg = JSON.parse((db().prepare('SELECT config FROM agents WHERE id = ?').get(WORKER) as { config: string }).config) as { stopMarkerPending?: boolean };
-    expect(cfg.stopMarkerPending, 'the one-shot stop marker is set for the next turn').toBe(true);
   });
 });
 

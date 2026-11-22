@@ -4,7 +4,7 @@
 // for want of an answer, its pieces end,
 // nobody is touched, and a late answer still goes back to the agent for the person.
 // Stop with nothing running ends a request waiting on a helper even when a later turn served something else; Stop
-// while a turn runs ends only that turn's request, and the agent's next turn is told which request was stopped.
+// while a turn runs ends every request that turn claimed, and each one's row says so in every later view.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -24,7 +24,7 @@ import { nextOwed } from '../v2/owed.js';
 import { trackerHandlers } from '../tools/cat/tracker.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
-import { claimAsk } from '../../work/store.js';
+import { claimAsk, stampClaimingTurn } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
 import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shared-state.js';
@@ -112,21 +112,31 @@ describe("ending a request ends its helpers' work", () => {
     await helperToldOwnerEnded();
   });
 
-  it('Stop while a turn runs on a quick question leaves the request waiting on a helper alone and names the stopped one', async () => {
+  it('Stop while a turn runs ends every request it claimed, leaves the one waiting on a helper alone, and their rows say called off', async () => {
     const before = [requestState(), pieceState()];
-    insertMessage({ id: 'm-quick', agentId: AGENT, role: 'user', content: 'What time is it in Tokyo?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
-    claimAsk('ask:m-quick', AGENT);
-    Object.assign(openTurnContext(AGENT), { turnNumber: 2, root: { kind: 'ask', id: 'm-quick' } });
-    expect(stopByOwner(AGENT)).toMatchObject({ ended: 1 });
-    endTurnContext(AGENT);
-    expect([requestState(), pieceState()]).toEqual(before);
-    await settled();
-    expect(helperTaskState()).toBe('claimed');
+    for (const [id, content] of [['m-bike', 'Make me a picture of a red bicycle'], ['m-quick', 'Write me a poem about autumn']]) {
+      insertMessage({ id, agentId: AGENT, role: 'user', content, channel: 'imessage', senderId: PERSON, conversationId: CONV });
+      claimAsk(`ask:${id}`, AGENT);
+      stampClaimingTurn(`ask:${id}`, 2);   // the turn picked up the poem and revived the older bicycle request
+    }
+    insertMessage({ id: 'm-next', agentId: AGENT, role: 'user', content: 'What time is it in Tokyo?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
+    Object.assign(openTurnContext(AGENT), { turnNumber: 2, root: { kind: 'ask', id: 'm-quick', sourceMessageId: 'm-quick' } });
+    await executeTool(AGENT, { id: 'tc-own', name: 'work_open', arguments: { kind: 'task', title: 'Autumn poem', goal: 'The person has the poem' } });
+    expect(stopByOwner(AGENT)).toMatchObject({ ended: 2 });
+    expect([testDb().prepare("SELECT state FROM work WHERE id = 'ask:m-bike'").get(), requestState(), pieceState()]).toEqual([{ state: 'abandoned' }, ...before]);
     testDb().prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('p', 'P', 'anthropic', 'api_key')").run();
     testDb().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES ('m', 'p', 'M', 'm-1', '["tools"]', 40000, 1)`).run();
-    insertMessage({ id: 'm-next', agentId: AGENT, role: 'user', content: 'And the weather?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
-    const { messages } = await assembleContext(AGENT, 'm');
-    expect(JSON.stringify(messages.at(-1)?.content)).toContain('your previous work on \\"What time is it in Tokyo?\\" was stopped');
+    await assembleContext(AGENT, 'm');   // the stopped turn was still before its first call: its own late assembly
+    endTurnContext(AGENT);
+    await settled();
+    expect(helperTaskState()).toBe('claimed');
+    expect(testDb().prepare("SELECT state, hold_kind AS hold FROM work WHERE kind = 'task' AND source_message_id = 'm-quick'").get(), 'its own task is cancelled, not paused')
+      .toEqual({ state: 'abandoned', hold: null });
+    for (let call = 0; call < 2; call++) {   // every call of the next turn sees it
+      const text = JSON.stringify((await assembleContext(AGENT, 'm')).messages);
+      expect(text).toMatch(/called off: do not do this\][^[]*Write me a poem about autumn/);
+      expect(text).not.toMatch(/called off: do not do this\][^[]*What time is it in Tokyo/);
+    }
   });
 
   it('a request whose helper\'s job ended unanswered fails, tells no helper, and a late answer goes back to the agent', async () => {

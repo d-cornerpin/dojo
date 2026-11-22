@@ -2,8 +2,7 @@
 // Final round (owner rule: the Dojo does the work). The import used to TERMINATE every idle or working agent before it
 // swapped the data folder. The termination was written into the very database a failed import puts back, so every
 // agent came back terminated. Now the import only STOPS the runs in flight (the database must close), and a failed
-// import brings those agents back: the stop is lifted, the owner-stop marker it set is cleared (the owner did not stop
-// them), and each is woken to carry on.
+// import brings those agents back: the stop is lifted (the owner did not stop them), and each is woken to carry on.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -19,7 +18,7 @@ import { stopAgentRunsForImport, resumeAgentsAfterFailedImport, noteOwnerStop } 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   mockDb.current.exec("CREATE TABLE agents (id TEXT PRIMARY KEY, status TEXT, config TEXT, updated_at TEXT)");
-  mockDb.current.prepare("INSERT INTO agents (id, status, config) VALUES ('a', 'working', ?), ('b', 'idle', '{}')").run(JSON.stringify({ stopMarkerPending: true, keep: 1 }));
+  mockDb.current.prepare("INSERT INTO agents (id, status, config) VALUES ('a', 'working', ?), ('b', 'idle', '{}')").run('{}');
   stopped.ids = []; activeRuns.clear(); stoppedAgents.clear(); pendingWakeups.clear();
 });
 afterEach(() => { mockDb.current?.close(); });
@@ -32,11 +31,10 @@ describe('a failed import brings its agents back', () => {
     expect(mockDb.current!.prepare('SELECT status FROM agents ORDER BY id').all()).toEqual([{ status: 'working' }, { status: 'idle' }]);
   });
 
-  it('after a failed import the stop is lifted, its marker cleared, and the agent woken to carry on', () => {
+  it('after a failed import the stop is lifted and the agent woken to carry on', () => {
     stoppedAgents.add('a');
     resumeAgentsAfterFailedImport(['a']);
     expect(stoppedAgents.has('a')).toBe(false);
-    expect(JSON.parse((mockDb.current!.prepare("SELECT config FROM agents WHERE id = 'a'").get() as { config: string }).config)).toEqual({ keep: 1 });
     expect(pendingWakeups.has('a')).toBe(true);
   });
 
@@ -49,7 +47,6 @@ describe('a failed import brings its agents back', () => {
     resumeAgentsAfterFailedImport(ids);
     expect(stoppedAgents.has('a')).toBe(true);
     expect(pendingWakeups.has('a')).toBe(false);
-    expect(JSON.parse((mockDb.current!.prepare("SELECT config FROM agents WHERE id = 'a'").get() as { config: string }).config).stopMarkerPending).toBe(true);
   });
 
   it('a stop the owner pressed during the import is never lifted by a failed import', () => {

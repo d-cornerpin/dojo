@@ -264,13 +264,4 @@ describe('the status field does not lie about a stop', () => {
     expect(statusOf()).toBe('idle');
     expect(broadcasts.some((b) => b.type === 'agent:status' && b.status === 'idle')).toBe(true);
   });
-
-  it('CONTROL: the stop marker is still armed for the next turn, on both paths', async () => {
-    seedAgent('working');
-    activeRuns.add(AGENT);
-    stopAgent(AGENT);
-    const cfg = JSON.parse((mockDb.current!.prepare('SELECT config FROM agents WHERE id = ?')
-      .get(AGENT) as { config: string }).config) as Record<string, unknown>;
-    expect(cfg.stopMarkerPending).toBe(true);
-  });
 });
