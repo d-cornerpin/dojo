@@ -78,6 +78,15 @@ describe('a stopped helper tells the person at once', () => {
     expect(requestState()).not.toBe('abandoned');
   });
 
+  it('the owner cancels its task and the Dojo stops before the judge: the next start still ends it as his', async () => {
+    helperTask();
+    testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'task-helper-1'").run(Date.now());   // committed, never judged
+    testDb().prepare(`INSERT INTO work_events (work_id, kind, actor, payload, created_at) VALUES ('task-helper-1', 'transition', 'owner', ?, ?)`)
+      .run(JSON.stringify({ to: 'abandoned', by: 'owner' }), Date.now());
+    await resolveJoinsAtBoot();
+    expect(await told()).toEqual(['abandoned', 0, 0]);
+  });
+
   it('the owner removes a helper given a plain question: called off by him, nobody is told', async () => {
     served();
     expect((await agentsRouter.request(`/${HELPER}`, { method: 'DELETE' })).status).toBe(200);

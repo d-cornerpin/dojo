@@ -1127,7 +1127,8 @@ function applyDeclaredHandOff(
  *  pieces, which ends the request as his with nobody told; else the answer goes back to the agent. */
 async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
-    if (getDb().prepare(`SELECT 1 FROM work c WHERE c.parent_id = ? AND ${CALLED_OFF_BY_OWNER('c')}`).get(join.id)) {
+    if (getDb().prepare(`SELECT 1 FROM work c LEFT JOIN work t ON t.kind = 'task' AND t.agent_id = c.assignee_agent AND t.a2a_thread_id = c.root_id
+        AND t.closed_at >= c.opened_at WHERE c.parent_id = ? AND (${CALLED_OFF_BY_OWNER('c')} OR ${CALLED_OFF_BY_OWNER('t')})`).get(join.id)) {
       transition(join.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: join.parentState, reason: 'the owner called off the work it waited on' });
       return;
     }
