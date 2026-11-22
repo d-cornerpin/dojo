@@ -17,6 +17,7 @@ import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, 
 import { statusToState, TRACKER_ROOT_KIND, SERVICE_ROOT_KIND, WORK_EVENT, type TrackerStatus } from './tracker-view.js';
 import { takeoverRefusal, rowFacts, rehome, workerOfRecord } from './row-authority.js';
 import { planJson, type Plan } from './plan-json.js';
+import { requestsTakenUpBy } from './task-turns.js';
 import { isSystemServiceAgent, isPrimaryAgent } from '../config/platform.js';
 
 const logger = createLogger('tracker-store');
@@ -158,18 +159,13 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
   return id;
 }
 
-/** The source message of the ask the creating turn is serving, so the task links to its request.
- *  Only fills a gap: a caller-stated origin wins. */
+/** The source message of the one request the creating turn took up, so the task links to it; none when it took up
+ *  two. Only fills a gap: a caller-stated origin wins. */
 function askSourceMessageForCreatingTurn(agentId: string): string | null {
   try {
     const turn = currentTurnNumber(agentId);
-    if (!turn) return null;
-    const r = getDb().prepare(
-      `SELECT root_id FROM work
-        WHERE kind = 'ask' AND agent_id = ? AND state = 'claimed' AND claimed_by_turn = ?
-        ORDER BY opened_at DESC LIMIT 1`,
-    ).get(agentId, turn) as { root_id: string } | undefined;
-    return r?.root_id ?? null;
+    const asks = turn ? requestsTakenUpBy(agentId, turn) : [];
+    return asks.length === 1 ? asks[0]!.slice('ask:'.length) : null;
   } catch (err) {
     // A missing link must not fail task creation.
     logger.warn('task create: could not resolve the creating turn\'s ask; the task is opened without the edge', {

@@ -161,6 +161,19 @@ describe('the task→ask edge is stamped at create', () => {
     expect(row.source_message_id).toBe('msg-explicit');
   });
 
+  it('a task opened on a turn that took up two requests links to neither: which one it is for is not on record', () => {
+    seedTurn(4552);
+    for (const [id, text] of [[OWNER_MSG, 'compare squarespace and wordpress'], ['msg-owner-2', 'and find me a domain name']]) {
+      mockDb.current!.prepare(`INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, created_at) VALUES (?, ?, 'user', ?, 'owner', ?, ?)`)
+        .run(id, AGENT, text, CONV, Date.now());
+      openAsk({ agentId: AGENT, messageId: id, conversationId: CONV, requesterId: 'owner', openedAt: Date.now(), title: text });
+      claimAsk(askIdForMessage(id), AGENT);
+      stampClaimingTurn(askIdForMessage(id), 4552);
+    }
+    const taskId = seedTask('task-two-asks');
+    expect(mockDb.current!.prepare('SELECT source_message_id FROM work WHERE id = ?').get(taskId)).toEqual({ source_message_id: null });
+  });
+
   it('CONTROL: a turn holding no claimed ask stamps nothing', () => {
     seedTurn(4552);
     const taskId = seedTask('task-no-ask');

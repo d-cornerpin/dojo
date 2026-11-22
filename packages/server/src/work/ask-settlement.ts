@@ -835,7 +835,7 @@ function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: 
   const parked = ctx.parkedTask && ask.claimed_by_turn === ctx.turnNumber && taskNow(ctx.parkedTask).open ? ctx.parkedTask : null;
   const task = linkedTaskOf(ask.agent_id, ask.root_id) ?? parked;
   if (!task) return null;
-  if (ctx.at === 'delivery') return turnContext(ask.agent_id)?.turnNumber === ask.claimed_by_turn ? out('held', 'its job is still running') : null;
+  if (ctx.at === 'delivery') return takenUpByLiveTurn(ask) ? out('held', 'its job is still running') : null;
   const carried = ctx.at === 'boot' && ctx.turnNumber !== null && !taskNow(task).parked && taskNow(task).open
     && servedBy(ask.agent_id, ctx.turnNumber).some((s) => s.id === task && s.how === 'job');
   if (carried) serveLater({ kind: 'task', id: task }, Date.now(), 'its job turn died with the process; the job resumes from its row');
@@ -881,11 +881,15 @@ export function linkedTaskOf(agentId: string, messageId: string | null, opts: { 
     .get(agentId, messageId) as { id: string } | undefined)?.id ?? null;
 }
 
+/** Did the turn running now (other than `ignoreTurn`) take this request up? */
+function takenUpByLiveTurn(ask: AskRow, ignoreTurn: number | null = null): boolean {
+  const live = turnContext(ask.agent_id)?.turnNumber;
+  return live !== undefined && live !== ignoreTurn && requestsTakenUpBy(ask.agent_id, live).includes(ask.id);
+}
+
 function stillOwed(ask: AskRow, ignoreTurn: number | null): string | null {
   if (linkedTaskOf(ask.agent_id, ask.root_id)) return 'a tracker task linked to this request is still open (its holder has not handed it in)';
-  const live = turnContext(ask.agent_id)?.turnNumber;
-  const serving = live !== undefined && live !== ignoreTurn && requestsTakenUpBy(ask.agent_id, live).includes(ask.id);
-  return serving ? 'a turn serving this request is running' : null;
+  return takenUpByLiveTurn(ask, ignoreTurn) ? 'a turn serving this request is running' : null;
 }
 
 function settleOnAsyncResult(
