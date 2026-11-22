@@ -59,6 +59,8 @@ function seedDelivery(
      VALUES (?, ?, ?, ?, 'dashboard', ?, ?, 'delivered', datetime('now', ?), ?, ?)`,
   ).run(id, AGENT, o.turn, o.tool ?? 'dashboard', CONV, o.messageId ?? null, `+${(o.offsetSeconds ?? 0) + 5} seconds`,
     o.serving ? 'ask' : null, o.serving ?? null);
+  // The turn that served the request is rooted on it, as the delivery's own stamp says.
+  if (o.serving) mockDb.current!.prepare("UPDATE turns SET root_kind = 'ask', root_id = ? WHERE agent_id = ? AND turn_number = ?").run(o.serving, AGENT, o.turn);
 }
 
 /** A tracker task exactly as the tool path opens one. */

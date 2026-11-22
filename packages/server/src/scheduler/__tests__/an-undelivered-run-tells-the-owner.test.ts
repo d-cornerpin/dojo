@@ -54,6 +54,7 @@ import { declareDeliverableOnSchedule } from '../../work/deliverable-declaration
 import { RUN_STATUS_UNDELIVERED } from '../../work/occurrences.js';
 import { OCCURRENCE_EVENT } from '../../work/occurrences.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
+import { turnRow } from '../../agent/v2/__tests__/helpers/live-turn.js';
 
 const AGENT = 'primary';
 
@@ -143,8 +144,8 @@ describe('the 30-minute idle reaper stops closing an undelivered reminder in sil
     ).run(AGENT);
     mockDb.current!.prepare(
       `INSERT INTO deliveries (id, agent_id, outcome, tool, channel, created_at, turn_number, message_id, root_kind, root_id)
-       VALUES ('d-1', ?, 'delivered', 'dashboard', 'dashboard', ?, 4621, 'm-1', 'occurrence', ?)`,
-    ).run(AGENT, new Date().toISOString().slice(0, 19).replace('T', ' '), runId);
+       VALUES ('d-1', ?, 'delivered', 'dashboard', 'dashboard', ?, ?, 'm-1', 'occurrence', ?)`,
+    ).run(AGENT, new Date().toISOString().slice(0, 19).replace('T', ' '), turnRow(AGENT, 4621, { kind: 'occurrence', id: runId }), runId);
 
     await onTaskRunComplete(taskId, 'complete', 'delivered');
 

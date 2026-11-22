@@ -106,8 +106,8 @@ function line(id: string, channel: string, conv: string, content: string): strin
 
 function openTurn(): void {
   db().prepare(
-    `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, source_message_id, conv_key, answered, effectful_calls, started_at)
-     VALUES (?, ?, 'user', 'conv', 'msg-ask', 'owner', 0, 1, datetime('now','-60 seconds'))`,
+    `INSERT INTO turns (agent_id, turn_number, kind, subject_kind, source_message_id, conv_key, answered, effectful_calls, started_at, root_kind, root_id)
+     VALUES (?, ?, 'user', 'conv', 'msg-ask', 'owner', 0, 1, datetime('now','-60 seconds'), 'ask', 'msg-ask')`,
   ).run(AGENT, TURN);
 }
 
@@ -192,7 +192,7 @@ describe('(c) what the engine can count is handed in for its worker, never set d
     const file = path.join(process.env.DOJO_HOME ?? '/tmp', 'confirmation.txt');
     fs.writeFileSync(file, 'Confirmation 4471: a table for four on Friday at 7pm.');
     db().prepare(
-      `INSERT INTO audit_log (id, agent_id, action_type, target, result, root_kind, root_id) VALUES ('a-file', ?, 'file_write', ?, 'success', 'ask', 'msg-ask')`,
+      `INSERT INTO audit_log (id, agent_id, action_type, target, result, turn_number, root_kind, root_id) VALUES ('a-file', ?, 'file_write', ?, 'success', ${TURN}, 'ask', 'msg-ask')`,
     ).run(AGENT, file);
     db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)`)
       .run(tasks[0], `file:${file}`, Date.now(), Date.now());
@@ -205,7 +205,7 @@ describe('(c) what the engine can count is handed in for its worker, never set d
     const { conv, tasks } = askAndTasks('dashboard');
     const file = (await import('node:path')).join(process.env.DOJO_HOME ?? '/tmp', 'plan.md');
     (await import('node:fs')).writeFileSync(file, 'The plan, with two open questions for the owner.');
-    db().prepare(`INSERT INTO audit_log (id, agent_id, action_type, target, result, root_kind, root_id) VALUES ('a-plan', ?, 'file_write', ?, 'success', 'ask', 'msg-ask')`).run(AGENT, file);
+    db().prepare(`INSERT INTO audit_log (id, agent_id, action_type, target, result, turn_number, root_kind, root_id) VALUES ('a-plan', ?, 'file_write', ?, 'success', ${TURN}, 'ask', 'msg-ask')`).run(AGENT, file);
     db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)`).run(tasks[0], `file:${file}`, Date.now(), Date.now());
     if (how === 'a paused schedule') db().prepare('UPDATE work SET is_paused = 1 WHERE id = ?').run(tasks[0]);
     else expect(setHold(tasks[0], 'paused', "waiting on the owner's answers", AGENT).ok).toBe(true);

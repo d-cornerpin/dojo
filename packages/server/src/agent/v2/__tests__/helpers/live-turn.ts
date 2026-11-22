@@ -14,3 +14,12 @@ export function liveTurn(agentId: string, fields: Partial<TurnContext> & { turnN
   if (ctx.servedJob) appendWorkEvent(ctx.servedJob, 'claim_turn', 'engine', { turn_number: n, agent_id: agentId, how: 'job' });
   return ctx;
 }
+
+const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+/** A turn as its `turns` row records it, ended unless `open`, on the JS clock the rows written in it read; returns its number. */
+export function turnRow(agentId: string, n: number, root: { kind: string; id: string } | null, open = false): number {
+  getDb().prepare(`INSERT OR IGNORE INTO turns (agent_id, turn_number, root_kind, root_id, started_at, ended_at, exit_reason, answered)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1)`).run(agentId, n, root?.kind ?? null, root?.id ?? null, sqlTime(Date.now() - 1000),
+    open ? null : sqlTime(Date.now() + 1000), open ? null : 'answered');
+  return n;
+}

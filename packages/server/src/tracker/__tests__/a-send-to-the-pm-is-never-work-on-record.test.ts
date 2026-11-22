@@ -60,6 +60,9 @@ function newTask(createdBy = REQUESTER, title = 'Find how many rows the export h
 function send(to: string, intent: string, payload: string): { call: string; delivery: string; message: string } {
   const call = `call_${++n}`;
   const at = Date.now() + n;
+  // The worker's turn on its job's thread, started after the task came by that thread.
+  db().prepare("INSERT OR IGNORE INTO turns (agent_id, turn_number, root_kind, root_id, started_at, answered) VALUES (?, ?, 'a2a', 'thread-1', ?, 0)")
+    .run(WORKER, WORK_TURN, new Date(at + 1000).toISOString().replace('T', ' ').slice(0, 19));
   db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, turn_number, created_at, sent_at) VALUES (?, ?, 'a2a', 'assistant', ?, ?, ?, ?)`)
     .run(`wa-${n}`, WORKER, JSON.stringify([{ type: 'tool_use', id: call, name: 'send_to_agent', input: { agent: to, intent, payload } }]), WORK_TURN, at, at);
   const message = `11${String(n).padStart(6, '0')}-aaaa-4aaa-8aaa-${String(n).padStart(12, '0')}`;

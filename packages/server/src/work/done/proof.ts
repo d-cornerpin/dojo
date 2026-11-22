@@ -19,12 +19,12 @@ const CANT_BE_DONE_KINDS: ReadonlySet<ProofKind> = new Set(['failure', 'remainde
 function taskOf(workId: string): (ProofTask & { worker: string }) | null {
   const w = getDb().prepare(
     `SELECT w.id, w.title, MAX(w.opened_at, COALESCE((SELECT MAX(r.opened_at) FROM work r WHERE r.parent_id = w.id AND r.kind = 'occurrence'), 0)) AS opened_at,
-            w.agent_id, a.id AS ask_id, a.result_delivery_id AS ask_receipt
+            w.agent_id, 'ask:' || COALESCE(w.source_message_id, p.source_message_id) AS ask_id, a.result_delivery_id AS ask_receipt
        FROM work w LEFT JOIN work p ON p.id = w.parent_id
        LEFT JOIN work a ON a.kind = 'ask' AND a.id = 'ask:' || COALESCE(w.source_message_id, p.source_message_id)
       WHERE w.id = ?`,
   ).get(workId) as { id: string; title: string | null; opened_at: number; agent_id: string; ask_id: string | null; ask_receipt: string | null } | undefined;
-  return w ? { id: w.id, title: w.title, openedAt: w.opened_at, worker: w.agent_id, ask: w.ask_id ? { receipt: w.ask_receipt } : null } : null;
+  return w ? { id: w.id, title: w.title, openedAt: w.opened_at, worker: w.agent_id, ask: w.ask_id ? { id: w.ask_id, receipt: w.ask_receipt } : null } : null;
 }
 
 function showsFailure(item: ResolvedItem): boolean {
@@ -103,9 +103,12 @@ function found(workId: string, kinds: readonly Found[], byEngine = false, tiedOn
  *  ledger, receipts filed against the task, and the measure when it came down to 0. */
 export const proofFor = (workId: string): ResolvedItem[] => found(workId, ['delivery', 'file', 'receipt', 'measure']);
 
-/** The newest delivery to the asker on record for this task: what a close points at, or null. `byEngine`:
- *  the engine's own run close, where the delivery may go to whoever the schedule serves. */
-export const proofDelivery = (workId: string, byEngine = false): string | null => found(workId, ['delivery'], byEngine, true).pop()?.ref ?? null;
+/** The newest delivery to the asker tied to this task alone, else the newest tied to it and another (ambiguous): what a
+ *  close points at, or null. `byEngine`: the engine's own run close, where the delivery may go to whoever the schedule serves. */
+export function proofDelivery(workId: string, byEngine = false): string | null {
+  const tied = found(workId, ['delivery'], byEngine, true);
+  return (tied.filter((i) => i.facts.tied === 'yes').pop() ?? tied.pop())?.ref ?? null;
+}
 
 /** What the engine itself may count for this task without a decider: a file or the measure at 0,
  *  never a line of text, which may be an ack. */

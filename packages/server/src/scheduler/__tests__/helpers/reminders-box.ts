@@ -6,7 +6,10 @@ import * as box from './missed-runs-box.js';
 
 const { openTurnContext, endTurnContext } = await import('../../../agent/turn-context.js');
 const { recordDelivery } = await import('../../../agent/v2/deliveries.js');
-export const { closeRunsThatDelivered } = await import('../../runner.js');
+const { installJudgment } = await import('../../../agent/decision-hooks.js');
+const runner = await import('../../runner.js');
+/** The reaper's close of delivered runs, with the schedule moves it starts settled. */
+export async function closeRunsThatDelivered(): Promise<void> { await runner.closeRunsThatDelivered(); await vi.dynamicImportSettled(); }
 export const { db, call, at, MAIN, openBox, closeBox, checkScheduledTasks } = box;
 
 export const OWNER_PHONE = '+15550000001';
@@ -42,7 +45,9 @@ export function line(text: string, channel: 'imessage' | 'dashboard'): string {
     .run(msg, MAIN, text, Date.now());
   const d = recordDelivery({ agentId: MAIN, tool: 'auto-route', channel, recipientId: channel === 'imessage' ? OWNER_PHONE : null, messageId: msg, outcome: 'delivered' });
   expect(d.kind).toBe('applied');
-  return (d as { value: { deliveryId: string } }).value.deliveryId;
+  const id = (d as { value: { deliveryId: string } }).value.deliveryId;
+  db().prepare('UPDATE deliveries SET created_at = ? WHERE id = ?').run(sqlNow(), id);   // the database's clock is the test's
+  return id;
 }
 
 /** A reminder the owner texted for, opened in its request's turn, which settled on the confirmation. */
@@ -69,3 +74,20 @@ export const runState = (task: string): { state: string; result_delivery_id: str
 export const ghosts = (): number => (db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE kind = 'floor_ghosted'").get() as { n: number }).n;
 export const handIn = (task: string, ref: string) =>
   call('work_update', { action: 'hand_in', task_id: task, outcome: 'finished', proof: [{ kind: 'delivery', ref }], note: 'reminder sent' });
+
+/** An engine hint about another task of the agent's (step two of something), as a root for a turn about it. */
+export async function otherTasksHint(tag: string): Promise<Root> {
+  const made = await call('work_open', { kind: 'task', title: `Step two ${tag}`, goal: 'the second step', allow_duplicate: true });
+  const other = /task_id=([\w-]+)/.exec(made.content)![1]!;
+  db().prepare(`INSERT INTO messages (id, agent_id, lane, role, content, task_id, origin_intent, authorized, created_at)
+    VALUES (?, ?, 'events', 'user', '[Engine hint: step two is waiting]', ?, 'engine_hint', 0, ?)`).run(`hint-${tag}`, MAIN, other, Date.now());
+  return { kind: 'engine', id: `hint-${tag}` };
+}
+
+/** The small local model's answer to "does this message give the person what the task owes": yes, no, or none. */
+export const freeCheckSays = (yes: boolean | null): void => installJudgment(async () => (yes === null ? null : { asked: yes }));
+/** Who decided the task's newest hand-in, or null while it waits for its decider. */
+export const decidedBy = (task: string): string | null => (db().prepare(
+  "SELECT actor FROM work_events WHERE work_id = ? AND kind = 'decided' AND id > (SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'handed_in')",
+).get(task, task) as { actor: string } | undefined)?.actor ?? null;
+

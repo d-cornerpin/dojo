@@ -15,6 +15,7 @@ import '../../../agent/decision-ask.js';
 import { closeRunsThatDelivered, onTaskRunComplete } from '../../../scheduler/runner.js';
 import { freshBoard, deliveredToOwner, ownerSays, stateOf, eventCount, WORKER, TASK } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
+import { turnRow } from '../../../agent/v2/__tests__/helpers/live-turn.js';
 import { installDecisionModel, scriptDecisions, yes, type DecisionCall } from '../../../agent/__tests__/decision-fake.js';
 
 const REMINDER = 'Time to stretch: stand up and roll your shoulders.';
@@ -33,8 +34,8 @@ function aDeliveredRun(kind: string, model = true, once = false, channel = 'dash
     `INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, sequence, opened_at, updated_at)
      VALUES ('run-1', 'occurrence', ?, ?, 'schedule', 'schedule', ?, 'open', 'occurrence', 0, 0, 'a run', 1, ?, ?)`,
   ).run(TASK, WORKER, TASK, at, at);
-  doneDb().prepare("UPDATE deliveries SET root_kind = 'occurrence', root_id = 'run-1', channel = ?, tool = ? WHERE id = ?")
-    .run(channel, channel === 'dashboard' ? 'auto-route' : channel, deliveredToOwner(WORKER, REMINDER));
+  doneDb().prepare("UPDATE deliveries SET turn_number = ?, root_kind = 'occurrence', root_id = 'run-1', channel = ?, tool = ? WHERE id = ?")
+    .run(turnRow(WORKER, 900, { kind: 'occurrence', id: 'run-1' }), channel, channel === 'dashboard' ? 'auto-route' : channel, deliveredToOwner(WORKER, REMINDER));
 }
 
 async function runFinishes(): Promise<void> {
@@ -127,8 +128,8 @@ describe('a reminder the Dojo saw delivered is approved when the model agrees', 
     doneDb().prepare("UPDATE work SET source_message_id = 'm-contact' WHERE id = ?").run(TASK);
     expect(await closeRunsThatDelivered()).toBe(0);
     expect(doneDb().prepare("SELECT state FROM work WHERE id = 'run-1'").get()).toEqual({ state: 'open' });
-    doneDb().prepare("UPDATE deliveries SET root_kind = 'occurrence', root_id = 'run-1', channel = 'sms', tool = 'sms', recipient_id = '+15550001111' WHERE id = ?")
-      .run(deliveredToOwner(WORKER, 'Time to feed the cat.'));
+    doneDb().prepare("UPDATE deliveries SET turn_number = ?, root_kind = 'occurrence', root_id = 'run-1', channel = 'sms', tool = 'sms', recipient_id = '+15550001111' WHERE id = ?")
+      .run(turnRow(WORKER, 901, { kind: 'occurrence', id: 'run-1' }), deliveredToOwner(WORKER, 'Time to feed the cat.'));
     expect(await closeRunsThatDelivered()).toBe(1);   // the text that reached the contact closes it
   });
 });

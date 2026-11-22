@@ -120,7 +120,7 @@ describe('a recurring task keeps its schedule through a run the PM decides', () 
     seedDelivery();
     const fin = await call('work_update:hand_in', { task_id: id, ...HAND_IN });
     expect(fin.isError, fin.content).toBe(false);
-    expect(scopeOf(id)).toBeNull();
+    expect(scopeOf(id), 'a run in flight with no next run is the final run: the whole schedule is handed in').toBe('schedule');
     expect(pmDecides(id, 'approve').kind).toBe('decided');
     await settle();
     const r = row(id);
@@ -145,7 +145,7 @@ describe('a recurring task keeps its schedule through a run the PM decides', () 
     seedDelivery();
     const fin = await call('work_update:hand_in', { task_id: id, ...HAND_IN });
     expect(fin.isError, fin.content).toBe(false);
-    expect(scopeOf(id)).toBeNull();
+    expect(scopeOf(id), 'its run in flight is its last').toBe('schedule');
     expect(pmDecides(id, 'approve').kind).toBe('decided');
     expect(row(id).state).toBe('done');
   });

@@ -56,16 +56,12 @@ export function clearAgentLastError(agentId: string): void {
   `).run(agentId);
 }
 
-// Boot sweep: a dead process leaves rows 'working'; restart is the only thing that can know that.
-// No updated_at bump (the 75-minute reaper reads it); the read happens BEFORE the update because
-// after it no row reads working and the loop closes nothing. Turn rows are closed here: a row set
-// idle is never revisited by the 75-minute reaper.
+// Boot sweep: a dead process leaves rows 'working' and turns open; restart is the only thing that can know that.
+// No updated_at bump (the 75-minute reaper reads it). Every agent's open turns are closed, since no turn survives a restart.
 export function resetWorkingAgentsToIdleAtBoot(): number {
-  const crashed = getDb()
-    .prepare("SELECT id FROM agents WHERE status = 'working'")
-    .all() as Array<{ id: string }>;
+  const open = getDb().prepare('SELECT DISTINCT agent_id AS id FROM turns WHERE ended_at IS NULL').all() as Array<{ id: string }>;
   let turnsClosed = 0;
-  for (const c of crashed) turnsClosed += markTurnsTerminated(c.id);
+  for (const c of open) turnsClosed += markTurnsTerminated(c.id);
   if (turnsClosed > 0) {
     logger.info(`Closed ${turnsClosed} turn record(s) left open by a run that died mid-turn, as 'terminated'`);
   }

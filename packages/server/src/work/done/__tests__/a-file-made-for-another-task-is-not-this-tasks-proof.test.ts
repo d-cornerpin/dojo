@@ -10,6 +10,7 @@ vi.mock('../../../gateway/ws.js', () => ({ broadcast: () => {} }));
 
 import { runMigrations } from '../../../db/migrations.js';
 import { freshDoneDb, doneDb, seedTask } from './helpers/done-db.js';
+import { turnRow } from '../../../agent/v2/__tests__/helpers/live-turn.js';
 import { engineProof, proofFor, proofLines } from '../proof.js';
 
 const WORKER = randomUUID();
@@ -17,13 +18,15 @@ const TASK = 'task-report';
 const UNTIED = ' (the engine could not tie this to the task)';
 const sqlTime = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
+let turns = 0;
 /** The worker writes a file in a turn serving the request `rootMessage`; the engine charges it to this task. */
 function fileWritten(name: string, rootMessage: string): string {
   const p = path.join(process.env.DOJO_HOME ?? '/tmp', 'tied-files', name);
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, `The ${name} report: 12 sections, totals on page 3.`);
-  doneDb().prepare(`INSERT INTO audit_log (id, agent_id, action_type, target, result, created_at, root_kind, root_id)
-    VALUES (?, ?, 'file_write', ?, 'success', ?, 'ask', ?)`).run(randomUUID(), WORKER, p, sqlTime(Date.now()), rootMessage);
+  const turn = turnRow(WORKER, ++turns, { kind: 'ask', id: rootMessage });
+  doneDb().prepare(`INSERT INTO audit_log (id, agent_id, action_type, target, result, created_at, turn_number, root_kind, root_id)
+    VALUES (?, ?, 'file_write', ?, 'success', ?, ?, 'ask', ?)`).run(randomUUID(), WORKER, p, sqlTime(Date.now()), turn, rootMessage);
   doneDb().prepare("INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)")
     .run(TASK, `file:${p}`, Date.now(), Date.now());
   return p;

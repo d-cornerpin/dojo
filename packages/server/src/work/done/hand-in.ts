@@ -31,7 +31,7 @@ export type HandInResult = { kind: 'handed_in'; eventId: number; text: string } 
 
 const HANDS_IN_FROM: readonly WorkState[] = ['open', ...WORKING_STATES];
 
-interface DoorRow { id: string; kind: string; state: WorkState; title: string | null; worker: string; open_tasks: number; live_schedule: number }
+interface DoorRow { id: string; kind: string; state: WorkState; title: string | null; worker: string; open_tasks: number; live_schedule: number; open_run: number }
 
 const label = (r: Pick<DoorRow, 'id' | 'title'>): string => `"${r.title ?? r.id}" [${r.id}]`;
 const outcomeWords = (o: HandInOutcome): string => (o === 'finished' ? 'finished' : "can't be done");
@@ -41,7 +41,8 @@ function doorRow(workId: string): DoorRow | undefined {
     `SELECT w.id, w.kind, w.state, w.title, COALESCE(w.assignee_agent, w.agent_id) AS worker,
             (SELECT COUNT(*) FROM work t WHERE t.parent_id = w.id AND ${taskScope('t')}
                 AND t.state NOT IN ('done', 'failed', 'abandoned')) AS open_tasks,
-            (w.repeat_interval IS NOT NULL AND w.next_run_at IS NOT NULL AND w.schedule_status IN ('waiting', 'running')) AS live_schedule
+            (w.repeat_interval IS NOT NULL AND w.next_run_at IS NOT NULL AND w.schedule_status IN ('waiting', 'running')) AS live_schedule,
+            EXISTS (SELECT 1 FROM work o WHERE o.parent_id = w.id AND o.kind = 'occurrence' AND o.state = 'open') AS open_run
        FROM work w WHERE w.id = ? AND ((${taskScope('w')}) OR (${projectScope('w')}))`,
   ).get(workId) as DoorRow | undefined;
 }
@@ -53,6 +54,13 @@ function rowRefusal(row: DoorRow, by: HandInBy): string | null {
   if (by.onBehalfOf !== row.worker) return `An engine hand-in of ${label(row)} must act for its worker ${row.worker}.`;
   return by.because.trim() === '' ? `An engine hand-in of ${label(row)} must say why the engine is handing it in.` : null;
 }
+
+/** Was a line these items cite already handed in, and so judged, for the task's newest run? */
+const judgedForItsRun = (workId: string, items: readonly ProofItemInput[]): boolean => !!getDb().prepare(
+  `SELECT 1 FROM work_events h, json_each(h.payload, '$.items') i WHERE h.work_id = ? AND h.kind = 'handed_in'
+      AND h.created_at >= (SELECT MAX(o.opened_at) FROM work o WHERE o.parent_id = h.work_id AND o.kind = 'occurrence')
+      AND json_extract(i.value, '$.kind') = 'delivery' AND json_extract(i.value, '$.ref') IN (SELECT value FROM json_each(?))`,
+).get(workId, JSON.stringify(items.filter((i) => i.kind === 'delivery').map((i) => i.ref)));
 
 const refused = (row: DoorRow | undefined, whys: string[]): HandInResult => ({
   kind: 'refused',
@@ -78,12 +86,13 @@ export function handIn(input: HandInInput): HandInResult {
   if (left > 0) whys.push(`Its measure still lists ${left} item${left === 1 ? '' : 's'}, so it is not finished. Finish them, or hand it in as can't be done with a remainder item naming them and why.`);
   const proof = checkProof(row.id, row.worker, input.outcome, input.items, engine);
   if (!proof.ok) whys.push(...proof.refusals.map((r) => r.why));
+  else if (judgedForItsRun(row.id, proof.items)) whys.push("This line was already judged for this run; cite another line or hand it in as can't be done.");
   if (!proof.ok || whys.length > 0) {
     appendWorkEvent(row.id, 'hand_in_refused', filedBy, { outcome: input.outcome, reasons: whys.map((w) => redactHandedCredentials(row.worker, w)) });
     return refused(row, whys);
   }
 
-  const scope = input.scope ?? (row.live_schedule ? 'run' : undefined);
+  const scope = input.scope ?? (row.live_schedule ? 'run' : row.open_run ? 'schedule' : undefined);
   const record: HandInRecord = { outcome: input.outcome, items: proof.items, note, filedBy, ...(scope ? { scope } : {}) };
   let eventId = 0;
   const moved = unitOrRollback(() => {

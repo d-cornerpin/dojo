@@ -339,10 +339,13 @@ describe('a hand-in proof must be real and this task\'s', () => {
   });
 
   it('the start line of a turn is never the answer: followed by a later line in that turn, or a lone line the ask settled elsewhere', () => {
+    // Each turn took up the task's request, which is what makes its first line a start line.
     const turn = (n: number, ended: boolean): void => {
-      doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, answered, ended_at, exit_reason) VALUES (?, ?, 'user', 0, ?, ?)")
+      doneDb().prepare("INSERT INTO turns (agent_id, turn_number, kind, answered, ended_at, exit_reason, root_kind, root_id) VALUES (?, ?, 'user', 0, ?, ?, 'ask', 'm-src')")
         .run(WORKER, n, ended ? sqlTime(Date.now()) : null, ended ? 'answered' : null);
     };
+    message('m-src', { role: 'user', content: 'Write up the report?', at: openedAt - 1000 });
+    doneDb().prepare("UPDATE work SET source_message_id = 'm-src' WHERE id = ?").run(TASK);
     const inTurn = (id: string, n: number, text: string, offsetMs: number): void => {
       delivery(id, { text, at: Date.now() + offsetMs });
       doneDb().prepare('UPDATE deliveries SET turn_number = ? WHERE id = ?').run(n, id);
@@ -355,9 +358,7 @@ describe('a hand-in proof must be real and this task\'s', () => {
     // A lone line in an ended turn: the ask settled on another line, so it was the start line.
     turn(8, true);
     inTurn('d-lone', 8, "On it, I've handed the report to a helper.", 2000);
-    expect(finished([{ kind: 'delivery', ref: 'd-lone' }]).ok, 'no ask: a lone line is just a line').toBe(true);
-    message('m-src', { role: 'user', content: 'Write up the report?', at: openedAt - 1000 });
-    doneDb().prepare("UPDATE work SET source_message_id = 'm-src' WHERE id = ?").run(TASK);
+    expect(finished([{ kind: 'delivery', ref: 'd-lone' }]).ok, 'the request settled on no line yet: a lone line is just a line').toBe(true);
     doneDb().prepare(
       `INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, result_delivery_id, opened_at, closed_at, updated_at)
        VALUES ('ask:m-src', 'ask', ?, 'owner', 'conv', 'm-src', 'done', 'answer', 1, 0, 'd-answer', ?, ?, ?)`,
