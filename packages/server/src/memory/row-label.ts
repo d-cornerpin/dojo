@@ -164,8 +164,8 @@ export class LabelFacts {
     return this.receipts.get(messageId) ?? null;
   }
 
-  /** The person's message whose request was ended undone (`requestEnded`): a stored, one-way fact. */
-  endedUndone(messageId: string): boolean {
+  /** The person's message whose request was called off (its ask abandoned): a stored, one-way fact. */
+  calledOff(messageId: string): boolean {
     if (!this.ended.has(messageId)) this.ended.set(messageId, requestEnded('ask:' + messageId) === 'called_off');
     return this.ended.get(messageId) === true;
   }
@@ -248,8 +248,8 @@ export function labelRows(agentId: string, rows: Message[]): Map<string, string>
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     const subject = rowSubject(m, facts);
     const isToolCall = m.role === 'assistant' && typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
-    // A person's message whose request ended undone says so on every view, so no later turn takes it as work.
-    const mark = (label: string): string => (m.role === 'user' && facts.endedUndone(m.id) ? label.slice(0, -1) + ' · ended: do not do this]' : label);
+    // A person's message whose request was called off says so on every view, so no later turn takes it as work.
+    const mark = (label: string): string => (m.role === 'user' && facts.calledOff(m.id) ? label.slice(0, -1) + ' · ended: do not do this]' : label);
     if (subject !== current) {
       out.set(m.id, mark(renderRowLabel(m, facts)));
       current = subject;

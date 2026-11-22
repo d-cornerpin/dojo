@@ -344,7 +344,7 @@ describe('the deleter census — no path that deletes a work row is unexamined',
 
   it('⚠ CLAUSE D2 — each driver leaves NO reference naming a row it deleted', async () => {
     const drive: Record<string, () => void> = {
-      'work/tracker-store.ts': () => { deleteTrackerRow('proj'); },
+      'work/call-off.ts': () => { deleteTrackerRow('proj'); },
       'work/purge-sweep.ts': () => { deleteAllWorkForAgent('a-doomed'); },
       'work/occurrences.ts': () => { deleteOccurrencesOf(['task']); },
     };

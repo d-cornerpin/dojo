@@ -1,19 +1,16 @@
-// What an end ends, behind every door that calls work off. The row is resolved by what it is, never by who holds it:
-// a request, its only card (which stands for it), a piece and the job on it, or one task. Everything under it ends
-// in `transition`'s cascade, in this one unit; after commit only live turns are stopped (`endTheWorkUnder`).
+// What an end ends, behind every door that calls work off: a request, its only card, a piece and its job, or one task,
+// resolved by what the row is; everything under it ends in `transition`'s cascade, in this one unit.
 import { getDb } from '../db/connection.js';
 import { afterCommit, withUnit } from '../db/unit.js';
-import { isTerminal, settlePieceWithoutResult, transition } from './store.js';
-import { decide, type DecideResult } from './done/decide.js';
+import { isTerminal, settlePieceWithoutResult, transition, type Actor, type PieceSettleResult } from './store.js';
+import { decide, refused, type DecideResult } from './done/decide.js';
 import { endedByHim } from './ask-settlement.js';
 import { clearReferencesToWork } from './work-refs.js';
 
-/** The owner (`deciderAgentId` null; `via` the agent relaying his words), or an agent, whose `ownerQuote` makes it his
- *  once `decide` verifies it. */
+/** The owner (no decider; `via` relays his words), or an agent, whose `ownerQuote` makes it his once `decide` verifies it. */
 export interface CallOffBy { deciderAgentId: string | null; ownerQuote?: string; via?: string }
 export const OWNER: CallOffBy = { deciderAgentId: null };
 
-const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
 const ended = (id: string, reason: string): DecideResult => ({ kind: 'decided', to: 'abandoned', unclosed: [], text: `Ended: [${id}]. Reason: ${reason}` });
 
 /** The request ends, and every card linked to it (any holder, handed in included) is cancelled with it. */
@@ -27,19 +24,15 @@ function endRequest(askId: string, by: CallOffBy, reason: string): DecideResult 
   return ended(askId, reason);
 }
 
-/** A helper's piece ends; its request, once nothing of it is left, ends as his here or is judged after commit. */
-function endPiece(pieceId: string, by: CallOffBy, reason: string): DecideResult {
-  const owner = by.deciderAgentId === null;
-  const s = settlePieceWithoutResult(pieceId, { to: 'abandoned', reason, actorId: by.deciderAgentId ?? by.via ?? 'owner', by: owner ? 'owner' : 'agent' });
-  if (s.result.kind !== 'applied') return refused(`[${pieceId}] was not ended (${s.result.kind}).`);
-  if (s.join.complete && !isTerminal(s.join.parentState)) {
-    if (owner && endedByHim(s.join.id)) endRequest(s.join.id, by, reason);
-    else afterCommit(() => void import('../agent/a2a-transport.js').then((m) => m.resolveCompletedJoin(s.join)));
-  }
-  return ended(pieceId, reason);
+/** THE ONE END OF A PIECE (a call-off, or the engine giving it up: `by` scheduler). A request whose last piece this was
+ *  ends as his in this unit when every part of it was his; `judged` false leaves its join to the caller. */
+export function endPiece(pieceId: string, reason: string, by: Actor, actorId: string): PieceSettleResult & { judged: boolean } {
+  const s = settlePieceWithoutResult(pieceId, { to: 'abandoned', reason, actorId, by });
+  const open = s.result.kind === 'applied' && s.join.complete && !isTerminal(s.join.parentState);
+  const his = open && by === 'owner' && endedByHim(s.join.id) && endRequest(s.join.id, { deciderAgentId: null, via: actorId }, reason).kind === 'decided';
+  return { ...s, judged: !open || his };
 }
 
-/** THE CALL-OFF (header). */
 export function callOff(workId: string, by: CallOffBy, reason: string): DecideResult {
   return withUnit((): DecideResult => {
     const w = getDb().prepare(`SELECT w.kind, w.root_kind AS rootKind,
@@ -52,22 +45,30 @@ export function callOff(workId: string, by: CallOffBy, reason: string): DecideRe
       FROM work w WHERE w.id = ?`).get(workId) as { kind: string; rootKind: string; request: string | null; cards: number; piece: string | null } | undefined;
     if (!w) return refused(`there is no work ${workId}.`);
     if (w.kind === 'ask') return endRequest(workId, by, reason);
-    if (w.rootKind === 'a2a_thread') return endPiece(workId, by, reason);
-    const d = decide({ workId, deciderAgentId: by.deciderAgentId, ownerQuote: by.ownerQuote, verdict: 'cancel', reason });
-    if (d.kind !== 'decided' || (by.deciderAgentId !== null && !by.ownerQuote?.trim())) return d;
-    const his: CallOffBy = { deciderAgentId: null, via: by.deciderAgentId ?? undefined };
-    if (w.piece) endPiece(w.piece, his, reason);
-    if (w.request && (w.cards === 1 || endedByHim(w.request))) endRequest(w.request, his, reason);
-    else if (w.request) return { ...d, text: `${d.text} Its request [${w.request}] goes on with its other parts; to end all of it on his words, work_close_request(id="${w.request}", disposition="dropped", note=<his exact words>).` };
-    return d;
+    const owner = by.deciderAgentId === null || !!by.ownerQuote?.trim();
+    const isPiece = w.rootKind === 'a2a_thread';
+    const d = isPiece ? ended(workId, reason) : decide({ workId, deciderAgentId: by.deciderAgentId, ownerQuote: by.ownerQuote, verdict: 'cancel', reason });
+    const piece = isPiece ? workId : d.kind === 'decided' && owner ? w.piece : null;
+    const s = piece ? endPiece(piece, reason, owner ? 'owner' : 'agent', by.deciderAgentId ?? by.via ?? 'owner') : null;
+    if (s && !s.judged) afterCommit(() => void import('../agent/a2a-transport.js').then((m) => m.resolveCompletedJoin(s.join)));
+    if (isPiece && s?.result.kind !== 'applied') return refused(`[${workId}] was not ended (${s?.result.kind}).`);
+    if (d.kind !== 'decided' || !owner || !w.request) return d;
+    if (w.cards === 1 || endedByHim(w.request)) { endRequest(w.request, { deciderAgentId: null, via: by.deciderAgentId ?? undefined }, reason); return d; }
+    return { ...d, text: `${d.text} Its request [${w.request}] goes on with its other parts; to end all of it on his words, work_close_request(id="${w.request}", disposition="dropped", note=<his exact words>).` };
   });
 }
 
+/** A helper's removal or end calls off its open pieces: as the owner's when `by` is his, else each asker's plain end. */
+export function callOffHelpersWork(helperId: string, by?: CallOffBy): void {
+  const pieces = getDb().prepare(`SELECT id, agent_id AS asker FROM work WHERE root_kind = 'a2a_thread' AND assignee_agent = ?
+    AND state IN ('open', 'claimed', 'blocked')`).all(helperId) as Array<{ id: string; asker: string }>;
+  for (const p of pieces) callOff(p.id, by ?? { deciderAgentId: p.asker }, 'its helper was ended');
+}
+
 /**
- * The owner deletes a tracker row and its children (deeper descendants are detached). What each open task was is called
- * off as his first (`callOff`), and the helpers' pieces under it stay, ended, so a late answer is still refused. The
- * helper runs twice, children first, because it nulls `parent_id` on everything pointing into its set: one call for both
- * would leave the `WHERE parent_id = ?` delete matching nothing.
+ * The owner deletes a tracker row and its children (deeper descendants are detached), so a helper's work on them
+ * is called off as his. The helper runs twice, children first, because it nulls `parent_id` on everything pointing
+ * into its set: one call for both would leave the `WHERE parent_id = ?` delete matching nothing.
  */
 export function deleteTrackerRow(id: string): number {
   const db = getDb();

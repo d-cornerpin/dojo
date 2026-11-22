@@ -37,8 +37,8 @@ import {
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, endedByHim, type PutBackKind } from '../work/ask-settlement.js';
-import { callOff, OWNER } from '../work/call-off.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, type PutBackKind } from '../work/ask-settlement.js';
+import { endPiece } from '../work/call-off.js';
 import { servedBy } from '../work/task-turns.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
 import { afterCommit, withUnit } from '../db/unit.js';
@@ -1078,14 +1078,10 @@ function applyDeclaredHandOff(
   };
 }
 
-/** The countdown reached zero: nothing came back, the fail-closed notice, unless the owner called off every part of
- *  it, which ends the request as his with nobody told; else the answer goes back to the agent. */
+/** The countdown reached zero and it was not all called off by the owner (`endPiece`): nothing came back, the
+ *  fail-closed notice; else the answer goes back to the agent. */
 export async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
-    if (endedByHim(join.id)) {
-      callOff(join.id, OWNER, 'the owner called off the work it waited on');
-      return;
-    }
     const failReason = joinFailureReason(joinPieces(join.id));
     const claimed = failJoinClosed(join.id, { reason: failReason, expectedState: join.parentState });
     if (claimed.kind !== 'applied') return;
@@ -1360,11 +1356,6 @@ export async function sweepExpiredJoins(): Promise<{ failedClosed: number; relay
 export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; failedClosed: number; leftOpen: number }> {
   const out = { relayedReplies: 0, failedClosed: 0, leftOpen: 0 };
   const joins = openJoins(JOIN_BOOT_BATCH);
-  // A job left open under a piece called off before the cascade ended them together ends now (`endJobsOfPiece`).
-  const { endJobsOfPiece } = await import('../work/done/decide.js');
-  for (const p of getDb().prepare(`SELECT p.id, EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = p.id AND e.kind = 'transition'
-      AND json_extract(e.payload, '$.by') = 'owner') AS his FROM work p WHERE p.root_kind = 'a2a_thread' AND p.state = 'abandoned'`)
-    .all() as Array<{ id: string; his: number }>) endJobsOfPiece(p.id, p.his === 1);
   for (const join of joins) {
     try {
       const outcome = await resolveOpenJoin(join);
@@ -1424,10 +1415,10 @@ export async function failJoinPieceForAbandonedAsk(
   }
 }
 
-/** End a piece as abandoned; a request still open whose last piece this was is answered or told, once. */
+/** The engine gives a piece up (no answer came; a late one keeps the late road), and judges its request now. */
 async function abandonPiece(childId: string, reason: string, actorId: string | null): Promise<PieceSettleResult> {
-  const s = settlePieceWithoutResult(childId, { to: 'abandoned', reason, actorId });
-  if (s.result.kind === 'applied' && s.join.complete && !isTerminal(s.join.parentState)) await resolveCompletedJoin(s.join, resolveAgentDisplayName(actorId) ?? undefined);
+  const s = endPiece(childId, reason, 'scheduler', actorId ?? 'work-reaper');
+  if (!s.judged) await resolveCompletedJoin(s.join, resolveAgentDisplayName(actorId) ?? undefined);
   return s;
 }
 

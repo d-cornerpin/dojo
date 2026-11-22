@@ -21,6 +21,7 @@ import {
 import { workSettled, noteUnsettled, findObligationByTypedId, type Actor } from '../work/store.js';
 import { moveAssignee, writeAssignee } from '../work/row-authority.js';
 import { linkedTaskOf } from '../work/ask-settlement.js';
+import { callOff, OWNER } from '../work/call-off.js';
 import { requestOfTurn } from '../work/job-continuation.js';
 import { isTerminalName } from '../work/terminal-states.js';
 import { decide } from '../work/done/decide.js';
@@ -348,6 +349,7 @@ export function closeProjectAndOpenTasks(params: {
   const alreadyClosed = tasks.filter((t) => isTerminalName(t.state)).length;
   // The decision closes the project's open tasks with it; a project its tasks already settled is closed.
   const settled = isTerminalName((getDb().prepare('SELECT state FROM work WHERE id = ?').get(projectId) as { state: string } | undefined)?.state ?? '');
+  if (verdict === 'cancel' && !settled) for (const t of tasks) if (!isTerminalName(t.state)) callOff(t.id, OWNER, reason);   // each task is called off as what it is
   const pr = settled ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
   const unsettled = pr?.kind === 'refused' ? [{ workId: projectId, text: pr.text }]
     : (pr?.unclosed ?? []).map((workId) => ({ workId, text: 'did not close with its project' }));

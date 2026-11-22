@@ -39,7 +39,7 @@ export function writeAgentStatus(
   agentStatusMoved(agentId, status); // an owner card whose status this left is over
   // An agent back at idle may be owed what waited while it was paused or in error: the one clock looks.
   if (status === 'idle') void import('./v2/owed.js').then((m) => m.armOwedClock());
-  if (status === 'terminated') void import('./a2a-transport.js').then((m) => m.judgeKeptRequests(agentId));   // its kept requests are judged now
+  if (status === 'terminated') void import('../work/call-off.js').then((m) => m.callOffHelpersWork(agentId));   // its helper work ends with it
 }
 
 // Diagnostic-only write; a caller holding both facts passes { lastError } to the status writers instead.

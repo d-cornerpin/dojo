@@ -18,7 +18,7 @@ import { getDb } from '../../../../db/connection.js';
 import { SENT_TEXT_MAX_CHARS } from '../../../../receipts/store.js';
 import { recipientIdsMatch } from '../../../recipient-identity.js';
 import { outboundRecipientForTool } from '../../outbound.js';
-import { resolveAgentRef, resolveAgentDisplayName } from '../../../tool-helpers.js';
+import { resolveAgentRef } from '../../../tool-helpers.js';
 import { ownerWords, ROW_COLS } from '../../../../tracker/owner-words.js';
 import type { TurnContext } from '../../../turn-context.js';
 import type { ToolCall } from '@dojo/shared';
@@ -70,18 +70,17 @@ function repeatSend(agentId: string, tc: ToolCall, turnCtx: TurnContext, refused
  *  to a helper still working another of his requests is held once, naming that request and the door that ends it. */
 function neverMindHold(agentId: string, tc: ToolCall, turnCtx: TurnContext, refusedOnceSigs: Set<string>): PendingToolResult | null {
   const a = (tc.arguments ?? {}) as Record<string, unknown>;
-  const helper = tc.name === 'send_to_agent' && String(a.intent).toUpperCase() !== 'ASSIGN' ? resolveAgentRef(String(a.agent ?? '')) : null;
-  if (!helper?.ok || !isPrimaryAgent(agentId) || turnCtx.root?.kind !== 'ask' || !turnCtx.address?.isOwner || refusedOnceSigs.has('never-mind')) return null;
-  const other = (getDb().prepare(`SELECT a.id, a.title, m.* FROM work p JOIN work a ON a.id = p.parent_id AND a.kind = 'ask' AND a.id <> ?
+  if (tc.name !== 'send_to_agent' || String(a.intent).toUpperCase() === 'ASSIGN' || !isPrimaryAgent(agentId) || turnCtx.root?.kind !== 'ask'
+    || !turnCtx.address?.isOwner || refusedOnceSigs.has('never-mind')) return null;
+  const helper = resolveAgentRef(String(a.agent ?? ''));
+  const other = helper.ok ? (getDb().prepare(`SELECT a.id, a.title, m.* FROM work p JOIN work a ON a.id = p.parent_id AND a.kind = 'ask' AND a.id <> ?
       AND a.state IN ('blocked', 'claimed', 'open') JOIN (SELECT id AS mid, ${ROW_COLS} FROM messages) m ON m.mid = a.root_id
     WHERE p.root_kind = 'a2a_thread' AND p.agent_id = ? AND p.assignee_agent = ? AND p.state IN ('open', 'claimed', 'blocked') ORDER BY p.opened_at DESC`)
-    .all(`ask:${turnCtx.root.id}`, agentId, helper.id) as Array<Parameters<typeof ownerWords>[0] & { id: string; title: string | null }>).find((r) => ownerWords(r, 0) !== null);
+    .all(`ask:${turnCtx.root.id}`, agentId, helper.id) as Array<Parameters<typeof ownerWords>[0] & { id: string; title: string | null }>).find((r) => ownerWords(r, 0) !== null) : undefined;
   if (!other) return null;
   refusedOnceSigs.add('never-mind');
-  const name = resolveAgentDisplayName(helper.id) ?? 'that helper';
-  return { toolCallId: tc.id, name: tc.name, isError: true, content: `[Engine: not sent yet] ${name} is working on his earlier request "${other.title ?? other.id}" [${other.id}]. `
-    + `If his message calls it off, end it with work_close_request(id="${other.id}", disposition="dropped", note=<his exact words>): the Dojo stops ${name} `
-    + 'and cancels the job, and nothing more comes back. If not, send your message again; it will go.' };
+  return { toolCallId: tc.id, name: tc.name, isError: true, content: `[Engine: not sent yet] ${String(a.agent)} is working on his earlier request "${other.title ?? other.id}" [${other.id}]. If his message calls it off, end it with `
+    + `work_close_request(id="${other.id}", disposition="dropped", note=<his exact words>): the Dojo stops the job and nothing more comes back. If not, send your message again; it will go.` };
 }
 
 /** `refusal` non-null means the call does NOT run and this is its result. */

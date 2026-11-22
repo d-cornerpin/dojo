@@ -42,7 +42,7 @@ export interface DecideInput {
 export type DecideResult = { kind: 'decided'; to: WorkState; text: string; unclosed: string[] } | { kind: 'refused'; text: string };
 
 const VERDICTS: readonly Verdict[] = ['approve', 'send_back', 'cancel', 'owner_done'];
-const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
+export const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
 
 /** The owner's open cards: each handed-in row asked of him since its newest hand-in, with when he was asked. */
 function openOwnerCards(): Map<string, number> {
@@ -143,7 +143,7 @@ function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): 
 
 /** A helper's piece called off ends the job on it in the same unit (`transition`'s cascade): the piece's end is the
  *  ground, recorded as the owner's when that end was his, else the engine's. */
-export function endJobsOfPiece(pieceId: string, byOwner: boolean): void {
+function endJobsOfPiece(pieceId: string, byOwner: boolean): void {
   const jobs = getDb().prepare(`SELECT t.id, t.state FROM work p JOIN work t ON t.kind = 'task' AND t.root_kind <> 'a2a_thread'
       AND t.agent_id = p.assignee_agent AND t.a2a_thread_id = p.root_id AND t.opened_at <= p.closed_at AND t.state NOT IN ('done', 'failed', 'abandoned')
     WHERE p.id = ?`).all(pieceId) as Array<{ id: string; state: WorkState }>;

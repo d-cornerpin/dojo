@@ -22,7 +22,7 @@ import { agentRequests } from '../v2/owed.js';
 import { sweepBootStaleness } from '../../work/work-reaper.js';
 import { deliverDueReplies } from '../v2/channel-sender.js';
 import { writeAgentStatus } from '../agent-status.js';
-import { decide } from '../../work/done/decide.js';
+import { trackerRouter } from '../../gateway/routes/tracker.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
 import { deleteTrackerRow } from '../../work/call-off.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
@@ -40,6 +40,10 @@ async function told(): Promise<[string, number, number]> {
   return [requestState(), failedNotices(), agentLines()];
 }
 
+/** The owner's cancel on the board, through its route. */
+const boardCancel = async (id: string, reason: string): Promise<number> => (await trackerRouter.request(`/tasks/${id}/decision`, {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ verdict: 'cancel', reason }) })).status;
+
 beforeEach(() => { vi.useRealTimers(); activeRuns.clear(); delegatedTextRequest(); });
 
 describe('a stopped helper tells the person at once', () => {
@@ -49,7 +53,7 @@ describe('a stopped helper tells the person at once', () => {
     await sweepExpiredJoins();
     expect(await told()).toEqual(['blocked', 0, 0]);
     activeRuns.add(HELPER);
-    expect(decide({ workId: 'task-helper-1', deciderAgentId: null, verdict: 'cancel', reason: 'The venue closed for good' }).kind).toBe('decided');
+    expect(await boardCancel('task-helper-1', 'The venue closed for good')).toBe(200);
     expect(await told()).toEqual(['abandoned', 0, 0]);
     await sweepExpiredJoins();
     await resolveJoinsAtBoot();
@@ -89,7 +93,7 @@ describe('a stopped helper tells the person at once', () => {
     helperTask();
     testDb().prepare(`INSERT INTO work (id, kind, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, a2a_thread_id, opened_at, updated_at)
       VALUES ('task-helper-2', 'task', ?, 'agent', 'tracker', 'task-helper-2', 'claimed', 'ASSIGN', 0, 0, 'Check the garden', ?, ?, ?)`).run(OTHER, T2, Date.now(), Date.now());
-    expect(decide({ workId: 'task-helper-1', deciderAgentId: null, verdict: 'cancel', reason: 'Not needed any more' }).kind).toBe('decided');
+    expect(await boardCancel('task-helper-1', 'Not needed any more')).toBe(200);
     expect(await told()).toEqual(['blocked', 0, 0]);
   }
 
@@ -101,7 +105,7 @@ describe('a stopped helper tells the person at once', () => {
 
   it('a fan-out: the owner cancels both helpers\' tasks: called off by him, nobody is told', async () => {
     await fanOutFirstCancelled();
-    expect(decide({ workId: 'task-helper-2', deciderAgentId: null, verdict: 'cancel', reason: 'Not needed either' }).kind).toBe('decided');
+    expect(await boardCancel('task-helper-2', 'Not needed either')).toBe(200);
     expect(await told()).toEqual(['abandoned', 0, 0]);
   });
 
@@ -110,15 +114,6 @@ describe('a stopped helper tells the person at once', () => {
     await deliverA2AMessage({ intent: 'ANSWER', threadId: T2, requiresResponse: false, payload: 'The garden is free.', toAgent: AGENT, fromAgent: OTHER } as never);
     expect([await told(), newestPutBack(ASK)?.kind]).toEqual([[requestState(), 0, 0], 'compile']);
     expect(requestState()).not.toBe('abandoned');
-  });
-
-  it('the owner cancels its task and the Dojo stops before the judge: the next start still ends it as his', async () => {
-    helperTask();
-    testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'task-helper-1'").run(Date.now());   // committed, never judged
-    testDb().prepare(`INSERT INTO work_events (work_id, kind, actor, payload, created_at) VALUES ('task-helper-1', 'transition', 'owner', ?, ?)`)
-      .run(JSON.stringify({ to: 'abandoned', by: 'owner' }), Date.now());
-    await resolveJoinsAtBoot();
-    expect(await told()).toEqual(['abandoned', 0, 0]);
   });
 
   it('the owner removes a helper given a plain question: called off by him, nobody is told', async () => {

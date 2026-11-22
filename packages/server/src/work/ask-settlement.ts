@@ -901,13 +901,14 @@ function settleOnAsyncResult(
   const heldAt = ask.state === 'blocked' && jobs.out === 0 ? jobHeldAt(ask.id) : null;
   if (heldAt && !linkedTaskOf(ask.agent_id, ask.root_id, { ownerHeldEnds: true })) {
     const late = realAnswerInConversationSince(ask.agent_id, ask.conversation_id, heldAt.at);
-    // Every part of it called off by the owner: so is the request.
-    if (!late && endedByHim(ask.id)) return calledOffAsHis(ask, 'the owner called off the job this request waited on', out);
+    // The owner called off every part of it: so is the request.
+    const calledOff = !late && endedByHim(ask.id);
     const r = late
       ? transition(ask.id, { to: 'done', by: 'agent', actorId, resultDeliveryId: late.id, expectedState: 'blocked', reason: `its job ended; answered via ${late.tool}` })
+      : calledOff ? transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: 'blocked', reason: 'the owner called off the job this request waited on' })
       : transition(ask.id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'its job ended; the person is told where it stands' });
     if (r.kind !== 'applied') return out('unchanged', `release refused: ${r.kind}`);
-    return late ? out('closed', `its job ended; answered via ${late.tool}`, late.id) : out('reopened', 'its job ended');
+    return late ? out('closed', `its job ended; answered via ${late.tool}`, late.id) : calledOff ? out('closed', 'called off by the owner') : out('reopened', 'its job ended');
   }
   if (jobs.all === 0) return out('unchanged', 'no background job was started for this request');
   if (jobs.out > 0) return out('unchanged', `${jobs.out} background job(s) for this request are still out`);
@@ -919,7 +920,11 @@ function settleOnAsyncResult(
   ).get(ask.agent_id, ask.root_id) as { id: string } | undefined)?.id ?? null;
   if (!named) {
     if (!endedByHim(ask.id)) return out('unchanged', 'no result has reached the owner');
-    return calledOffAsHis(ask, 'the owner cancelled the background work this request waited on, and nothing was delivered', out);
+    const r = transition(ask.id, {
+      to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: ask.state,
+      reason: 'the owner cancelled the background work this request waited on, and nothing was delivered',
+    });
+    return r.kind === 'applied' ? out('closed', 'cancelled by the owner') : out('unchanged', `cancel close refused: ${r.kind}`);
   }
   const owed = stillOwed(ask, ctx.turnNumber);
   if (owed) return out('unchanged', owed);
@@ -934,12 +939,6 @@ function settleOnAsyncResult(
     agentId: ask.agent_id, workId: ask.id, deliveryId: evidence.id, tool: evidence.tool,
   }, ask.agent_id);
   return out('closed', reason, evidence.id);
-}
-
-/** Every part of it ended by the owner: so is the request, for good (nothing is left under it to end). */
-function calledOffAsHis(ask: AskRow, reason: string, out: (v: AskSettlementVerdict, detail: string) => AskSettlementOutcome): AskSettlementOutcome {
-  const r = transition(ask.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: ask.state, reason });
-  return r.kind === 'applied' ? out('closed', 'called off by the owner') : out('unchanged', `call-off refused: ${r.kind}`);
 }
 
 function reaskAsync(agentId: string, askMessageId: string | null | undefined, deliveryId: string | null): AskSettlementOutcome | null {

@@ -1,4 +1,5 @@
-// The owner's Stop ends the request being served for good: it is called off, its parked job is held with no due,
+// The owner's Stop ends the request being served for good: it is called off, its job is cancelled with it (a job
+// with no request behind it is held with no due),
 // and nothing serves it again, not after the turn ends and not after a restart. The engine self-wakes queued before
 // a stopped turn are not served either; one tied to a person's request or scheduled run is, as is any queued after.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -47,13 +48,13 @@ describe('stop ends the request and nothing serves it again', () => {
     nothingComesBack();
   });
 
-  it('Stop on a job turn: its task loses its due and is held, so the job never comes back by itself', async () => {
+  it('Stop on a job turn: its task is cancelled with its request, so the job never comes back', async () => {
     const ask = await ownerAsks('m-1');
     await stretch('parks');
     const [task] = tasksOf('m-1');
     await stretch('stopped', () => stopByOwner(HELPER));
     expect(rowOf(ask).state).toBe('abandoned');
-    expect(rowOf(task)).toMatchObject({ due: null, hold: 'paused' });
+    expect(rowOf(task)).toMatchObject({ state: 'abandoned', due: null });
     nothingComesBack();
   });
 
@@ -63,7 +64,7 @@ describe('stop ends the request and nothing serves it again', () => {
     const [task] = tasksOf('m-1');
     expect(stopByOwner(HELPER)).toMatchObject({ ended: 1 });
     expect(rowOf(ask).state).toBe('abandoned');
-    expect(rowOf(task)).toMatchObject({ due: null, hold: 'paused' });
+    expect(rowOf(task)).toMatchObject({ state: 'abandoned', due: null });
     nothingComesBack();
   });
 
@@ -79,7 +80,7 @@ describe('stop ends the request and nothing serves it again', () => {
     expect(rowOf(ask).state).toBe('abandoned');
     const by = testDb().prepare("SELECT json_extract(payload, '$.by') AS by FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id DESC LIMIT 1").get(ask);
     expect(by).toEqual({ by: 'owner' });
-    expect(rowOf(task)).toMatchObject({ due: null, hold: 'paused' });
+    expect(rowOf(task)).toMatchObject({ state: 'abandoned', due: null });
     nothingComesBack();
     reconcileOrphanedClaims({ agentId: HELPER });
     healStuckClaims();
@@ -95,7 +96,7 @@ describe('stop ends the request and nothing serves it again', () => {
     expect(rowOf(ask).state).toBe('blocked');
     expect(stopByOwner(HELPER)).toMatchObject({ ended: 1 });
     expect(rowOf(ask).state).toBe('abandoned');
-    expect(rowOf(task)).toMatchObject({ due: null, hold: 'paused' });
+    expect(rowOf(task)).toMatchObject({ state: 'abandoned', due: null });
     nothingComesBack();
   });
 

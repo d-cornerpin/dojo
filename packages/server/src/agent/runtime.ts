@@ -368,10 +368,8 @@ export function stopAgent(agentId: string): void {
   logger.info('Agent stop requested', { runInFlight, callsAborted: cut }, agentId);
 }
 
-/** The owner's Stop ends the request being served (`stoppedRequestsOf`) in one transaction: its unsent replies, and
- *  what `callOff` ends for the request and for another agent's request's piece; a job left with no request has no due
- *  and is held unless a schedule. Then the agent stops, and the run is settled. Nothing running and nothing to end:
- *  nothing is done. What the Stop button does, for every door; import and terminate call `stopAgent`. */
+/** Every Stop door: in one unit its unsent replies go and `callOff` ends each request served and each piece it works
+ *  for another agent; a job left with no request is held. Then the agent stops. Import and terminate call `stopAgent`. */
 export function stopByOwner(agentId: string): { ended: number; repliesNotSent: number; nothingRunning?: true } {
   let s: StoppedRequests = { liveRun: false, asks: [], runTasks: [], requests: [], jobs: [] };
   try {

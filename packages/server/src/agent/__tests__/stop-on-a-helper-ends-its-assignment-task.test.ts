@@ -1,5 +1,5 @@
-// Stop on a helper serving another agent's assignment ends that request: it is given up, its assignment task is
-// held with no due (so nobody re-serves it), and the asker's piece ends saying the owner stopped the work.
+// Stop on a helper serving another agent's assignment calls off the asker's piece as the owner's: the request is given
+// up, its assignment task is cancelled with the piece (so nobody re-serves it), and the piece says the owner stopped it.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('./helpers/agent-requests.js')).connectionMock());
@@ -19,8 +19,8 @@ import { freshAgentsDb, preflightCtx, askerDelegates, pieceState, requestRow, te
 const THREAD = 'thread-assign-0001';
 beforeEach(() => { freshAgentsDb(runMigrations); stoppedAgents.clear(); });
 
-describe('stop on a helper holds its assignment task', () => {
-  it('the request is given up, its task held with no due, and the asker is told the owner stopped it', async () => {
+describe('stop on a helper ends its assignment task', () => {
+  it('the request is given up, its task cancelled as his, and the piece says the owner stopped it', async () => {
     const parent = await askerDelegates('ASSIGN', THREAD);
     const bag = openTurnContext(HELPER);
     const out = await runPreflight(bag, preflightCtx());
@@ -31,11 +31,11 @@ describe('stop on a helper holds its assignment task', () => {
     endTurnContext(HELPER);
 
     expect(requestRow(THREAD).swept).not.toBeNull();
-    expect(testDb().prepare('SELECT hold_kind AS hold, next_attempt_at AS due FROM work WHERE agent_id = ? AND a2a_thread_id = ?').get(HELPER, THREAD))
-      .toEqual({ hold: 'paused', due: null });
+    expect(testDb().prepare('SELECT state, next_attempt_at AS due FROM work WHERE agent_id = ? AND a2a_thread_id = ?').get(HELPER, THREAD))
+      .toEqual({ state: 'abandoned', due: null });
     expect(nextOwed(HELPER)).toEqual([]);
     await vi.waitFor(() => expect(pieceState(parent)).toBe('abandoned'));
     const why = testDb().prepare("SELECT json_extract(payload, '$.reason') AS r FROM work_events WHERE work_id LIKE 'piece:%' AND kind = 'transition' ORDER BY id DESC LIMIT 1").get() as { r: string };
-    expect(why.r).toBe('the owner stopped this work');
+    expect(why.r).toBe('called off by the owner: he pressed Stop');
   });
 });

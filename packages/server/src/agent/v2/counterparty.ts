@@ -392,12 +392,12 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
 export const TERMINAL_WAKE_WINDOW_MS = 45 * 60_000;
 
 /** A message on thread `m.a2a_thread_id` is for ended work: the NEWEST piece on the thread that this agent holds or was
- *  given was called off, by its own state whatever the rest of its request does, unless that request failed for want
- *  of an answer (a late answer takes the late road); a later request has a newer, live piece. */
-export const RESULT_FOR_ENDED_REQUEST = (m: string): string => `EXISTS (SELECT 1 FROM work p LEFT JOIN work a ON a.id = p.parent_id
+ *  given was called off, by its own record alone; one the engine gave up (`by` scheduler) keeps the late road. */
+export const RESULT_FOR_ENDED_REQUEST = (m: string): string => `EXISTS (SELECT 1 FROM work p
   WHERE p.id = (SELECT n.id FROM work n WHERE (n.agent_id = ${m}.agent_id OR n.assignee_agent = ${m}.agent_id) AND n.root_kind = 'a2a_thread'
                   AND n.root_id = ${m}.a2a_thread_id ORDER BY n.opened_at DESC LIMIT 1)
-    AND p.state = 'abandoned' AND a.state IS NOT 'failed')`;
+    AND p.state = 'abandoned' AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = p.id AND e.kind = 'transition'
+      AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = 'scheduler'))`;
 export const resultForEndedRequest = (agentId: string, threadId: string): boolean => !!getDb().prepare(
   `SELECT 1 FROM (SELECT ? AS agent_id, ? AS a2a_thread_id) m WHERE ${RESULT_FOR_ENDED_REQUEST('m')}`).get(agentId, threadId);
 
