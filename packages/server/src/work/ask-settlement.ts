@@ -450,6 +450,12 @@ export function joinOutstanding(ask: AskRow | string): boolean {
   return !!a && ((a.remaining_children ?? 0) > 0 || a.compile_pending === 1);
 }
 
+/** How the request ended, when it was called off or failed; null while it stands or once it was answered. */
+export function requestEnded(ask: AskRow | string): 'called_off' | 'failed' | null {
+  const a = typeof ask === 'string' ? readAsk(ask) : ask;
+  return a?.state === 'abandoned' ? 'called_off' : a?.state === 'failed' ? 'failed' : null;
+}
+
 /** The authority: every ask transition into `done`, and every decision not to, goes through here.
  *  Arm order: terminal; async; join; join hold; job hold; evidence; reply in flight; reply undelivered or held; then the
  *  no-evidence arms. In flight sits below evidence: an answer delivered on the request's own channel closes it

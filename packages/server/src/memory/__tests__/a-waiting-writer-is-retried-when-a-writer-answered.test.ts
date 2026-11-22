@@ -68,7 +68,8 @@ import { __resetCompactionFailuresForTests } from '../compaction-defect.js';
 import { __resetBreakersForTests } from '../../providers/billing-breaker.js';
 import { backgroundDrains } from '../../agent/shared-state.js';
 import { parkAfterForcedPass, __resetFullContextWaitForTests } from '../../agent/v2/full-context-wait.js';
-import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
+import { endTurnContext } from '../../agent/turn-context.js';
+import { liveTurn } from '../../agent/v2/__tests__/helpers/live-turn.js';
 import { recordProviderSuccess, recordProviderError } from '../../gateway/routes/services.js';
 import { checkOllamaHealth } from '../../services/ollama.js';
 import { STANDARD_DECISION_MODEL, STANDARD_WRITER_MODEL } from '../../services/local-standard.js';
@@ -137,9 +138,7 @@ let turnNumber = 100;
  *  then the park (as `recovery.ts` does). */
 async function overBudgetTurn(): Promise<void> {
   const ask = (db().prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1").get(AGENT) as { id: string }).id;
-  const bag = openTurnContext(AGENT);
-  bag.turnNumber = ++turnNumber;
-  bag.root = { kind: 'ask', id: ask, sourceMessageId: ask };
+  const bag = liveTurn(AGENT, { turnNumber: ++turnNumber, root: { kind: 'ask', id: ask, sourceMessageId: ask } });
   try {
     const brakedBefore = compactionBrakeMsLeft(AGENT) !== null;
     await checkAndCompact(AGENT, OWN, 8_000, { force: true, inTurn: true, dialedModelId: OWN });

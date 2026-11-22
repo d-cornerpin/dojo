@@ -5,8 +5,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope } from '../work/tracker-view.js';
 import { stampTicket } from '../work/tracker-store.js';
-import { turnWorkIds, servedByNotice } from '../work/task-freshness.js';
-import { recordTurnOnTasks } from '../work/task-turns.js';
+import { servedByNotice } from '../work/task-freshness.js';
+import { recordTurnOnTasks, tasksServedBy } from '../work/task-turns.js';
 import { relAgoFromNow, absInstant } from './task-stamp-time.js';
 // The declared set of bubbles ruled not-an-answer: read, never retyped (see `work/occurrences.ts`).
 import { NON_ANSWERING_DISPLAY_KINDS } from '../work/ask-settlement.js';
@@ -130,7 +130,7 @@ export function stampTasksAtTurnFinalize(input: {
     // tangible deliverable or an effectful call the turn's record counts (`turns.effectful_calls`) re-arms the ladder.
     const worked = isTangibleDeliverySummary(deliverySummary) || turnMadeEffectfulCall(db, input.agentId, input.turnNumber, input.servedTaskId);
     const woken = !worked && servedByNotice(input.agentId, input.turnNumber, input.servedTaskId) ? input.servedTaskId : null;
-    const carried = turnWorkIds(input.agentId).filter((id) => id !== woken);
+    const carried = tasksServedBy(input.agentId, input.turnNumber).filter((id) => id !== woken);
     recordTurnOnTasks(input.agentId, input.turnNumber, [...carried, ...(woken || !input.servedTaskId ? [] : [input.servedTaskId])]);
     const tied = db.prepare(
       `SELECT w.id AS id FROM work w

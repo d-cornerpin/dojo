@@ -64,7 +64,8 @@ vi.mock('../../../../../config/platform.js', async (importOriginal) => ({
 
 import { runMigrations } from '../../../../../db/migrations.js';
 import { stoppedAgents } from '../../../../shared-state.js';
-import { openTurnContext, endTurnContext } from '../../../../turn-context.js';
+import { endTurnContext } from '../../../../turn-context.js';
+import { liveTurn } from '../../../__tests__/helpers/live-turn.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runTurnTimeBudget } from '../turn-budget.js';
 import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
@@ -200,9 +201,7 @@ beforeEach(() => {
   // two clauses with identical rows and different provider declarations must not share an answer.
   __resetEstimateCacheForTests();
   // The turn serves the owner's request, so its park has a task to date.
-  const bag = openTurnContext(AGENT);
-  bag.turnNumber = 3;
-  bag.root = { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask' };
+  const bag = liveTurn(AGENT, { turnNumber: 3, root: { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask' } });
   stoppedAgents.clear();
   generateSummarySpy.mockReset();
   generateSummarySpy.mockImplementation(async () => ({ ok: true, text: 'A summary of the older span.', tokenCount: 12 }));

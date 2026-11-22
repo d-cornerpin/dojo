@@ -1,6 +1,6 @@
-// A new request is never refused as a repeat on a guess: an ASSIGN that reads like the one before it on the same
-// thread is delivered, and a task whose title shares most of its words with one just opened is opened. A note
-// repeated on a thread is still held back.
+// A new request is never refused as a repeat on a guess: an ASSIGN that reads like the one before it gets its own
+// thread and task when it names none, and is delivered on the same thread when it names that one; a task whose
+// title shares most of its words with one just opened is opened. A note repeated on a thread is still held back.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
@@ -26,6 +26,15 @@ beforeEach(() => {
 });
 
 describe('a new request is never taken for a repeat', () => {
+  it('a second ASSIGN with no thread that reads like the first gets its own thread and its own task', async () => {
+    const camping = await call('send_to_agent', { agent: 'packer', intent: 'ASSIGN', payload: 'Write a camping packing list.' });
+    const ski = await call('send_to_agent', { agent: 'packer', intent: 'ASSIGN', payload: 'Write a ski packing list.' });
+    expect([camping.isError, ski.isError], ski.content).toEqual([false, false]);
+    const threads = mockDb.current!.prepare("SELECT DISTINCT a2a_thread_id AS t FROM messages WHERE agent_id = 'packer' AND a2a_intent = 'ASSIGN'").all();
+    expect(threads).toHaveLength(2);
+    expect(mockDb.current!.prepare("SELECT COUNT(DISTINCT a2a_thread_id) AS n FROM work WHERE kind = 'task' AND a2a_thread_id IS NOT NULL").get()).toEqual({ n: 2 });
+  });
+
   it('a second ASSIGN on the same thread that reads like the first is delivered; a repeated note is not', async () => {
     const first = await call('send_to_agent', { agent: 'packer', intent: 'ASSIGN', payload: 'Write a camping packing list.' });
     const thread = (mockDb.current!.prepare("SELECT a2a_thread_id AS t FROM messages WHERE agent_id = 'packer'").get() as { t: string }).t;

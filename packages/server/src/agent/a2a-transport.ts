@@ -175,44 +175,6 @@ async function checkSemanticDedup(payload: string, threadId: string, fromAgent: 
   }
 }
 
-// A re-ASSIGN that omits `thread_id` mints a fresh thread and task each time, invisible to
-// per-thread dedup: check this sender's recent ASSIGNs across ALL threads; same 10-minute rule.
-async function findRecentDuplicateAssignThread(
-  senderId: string,
-  receiverId: string,
-  payload: string,
-): Promise<string | null> {
-  try {
-    const db = getDb();
-    const recent = db.prepare(`
-      SELECT content, a2a_thread_id FROM messages
-       WHERE agent_id = @receiverId AND source_agent_id = @senderId AND a2a_intent = 'ASSIGN'
-         AND a2a_thread_id IS NOT NULL
-         AND created_at >= (unixepoch('now', '-10 minutes') * 1000)
-      ORDER BY rowid DESC
-      LIMIT @lookback
-    `).all({ receiverId, senderId, lookback: DEDUP_LOOKBACK }) as Array<{ content: string; a2a_thread_id: string }>;
-    if (recent.length === 0) return null;
-
-    const { generateEmbedding } = await import('../memory/embeddings.js');
-    const newEmbedding = await generateEmbedding(payload, { agentId: senderId });
-    for (const msg of recent) {
-      const msgPayload = extractPayloadFromA2AMessage(msg.content);
-      if (!msgPayload || msgPayload.length < 10) continue;
-      const existingEmbedding = await generateEmbedding(msgPayload, { agentId: senderId });
-      if (cosineSimilarity(newEmbedding, existingEmbedding) > DEDUP_SIMILARITY_THRESHOLD) {
-        return msg.a2a_thread_id;
-      }
-    }
-    return null;
-  } catch (err) {
-    logger.debug('Cross-thread ASSIGN dedup skipped (embedding unavailable)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return null;
-  }
-}
-
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) return 0;
   let dotProduct = 0;
@@ -422,16 +384,6 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     requiresResponse = true; // Promoted DELIVERABLE wakes the receiver
   }
 
-  // An ASSIGN with no thread_id that repeats a recent one reuses that thread, so dedup drops it.
-  let reusedAssignThreadId: string | null = null;
-  if (effectiveIntent === 'ASSIGN' && !envelope.threadId && envelope.fromAgent !== 'system') {
-    reusedAssignThreadId = await findRecentDuplicateAssignThread(envelope.fromAgent, target.id, envelope.payload);
-    if (reusedAssignThreadId) {
-      logger.info('A2A ASSIGN without thread_id matched a recent assignment, reusing its thread', {
-        from: envelope.fromAgent, to: target.id, threadId: reusedAssignThreadId,
-      }, envelope.fromAgent);
-    }
-  }
   const servedThreadId = !envelope.threadId && envelope.fromAgent !== 'system' && FINAL_REPLY_INTENTS.has(effectiveIntent)
     ? servedRequestThreadFrom(envelope.fromAgent, target.id) : null;   // a threadless reply goes on the request it answers
   // A named thread is stored under the full id the two agents' stores hold for its token, the exact id first.
@@ -440,7 +392,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
     `SELECT a2a_thread_id AS t FROM messages WHERE agent_id IN (?, ?) AND length(a2a_thread_id) > ${A2A_THREAD_SHORT_LENGTH}
        AND ${a2aThreadTokenMatchesSql('a2a_thread_id')} ORDER BY a2a_thread_id = ? DESC, rowid DESC LIMIT 1`,
   ).get(envelope.fromAgent, target.id, tok, tok, envelope.threadId) as { t: string } | undefined)?.t : undefined;
-  const threadId = named || envelope.threadId || reusedAssignThreadId || servedThreadId || uuidv4();
+  const threadId = named || envelope.threadId || servedThreadId || uuidv4();
   // ⚠ READ BEFORE `ensureThread`, and the order is load-bearing: that insert stamps `datetime('now')`
   // when no row exists, so a later read would report a delivery that never happened.
   // On a request that was called off a result is refused (it is never passed on as news); anything else wakes nobody.

@@ -21,7 +21,10 @@ beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE turn_artifacts (agent_id TEXT, turn_number INTEGER, kind TEXT, path TEXT, payload_json TEXT, delivered_at TEXT);
-    CREATE TABLE deliveries (agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
+    CREATE TABLE deliveries (id TEXT, agent_id TEXT, turn_number INTEGER, tool TEXT, channel TEXT, outcome TEXT, message_id TEXT,
+      created_at TEXT DEFAULT (datetime('now')));
+    CREATE TABLE turns (agent_id TEXT, turn_number INTEGER, root_kind TEXT, root_id TEXT, started_at TEXT, ended_at TEXT);
+    CREATE TABLE messages (id TEXT, task_id TEXT, run_id TEXT, root_kind TEXT, root_id TEXT, a2a_thread_id TEXT);
   `);
   createWorkTable(db);
   const UPDATED = ms('2026-07-22 07:00:00')!;
@@ -42,7 +45,7 @@ const stampsOf = (id: string): Record<string, unknown> =>
 
 describe('stampTasksAtTurnFinalize', () => {
   it('stamps the origin-tied own ticket and ONLY it; never touches updated_at', () => {
-    mockDb.current!.prepare(`INSERT INTO deliveries VALUES ('a1', 100, 'imessage', 'delivered')`).run();
+    mockDb.current!.prepare(`INSERT INTO deliveries (agent_id, turn_number, channel, outcome) VALUES ('a1', 100, 'imessage', 'delivered')`).run();
     stampTasksAtTurnFinalize({
       agentId: AGENT, turnNumber: 100, outcome: 'answered', answerMessageId: 'ans-1',
       rootSourceMessageId: 'ask-1', convKey: 'owner', servedTaskId: null,

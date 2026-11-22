@@ -13,7 +13,8 @@ vi.mock('../../../services/resource-monitor.js', () => ({ canSpawnAgent: () => (
 vi.setConfig({ testTimeout: 120_000 });
 
 import { recordDelivery } from '../../../agent/v2/deliveries.js';
-import { openTurnContext, endTurnContext } from '../../../agent/turn-context.js';
+import { endTurnContext } from '../../../agent/turn-context.js';
+import { liveTurn } from '../../../agent/v2/__tests__/helpers/live-turn.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin } from '../../store.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { newestPutBack, recordPiecesShown, settleAsksAtTurnFinalize } from '../../ask-settlement.js';
@@ -25,7 +26,7 @@ const ASK = askIdForMessage('m-ask');
 const closes = () => doneDb().prepare(
   "SELECT json_extract(payload, '$.to') AS \"to\" FROM work_events WHERE work_id = ? AND kind = 'transition' AND json_extract(payload, '$.to') IN ('done', 'failed', 'abandoned')").all(ASK);
 const inTurn = (): void => {
-  Object.assign(openTurnContext(MAIN), { turnNumber: 7, root: { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask', conversationId: 'conv-dash' } });
+  liveTurn(MAIN, { turnNumber: 7, root: { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask', conversationId: 'conv-dash' } });
 };
 const jobTasks = () => doneDb().prepare(
   "SELECT id, agent_id AS holder, a2a_thread_id AS thread, state, goal FROM work WHERE kind = 'task' AND root_kind <> 'a2a_thread' AND id <> 'task-decide-0001' ORDER BY opened_at, rowid",
@@ -120,7 +121,7 @@ describe('a task opened for a request, then delegated, is the helper\'s task', (
     doneDb().prepare('UPDATE work SET opened_at = opened_at + 60000 WHERE id = ?').run(ski);   // the store's clock is in seconds
     claimAsk(ski, MAIN);
     stampClaimingTurn(ski, 8);
-    Object.assign(openTurnContext(MAIN), { turnNumber: 8, root: { kind: 'ask', id: 'm-ask2', sourceMessageId: 'm-ask2', conversationId: 'conv-dash' } });
+    liveTurn(MAIN, { turnNumber: 8, root: { kind: 'ask', id: 'm-ask2', sourceMessageId: 'm-ask2', conversationId: 'conv-dash' } });
     const thread = assignThread(helper);
     expect((await call(MAIN, 'send_to_agent', { agent: helper, intent: 'ASSIGN', thread_id: thread, payload: 'Write a ski packing list.' })).isError).toBe(false);
     openDelegationJoin({ parentWorkId: ski, agentId: MAIN, replyConversationId: 'conv-dash', ttlAt: Date.now() + 3_600_000,

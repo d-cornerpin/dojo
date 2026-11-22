@@ -408,7 +408,7 @@ export function stampClaimingTurn(workId: string, turnNumber: number): number {
 export function claimingTurnOf(workId: string): number | null {
   const r = getDb().prepare(
     `SELECT json_extract(payload, '$.turn_number') AS t FROM work_events
-      WHERE work_id = ? AND kind = 'claim_turn' ORDER BY id DESC LIMIT 1`,
+      WHERE work_id = ? AND kind = 'claim_turn' AND json_extract(payload, '$.how') IS NULL ORDER BY id DESC LIMIT 1`,
   ).get(workId) as { t: number | null } | undefined;
   return r?.t ?? null;
 }

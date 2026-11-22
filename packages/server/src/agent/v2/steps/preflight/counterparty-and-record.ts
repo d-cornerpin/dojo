@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { claimEngineEventByRowid, markServedByRowid } from '../../../../memory/message-store.js';
-import { askIdForMessage, firstServedAt, stampClaimingTurn } from '../../../../work/store.js';
+import { appendWorkEvent, askIdForMessage, firstServedAt, stampClaimingTurn } from '../../../../work/store.js';
 import { liftStandDowns } from '../../../../work/ask-settlement.js';
 import { originOfTasks } from '../../../../work/job-origin.js';
 import { turnBoundary } from '../../../turn-state.js';
@@ -143,7 +143,8 @@ export async function runCounterpartyAndRecord(
       stampClaimingTurn(triggerWorkId, turnNumber);
       if (wroteAgain) liftStandDowns(agentId, triggerWorkId, turnNumber);   // a request of theirs that stood down is served with it
     }
-    // A turn serving a job holds the request its job started from, claimed at its pickup.
+    // A turn serving a job marks the job's task, and holds the request its job started from, claimed at its pickup.
+    if (turnCtx.servedJob) appendWorkEvent(turnCtx.servedJob, 'claim_turn', 'engine', { turn_number: turnNumber, agent_id: agentId, how: 'job' });
     const jobOrigin = turnCtx.servedJob ? originOfTasks(agentId, [turnCtx.servedJob]) : null;
     if (jobOrigin?.kind === 'ask') stampClaimingTurn(askIdForMessage(jobOrigin.messageId), turnNumber);
     if (triggerRow) {

@@ -17,7 +17,8 @@ vi.mock('../../../../../memory/compaction.js', () => ({
 }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
-import { endTurnContext, openTurnContext, turnContext } from '../../../../turn-context.js';
+import { endTurnContext, turnContext } from '../../../../turn-context.js';
+import { liveTurn } from '../../../__tests__/helpers/live-turn.js';
 import { advance, initState, type AgentTurnState } from '../../../state.js';
 import { runPreCallGates, type PreCallGatesContext } from '../index.js';
 import { liftRepeatStops, noteRepeatResult } from '../../../../v2/repeat-rule.js';
@@ -38,18 +39,14 @@ function stateAt(loopCount: number, ageMs = 0): AgentTurnState {
 
 const ctx = { agentId: AGENT, turnNumber: 1, configuredModelId: 'm' } as unknown as PreCallGatesContext;
 /** The running turn serves the owner's request, so a park has a request to open its task for. */
-const bag = () => {
-  const b = turnContext(AGENT) ?? openTurnContext(AGENT);
-  b.turnNumber ??= 1;
-  b.root ??= { kind: 'ask', id: 'owner-ask', sourceMessageId: 'owner-ask' };
-  return b;
-};
+const OWNER_ASK = { kind: 'ask', id: 'owner-ask', sourceMessageId: 'owner-ask' } as const;
+const bag = () => turnContext(AGENT) ?? liveTurn(AGENT, { turnNumber: 1, root: OWNER_ASK });
 const gate = (state: AgentTurnState) => { bag(); return runPreCallGates(state, ctx); };
 /** A park dates the job's task: that is the continuation. */
 const jobParked = (): boolean => !!mockDb.current!.prepare('SELECT 1 FROM work WHERE agent_id = ? AND next_attempt_at IS NOT NULL').get(AGENT);
 const clearParks = (): void => { mockDb.current!.prepare('UPDATE work SET next_attempt_at = NULL').run(); endTurnContext(AGENT); };
 /** The next turn is the job's own, started from its task row. */
-const asJobTurn = (): void => { bag().servedJob = TASK; };
+const asJobTurn = (): void => { liveTurn(AGENT, { turnNumber: 1, root: OWNER_ASK, servedJob: TASK }); };
 
 function seedClaimedTask(): void {
   const now = Date.now();
@@ -61,7 +58,7 @@ function seedClaimedTask(): void {
 
 /** A work call this turn whose result the window has not seen: the job moved. */
 const aNewCallSucceeded = (state: AgentTurnState, n: number): void => {
-  const turn = turnContext(AGENT) ?? openTurnContext(AGENT);
+  const turn = bag();
   noteRepeatResult(AGENT, turn, 'file_read', { path: `/archive/${state.turnStartMs}-${n}.txt` }, 'new batch', true);
 };
 
@@ -99,7 +96,7 @@ describe('a window renews only while the job moves and nobody waits', () => {
 
   it('a person who writes mid-turn waits at most one window: the moving job checkpoints at its end', async () => {
     seedClaimedTask();
-    openTurnContext(AGENT).pickupSeq = 0;   // the turn began before any message
+    bag().pickupSeq = 0;   // the turn began before any message
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', channel: 'dashboard', senderId: 'owner', content: 'stop, wrong folder', turnNumber: 2 });
     expect(getWaitingHumanConversations(AGENT), 'precondition: the person is waiting').toHaveLength(1);
     const state = stateAt(76);
@@ -113,7 +110,7 @@ describe('a window renews only while the job moves and nobody waits', () => {
     seedClaimedTask();
     insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', channel: 'dashboard', senderId: 'owner', content: 'sort the archive', turnNumber: 1 });
     const [served] = getWaitingHumanConversations(AGENT);
-    const turn = openTurnContext(AGENT);
+    const turn = bag();
     turn.pickupSeq = served.latest.rowid;
     turn.convKey = served.key;
     const state = stateAt(76);
@@ -171,12 +168,9 @@ describe('a window renews only while the job moves and nobody waits', () => {
     await gate(stateAt(76));
     clearParks();
     const archive = { argv: ['archive', '--next', '50'] };
-    const last = openTurnContext(AGENT);
-    last.turnNumber = 1;
+    const last = liveTurn(AGENT, { turnNumber: 1, root: OWNER_ASK });
     for (let i = 0; i < 3; i++) noteRepeatResult(AGENT, last, 'exec', archive, 'Archived 50 messages.', true);
-    const turn = openTurnContext(AGENT);
-    turn.turnNumber = 2;
-    asJobTurn();
+    const turn = liveTurn(AGENT, { turnNumber: 2, root: OWNER_ASK, servedJob: TASK });
     expect(noteRepeatResult(AGENT, turn, 'exec', archive, 'Archived 50 messages.', true), 'stopped at the 4th').toBeTruthy();
     return stateAt(76);
   }

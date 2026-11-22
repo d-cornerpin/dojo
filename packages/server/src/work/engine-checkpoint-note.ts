@@ -1,7 +1,7 @@
 // An engine checkpoint parks a turn for its job's next turn: it notes the park on each open task the turn worked. It never touches a task's movement, so a stalled job still reads as stalled.
 import { getDb } from '../db/connection.js';
 import { writeTaskLog } from '../tracker/task-log.js';
-import { turnWorkIds } from './task-freshness.js';
+import { tasksServedBy } from './task-turns.js';
 import { taskScope } from './tracker-view.js';
 import { workingExpr } from './terminal-states.js';
 
@@ -15,7 +15,7 @@ const REASON_TEXT: Record<EngineCheckpointReason, string> = {
 
 /** Call just before a checkpoint parks its job; returns how many open tasks got a note. */
 export function noteEngineCheckpoint(agentId: string, reason: EngineCheckpointReason, jobTaskIds: string[] = []): number {
-  const tied = [...new Set([...turnWorkIds(agentId), ...jobTaskIds])];
+  const tied = [...new Set([...tasksServedBy(agentId), ...jobTaskIds])];
   if (tied.length === 0) return 0;
   const open = getDb().prepare(
     `SELECT w.id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.id IN (${tied.map(() => '?').join(', ')}) AND ${workingExpr('w', true)}`,

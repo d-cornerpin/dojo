@@ -81,7 +81,8 @@ import { runMigrations } from '../../../db/migrations.js';
 import { recoverFromError } from '../recovery.js';
 import { initState, advance } from '../state.js';
 import { clearErrors } from '../../errors.js';
-import { openTurnContext, endTurnContext } from '../../turn-context.js';
+import { endTurnContext } from '../../turn-context.js';
+import { liveTurn } from './helpers/live-turn.js';
 import { compactionBrakeMsLeft } from '../../../memory/compaction-brakes.js';
 import {
   validateAtProviderBoundary, AssemblyValidationError, assemblyTokens, type ValidatedMessage,
@@ -159,9 +160,7 @@ const jobPickedUp = (): void => { db().prepare("UPDATE work SET next_attempt_at 
 
 /** One turn's recovery; the turn serves the owner's request, so its park has a task to date. */
 async function recover(error: unknown, turnNumber: number, loopCount = 1): Promise<void> {
-  const bag = openTurnContext(AGENT);
-  bag.turnNumber = turnNumber;
-  bag.root = { kind: 'ask', id: 'm-keep-counting', sourceMessageId: 'm-keep-counting' };
+  const bag = liveTurn(AGENT, { turnNumber: turnNumber, root: { kind: 'ask', id: 'm-keep-counting', sourceMessageId: 'm-keep-counting' } });
   try { await recoverOnce(error, turnNumber, loopCount); } finally { endTurnContext(AGENT); }
 }
 
