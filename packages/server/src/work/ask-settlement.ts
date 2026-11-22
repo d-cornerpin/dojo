@@ -821,9 +821,9 @@ function mediaJobs(askRootId: string): { all: number; out: number; cancelled: nu
 }
 
 /** Job hold: while the request's task (linked, or parked by this turn for it) runs, a progress text does not close it:
- *  held at send time while its turn is live; at the end held when parked, or by a job turn not ended on its answer. */
+ *  held at send time while its turn is live; at the end (and at boot) held when parked, or by a job turn not ended on its answer. */
 function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: AskSettlementVerdict, d: string) => AskSettlementOutcome): AskSettlementOutcome | null {
-  if (ctx.at !== 'delivery' && ctx.at !== 'finalize') return null;
+  if (ctx.at !== 'delivery' && ctx.at !== 'finalize' && ctx.at !== 'boot') return null;
   const parked = ctx.parkedTask && ask.claimed_by_turn === ctx.turnNumber && taskNow(ctx.parkedTask).open ? ctx.parkedTask : null;
   const task = linkedTaskOf(ask.agent_id, ask.root_id) ?? parked;
   if (!task) return null;
