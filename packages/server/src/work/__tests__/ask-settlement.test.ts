@@ -45,6 +45,7 @@ import {
 } from '../ask-settlement.js';
 import { reconcileOrphanedClaims } from '../orphaned-claims.js';
 import { insertMessage } from '../../memory/message-store.js';
+import { turnRow } from '../../agent/v2/__tests__/helpers/live-turn.js';
 import { assembledContextAsks } from '../../agent/v2/counterparty.js';
 import { FX, FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -88,6 +89,7 @@ function seedDelivery(
 /** An ask picked up by a turn — the shape every arm below starts from. */
 function claimedAsk(messageId: string, turn: number, over: Record<string, unknown> = {}): string {
   insertMessage(ownerInbound({ id: messageId, ...over }) as never);
+  turnRow(AGENT, turn, null, true);
   claimAsk(askIdForMessage(messageId), AGENT);
   stampClaimingTurn(askIdForMessage(messageId), turn);
   return askIdForMessage(messageId);

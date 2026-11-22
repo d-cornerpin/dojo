@@ -18,6 +18,7 @@ import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shar
 import { endTurn, modelSays, steered } from '../v2/steps/post-call-classify/__tests__/post-call-kit.js';
 import { AGENT, testDb } from '../v2/__tests__/helpers/reply-sender.js';
 import { FXID } from '../../../../../deploy/checks/fixture-vocabulary.mjs';
+import { turnRow } from '../v2/__tests__/helpers/live-turn.js';
 import { delegatedTextRequest, helperTask, relayRows, requestState, textsSent, CONV, THREAD, HELPER } from './helpers/text-relay.js';
 
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
@@ -42,6 +43,7 @@ describe('a job the owner deletes mid hand-off is not done by his agent', () => 
     expect(requestState()).toBe('abandoned');
     expect([isStopFenced(HELPER), isStopFenced(AGENT)]).toEqual([true, true]);
     testDb().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, 'the agent', 'idle', 'sensei')").run(FXID.n4);   // the kit's turn
+    turnRow(FXID.n4, 7, { kind: 'ask', id: 'm-ask' }, true);
     modelSays({ only_promises_to_start: true });
     expect(steered(await endTurn("Helper's on it, I'll bring you the five tips.", [], undefined, serving))).not.toContain('promise-floor');
     expect([relayRows(), textsSent()]).toEqual([[], []]);

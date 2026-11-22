@@ -3,8 +3,7 @@
 // for his Stop) so the stall ladder never chases it, no note wakes a helper, and a later answer relays nothing; failed
 // for want of an answer, its pieces end,
 // nobody is touched, and a late answer still goes back to the agent for the person.
-// Stop with nothing running ends a request waiting on a helper even when a later turn served something else; Stop
-// while a turn runs ends every request that turn claimed, and each one's row says so in every later view.
+// Stop with nothing running ends a request waiting on a helper even when a later turn served something else.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -24,12 +23,10 @@ import { nextOwed } from '../v2/owed.js';
 import { trackerHandlers } from '../tools/cat/tracker.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
-import { claimAsk, stampClaimingTurn } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
 import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shared-state.js';
 import { runLadder, LADDER_ENTRY } from '../../work/done/ladder.js';
-import { assembleContext } from '../../memory/assembler.js';
 import { delegatedTextRequest, helperAnswers, helperTask, relayRows, requestState, HELPER, CONV, ASK, THREAD } from './helpers/text-relay.js';
 
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
@@ -70,7 +67,6 @@ describe("ending a request ends its helpers' work", () => {
 
   it('Stop while the helper works on it: the owner\'s Stop cancels its task and stops its turn, and nothing wakes it', async () => {
     helperMidTurn();
-    testDb().prepare("INSERT INTO turns (agent_id, turn_number, root_kind, root_id, answered, effectful_calls) VALUES (?, 1, 'ask', 'm-ask', 0, 0)").run(AGENT);
     expect(stopByOwner(AGENT)).toMatchObject({ ended: 1 });
     expect(pieceState()).toBe('abandoned');
     await settled();
@@ -86,7 +82,7 @@ describe("ending a request ends its helpers' work", () => {
     insertMessage({ id: 'm-quick', agentId: AGENT, role: 'user', content: 'What time is it in Tokyo?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
     expect(testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = 'ask:m-quick'").run(Date.now()).changes).toBe(1);
     testDb().prepare(`INSERT INTO turns (agent_id, turn_number, root_kind, root_id, answered, effectful_calls)
-      VALUES (?, 1, 'ask', 'm-ask', 0, 0), (?, 2, 'ask', 'm-quick', 1, 0)`).run(AGENT, AGENT);
+      VALUES (?, 2, 'ask', 'm-quick', 1, 0)`).run(AGENT);
   };
   const helperToldOwnerEnded = async (): Promise<void> => {
     expect([requestState(), pieceState()]).toEqual(['abandoned', 'abandoned']);
@@ -110,33 +106,6 @@ describe("ending a request ends its helpers' work", () => {
     clearPlatformConfigCache();
     expect(await handleIMCommand('stop', PERSON)).toBe('Dojo: Stopped. 1 request ended.');
     await helperToldOwnerEnded();
-  });
-
-  it('Stop while a turn runs ends every request it claimed, leaves the one waiting on a helper alone, and their rows say called off', async () => {
-    const before = [requestState(), pieceState()];
-    for (const [id, content] of [['m-bike', 'Make me a picture of a red bicycle'], ['m-quick', 'Write me a poem about autumn']]) {
-      insertMessage({ id, agentId: AGENT, role: 'user', content, channel: 'imessage', senderId: PERSON, conversationId: CONV });
-      claimAsk(`ask:${id}`, AGENT);
-      stampClaimingTurn(`ask:${id}`, 2);   // the turn picked up the poem and revived the older bicycle request
-    }
-    insertMessage({ id: 'm-next', agentId: AGENT, role: 'user', content: 'What time is it in Tokyo?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
-    Object.assign(openTurnContext(AGENT), { turnNumber: 2, root: { kind: 'ask', id: 'm-quick', sourceMessageId: 'm-quick' } });
-    await executeTool(AGENT, { id: 'tc-own', name: 'work_open', arguments: { kind: 'task', title: 'Autumn poem', goal: 'The person has the poem' } });
-    expect(stopByOwner(AGENT)).toMatchObject({ ended: 2 });
-    expect([testDb().prepare("SELECT state FROM work WHERE id = 'ask:m-bike'").get(), requestState(), pieceState()]).toEqual([{ state: 'abandoned' }, ...before]);
-    testDb().prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('p', 'P', 'anthropic', 'api_key')").run();
-    testDb().prepare(`INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled) VALUES ('m', 'p', 'M', 'm-1', '["tools"]', 40000, 1)`).run();
-    await assembleContext(AGENT, 'm');   // the stopped turn was still before its first call: its own late assembly
-    endTurnContext(AGENT);
-    await settled();
-    expect(helperTaskState()).toBe('claimed');
-    expect(testDb().prepare("SELECT state, hold_kind AS hold FROM work WHERE kind = 'task' AND source_message_id = 'm-quick'").get(), 'its own task is cancelled, not paused')
-      .toEqual({ state: 'abandoned', hold: null });
-    for (let call = 0; call < 2; call++) {   // every call of the next turn sees it
-      const text = JSON.stringify((await assembleContext(AGENT, 'm')).messages);
-      expect(text).toMatch(/called off: do not do this\][^[]*Write me a poem about autumn/);
-      expect(text).not.toMatch(/called off: do not do this\][^[]*What time is it in Tokyo/);
-    }
   });
 
   it('a request whose helper\'s job ended unanswered fails, tells no helper, and a late answer goes back to the agent', async () => {

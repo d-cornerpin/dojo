@@ -21,6 +21,7 @@ import { markSteerDelivered, nextSteer } from '../v2/steer-queue.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
 import { delegatedTextRequest, helperAnswers, ASK, CONV, HELPER, THREAD } from './helpers/text-relay.js';
 import { turnReplies } from './helpers/turn-reply.js';
+import { turnRow } from '../v2/__tests__/helpers/live-turn.js';
 
 const TOWELS = 'ask:m-towels';
 const asks = () => testDb().prepare('SELECT id, state, result_delivery_id AS answer FROM work WHERE id IN (?, ?) ORDER BY id')
@@ -30,6 +31,7 @@ beforeEach(async () => {
   delegatedTextRequest();   // the first question, asked of the helper on THREAD by turn 1
   insertMessage({ id: 'm-towels', agentId: AGENT, role: 'user', content: 'And ask her how many towels', channel: 'imessage', senderId: PERSON, conversationId: CONV,
     inboundMeta: JSON.stringify({ channel: 'imessage', sender: PERSON, relation: 'known_contact' }) });
+  turnRow(AGENT, 2, { kind: 'ask', id: 'm-towels' });
   claimAsk(TOWELS, AGENT);
   stampClaimingTurn(TOWELS, 2);
   await helperAnswers('1. Sunscreen 2. A hat 3. Water');   // lands on the first question while turn 2 runs

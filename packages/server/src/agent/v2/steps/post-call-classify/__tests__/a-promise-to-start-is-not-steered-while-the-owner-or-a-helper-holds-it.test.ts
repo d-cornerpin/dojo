@@ -16,6 +16,7 @@ import { openTrackerTask } from '../../../../../work/tracker-store.js';
 import { setHold } from '../../../../../work/done/hold.js';
 import { openAsk, claimAsk, openDelegationJoin } from '../../../../../work/store.js';
 import { endTurn, modelSays, steered } from './post-call-kit.js';
+import { turnRow } from '../../../__tests__/helpers/live-turn.js';
 import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
 const PROMISE = 'On it. I will start on the move plan now.';
@@ -51,8 +52,10 @@ describe('a promise to start and the owner\'s hold', () => {
     claimAsk(ask, FXID.n4);
     openDelegationJoin({ parentWorkId: ask, agentId: FXID.n4, replyConversationId: null, ttlAt: Date.now() + 3_600_000,
       threads: [{ threadId: randomUUID(), assigneeAgent: 'agent-helper', intent: 'ASSIGN', hopCount: 0 }] });
+    turnRow(FXID.n4, 7, { kind: 'ask', id: request }, true);   // the kit's turn, on the request
     modelSays({ only_promises_to_start: true });
     expect(steered(await endTurn("Helper's on it; I'll text you the short list when she reports back.", [], undefined, servingRequest(request)))).not.toContain('promise-floor');
+    getDb().prepare('DELETE FROM turns WHERE agent_id = ?').run(FXID.n4);
   });
 
   it('a hold the agent set itself is not the owner\'s: the promise is steered', async () => {

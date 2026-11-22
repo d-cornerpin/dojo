@@ -9,9 +9,8 @@ import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFired } from '../../steer-queue.js';
 import { replyClaim } from '../../reply-claims.js';
-import { linkedTaskOf, joinOutstanding } from '../../../../work/ask-settlement.js';
-import { askIdForMessage } from '../../../../work/store.js';
-import { getDb } from '../../../../db/connection.js';
+import { linkedTaskOf, joinOutstanding, requestEnded } from '../../../../work/ask-settlement.js';
+import { servedBy } from '../../../../work/task-turns.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 import { turnWindow } from './job-turn-end.js';
@@ -63,10 +62,11 @@ export function runPromiseFloor(
     const transitionedATaskThisTurn = state.toolResults.some(
       (tr) => !tr.isError && CLOSING_WORK_OPS.has(toolOpKey(tr.name, tr.arguments)),
     );
-    // A promise to start is not pushed past the owner's hold on the task behind this request, its helpers, or its end.
+    // A promise to start is not pushed past the owner's hold on the task behind this request, or past a request the
+    // turn served that waits on helpers or has ended.
     const request = ctx.turnCtx.root?.kind === 'ask' ? ctx.turnCtx.root.sourceMessageId : null;
-    const ask = forwardPromise && request ? getDb().prepare('SELECT id, state FROM work WHERE id = ?').get(askIdForMessage(request)) as { id: string; state: string } | undefined : undefined;
-    const notThisTurns = !!ask && (joinOutstanding(ask.id) || ask.state === 'abandoned' || ask.state === 'failed');
+    const notThisTurns = forwardPromise && servedBy(agentId, turnNumber).some((s) => s.kind === 'ask'
+      && ['root', 'claimed', 'forwarded'].includes(s.how) && (joinOutstanding(s.id) || requestEnded(s.id) !== null));
     const ownerHoldsItsTask = forwardPromise && !!linkedTaskOf(agentId, request)
       && !linkedTaskOf(agentId, request, { ownerHeldEnds: true });
     // A promise backed by a row this turn opened with a future fire is the scheduler's to keep;

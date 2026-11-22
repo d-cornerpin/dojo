@@ -2,6 +2,7 @@
 // a spawn with no task named), is the helper's job task: one task on the board, handed in by the helper's reply and
 // reviewed once, only after the person has the answer. A helper's job born of the ASSIGN waits the same way. In a
 // fan-out only the first helper gets the opened task; a work_open after delegating names the helper's task instead.
+// A turn that took up two requests cannot tell which one the task was for, so it moves nothing.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -95,6 +96,18 @@ describe('a task opened for a request, then delegated, is the helper\'s task', (
       expect(report).toMatch(/The request this was opened for: answered to the owner at/);
     });
   }
+
+  it('a turn that took up two requests moves no task: the opened one stays the agent\'s and the helper gets its own', async () => {
+    insertMessage({ id: 'm-ask-2', agentId: MAIN, role: 'user', content: 'And a picnic list too', lane: 'owner', channel: 'dashboard',
+      senderId: 'owner', authorized: true, conversationId: 'conv-dash', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    } as Parameters<typeof insertMessage>[0]);
+    claimAsk(askIdForMessage('m-ask-2'), MAIN);
+    stampClaimingTurn(askIdForMessage('m-ask-2'), 7);   // the same turn took it up too
+    expect((await openForRequest()).isError).toBe(false);
+    const helper = await delegate('send_to_agent');
+    turnEndsDelegated([helper]);
+    expect(jobTasks().map((t) => [t.holder, t.thread])).toEqual([[MAIN, null], [helper, assignThread(helper)]]);
+  });
 
   it('a job born of the ASSIGN, with no task opened first, also waits until the owner has the answer', async () => {
     const helper = await delegate('spawn_agent');

@@ -12,6 +12,7 @@ import { createLogger } from '../logger.js';
 import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
+import { servedBy } from './task-turns.js';
 import { ENGINE_SCAFFOLD_ROOT_KIND, PARKED_JOB_TITLE, handedInExpr, heldByOwnerSql } from './tracker-view.js';
 import { delegatedRelayEvidence, turnEndedInModelSilence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
@@ -877,11 +878,10 @@ export function linkedTaskOf(agentId: string, messageId: string | null, opts: { 
 
 function stillOwed(ask: AskRow, ignoreTurn: number | null): string | null {
   if (linkedTaskOf(ask.agent_id, ask.root_id)) return 'a tracker task linked to this request is still open (its holder has not handed it in)';
-  const bag = turnContext(ask.agent_id);
-  if (bag?.root?.kind === 'ask' && bag.root.sourceMessageId === ask.root_id && bag.turnNumber !== ignoreTurn) {
-    return 'a turn serving this request is running';
-  }
-  return null;
+  const live = turnContext(ask.agent_id)?.turnNumber;
+  const serving = live !== undefined && live !== ignoreTurn
+    && servedBy(ask.agent_id, live).some((s) => s.id === ask.id && (s.how === 'root' || s.how === 'claimed'));
+  return serving ? 'a turn serving this request is running' : null;
 }
 
 function settleOnAsyncResult(
@@ -1073,40 +1073,20 @@ export interface FinalizeSettlementInput extends TurnEnd {
 
 export interface FinalizeSettlementResult { closed: number; held: number; reopened: number }
 
-/** The turn is over: every ask it claimed or assembled gets its verdict. No ask stays `claimed` by a finalized
- *  turn unless its reply is on its way (`work/__tests__/ask-done-census.test.ts`). The claimed set is scoped by
- *  turn, not conversation: an ask picked up and answered elsewhere is still this turn's to dispose of. */
+/** The turn is over: every ask it took up (`root`, `claimed`), closed or assembled gets its verdict. No ask stays
+ *  `claimed` by a finalized turn unless its reply is on its way (`work/__tests__/ask-done-census.test.ts`). The set is
+ *  the turn's, not the conversation's: an ask picked up and answered elsewhere is still this turn's to dispose of. */
 export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSettlementResult {
   const result: FinalizeSettlementResult = { closed: 0, held: 0, reopened: 0 };
-  const db = getDb();
-  const claimed = db.prepare(
-    `SELECT id FROM work
-      WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed' AND claimed_by_turn = ?`,
-  ).all(p.agentId, p.turnNumber) as Array<{ id: string }>;
-  // Third scope: an ask THIS TURN CLOSED (`claimed_by_turn` is cleared by the close, so the turn is found
-  // through the receipt). The arms ask their own questions; the scope only says which rows the turn owns.
-  const closedByThisTurn = db.prepare(
-    `SELECT w.id AS id FROM work w
-      WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'done'
-        AND w.result_delivery_id IN (
-          -- the outcome filter is redundant here (the receipt can only come from a delivered row);
-          -- every reader of this table carries it, so an owner's close receipt is never read as a send.
-          SELECT d.id FROM deliveries d
-           WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered')`,
-  ).all(p.agentId, p.agentId, p.turnNumber) as Array<{ id: string }>;
-
+  const owned: Array<{ workId: string; rowid?: number }> = servedBy(p.agentId, p.turnNumber)
+    .filter((s) => s.kind === 'ask' && ['root', 'claimed', 'closed'].includes(s.how)).map((s) => ({ workId: s.id }));
   const seen = new Set<string>();
   const tally = (v: AskSettlementVerdict): void => {
     if (v === 'closed') result.closed++;
     else if (v === 'held') result.held++;
     else if (v === 'reopened') result.reopened++;
   };
-  for (const r of [...claimed, ...closedByThisTurn]) {
-    if (seen.has(r.id)) continue;
-    seen.add(r.id);
-    tally(settleAsk(r.id, { ...p, at: 'finalize', askedNothing: r.id === p.askedNothing }).verdict);
-  }
-  for (const a of p.assembled ?? []) {
+  for (const a of [...owned, ...(p.assembled ?? [])]) {
     if (seen.has(a.workId)) continue;
     seen.add(a.workId);
     tally(settleAsk(a.workId, { ...p, at: 'finalize', rowid: a.rowid, askedNothing: a.workId === p.askedNothing }).verdict);

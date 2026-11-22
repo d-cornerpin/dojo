@@ -23,8 +23,9 @@ export function servedBy(id: string, turn: number): void {
 
 /** The turn ends with `exit` and finalize settles every request it claimed. */
 export function turnEnds(turn: number, exit: string, extra: Partial<FinalizeSettlementInput> = {}): void {
+  const sql = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);   // the turn's clock is the claim's
   testDb().prepare(`INSERT OR REPLACE INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
-    VALUES (?, ?, datetime('now', '-60 seconds'), datetime('now'), ?, 0)`).run(AGENT, turn, exit);
+    VALUES (?, ?, ?, ?, ?, 0)`).run(AGENT, turn, sql(Date.now() - 60_000), sql(Date.now()), exit);
   settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: turn, ...extra });
 }
 
