@@ -16,7 +16,7 @@ import { recordDelivery } from '../../../agent/v2/deliveries.js';
 import { openTurnContext, endTurnContext } from '../../../agent/turn-context.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin } from '../../store.js';
 import { insertMessage } from '../../../memory/message-store.js';
-import { newestPutBack, recordPiecesShown } from '../../ask-settlement.js';
+import { newestPutBack, recordPiecesShown, settleAsksAtTurnFinalize } from '../../ask-settlement.js';
 import { freshBoard, call, PM, MAIN, WORKER, OTHER } from './helpers/decision-world.js';
 import { doneDb } from './helpers/done-db.js';
 import { pmCanRun, resetLadderWorld, review } from './helpers/ladder-world.js';
@@ -103,6 +103,33 @@ describe('a task opened for a request, then delegated, is the helper\'s task', (
     expect(await review(PM), 'its request is reached through its piece').toBe('');
     ownerIsAnswered();
     expect(await review(PM)).toContain(`[${job.id}]`);
+  });
+
+  it('a second request sent on the same helper thread holds the job\'s review until the owner has that answer too', async () => {
+    const helper = await delegate('send_to_agent');
+    turnEndsDelegated([helper]);
+    const [job] = jobTasks();
+    await helperCompletes(helper);
+    ownerIsAnswered();
+    // A minute later the owner asks for more, and the agent names the first job's thread: two requests on one thread.
+    insertMessage({
+      id: 'm-ask2', agentId: MAIN, role: 'user', content: 'Now a ski packing list', lane: 'owner', channel: 'dashboard',
+      senderId: 'owner', authorized: true, conversationId: 'conv-dash', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    } as Parameters<typeof insertMessage>[0]);
+    const ski = askIdForMessage('m-ask2');
+    doneDb().prepare('UPDATE work SET opened_at = opened_at + 60000 WHERE id = ?').run(ski);   // the store's clock is in seconds
+    claimAsk(ski, MAIN);
+    stampClaimingTurn(ski, 8);
+    Object.assign(openTurnContext(MAIN), { turnNumber: 8, root: { kind: 'ask', id: 'm-ask2', sourceMessageId: 'm-ask2', conversationId: 'conv-dash' } });
+    const thread = assignThread(helper);
+    expect((await call(MAIN, 'send_to_agent', { agent: helper, intent: 'ASSIGN', thread_id: thread, payload: 'Write a ski packing list.' })).isError).toBe(false);
+    openDelegationJoin({ parentWorkId: ski, agentId: MAIN, replyConversationId: 'conv-dash', ttlAt: Date.now() + 3_600_000,
+      threads: [{ threadId: thread, assigneeAgent: helper, intent: 'ASSIGN', hopCount: 0 }] });
+    endTurnContext(MAIN);
+    settleAsksAtTurnFinalize({ agentId: MAIN, turnNumber: 8 });
+    await helperCompletes(helper);
+    expect(jobTasks().map((t) => [t.id, t.state])).toEqual([[job.id, 'handed_in']]);
+    expect(await review(PM), 'the ski answer is back but the owner does not have it yet').toBe('');
   });
 
   it('a fan-out gives the opened task to the first helper only; the second gets its own', async () => {
