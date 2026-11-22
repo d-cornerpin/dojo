@@ -62,7 +62,7 @@ describe('a run hand-in advances the schedule', () => {
     expect(due(NEXT + 1_000)).toBe(true);
   });
 
-  it('a run whose only send went to someone other than the asker is not handed in finished on it: the run close asks what every close asks', async () => {
+  it('a run that delivered to the person its schedule serves, not the asker, is handed in finished on that delivery', async () => {
     freshBoard();
     aRunInFlight('run-1', Date.now() - 30_000);
     const at = Math.floor(Date.now() / 1000) * 1000;
@@ -72,7 +72,7 @@ describe('a run hand-in advances the schedule', () => {
        VALUES ('dlv-third', ?, 'imessage_send', 'imessage', 'friend@example.com', 'm-third', 'delivered', datetime('now'), datetime('now'), ?, 'occurrence', 'run-1')`,
     ).run(WORKER, turnRow(WORKER, 1, { kind: 'occurrence', id: 'run-1' }));
     expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
-    expect(latestHandIn(TASK)?.outcome).not.toBe('finished');
+    expect(latestHandIn(TASK)).toMatchObject({ outcome: 'finished', items: [expect.objectContaining({ kind: 'delivery', ref: 'dlv-third' })] });
   });
 
   it.each(['busy-ack', 'imessage-door'])('an engine hand-in of a run citing an engine %s line in the run window is refused', async (tool) => {
@@ -141,5 +141,22 @@ describe('a run hand-in advances the schedule', () => {
     expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
     const settled = doneDb().prepare("SELECT json_extract(payload, '$.run_status') AS s FROM work_events WHERE work_id = 'run-1' AND kind = 'occurrence_settled'").get() as { s: string };
     expect(settled.s).toBe('undelivered');
+  });
+
+  it('a run whose text to that person the phone service refused is undelivered, and the owner gets his card', async () => {
+    freshBoard();
+    doneDb().prepare("UPDATE work SET task_kind = 'reminder' WHERE id = ?").run(TASK);
+    aRunInFlight('run-1', Date.now() - 30_000);
+    const at = Math.floor(Date.now() / 1000) * 1000;
+    doneDb().prepare("INSERT INTO messages (id, agent_id, lane, role, content, authorized, sent_at, created_at) VALUES ('m-third', ?, 'owner', 'assistant', 'Your table for four is booked for Friday.', 1, ?, ?)").run(WORKER, at, at);
+    doneDb().prepare(
+      `INSERT INTO deliveries (id, agent_id, tool, channel, recipient_id, message_id, outcome, created_at, updated_at, turn_number, root_kind, root_id)
+       VALUES ('dlv-third', ?, 'imessage_send', 'imessage', 'friend@example.com', 'm-third', 'failed', datetime('now'), datetime('now'), ?, 'occurrence', 'run-1')`,
+    ).run(WORKER, turnRow(WORKER, 1, { kind: 'occurrence', id: 'run-1' }));
+    expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
+    await vi.dynamicImportSettled();
+    const settled = doneDb().prepare("SELECT json_extract(payload, '$.run_status') AS s FROM work_events WHERE work_id = 'run-1' AND kind = 'occurrence_settled'").get() as { s: string };
+    const cards = doneDb().prepare("SELECT COUNT(*) AS n FROM work_events WHERE kind = 'floor_ghosted' AND work_id IN ('run-1', ?)").get(TASK);
+    expect([settled.s, cards]).toEqual(['undelivered', { n: 1 }]);
   });
 });
