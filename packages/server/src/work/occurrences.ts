@@ -111,16 +111,18 @@ export const RUN_STATUS_UNDELIVERED = 'undelivered';
 /** A run that owes a message and delivered it, or that was handed in during its own turn (delivered or not). */
 export interface RunReadyToClose { occurrenceId: string; taskId: string; deliveryId: string | null; handedIn: boolean }
 
-/** Open runs that owe a message, whose turn ended and whose window holds it (`proofDelivery`) or whose task was handed in. */
+/** Open runs that owe a message, whose turn ended and whose window holds it (`proofDelivery`) or that were handed in during it. */
 export function runsReadyToCloseOnDelivery(): RunReadyToClose[] {
   const rows = getDb().prepare(`
-    SELECT w.id AS occurrence_id, w.parent_id AS task_id, p.state = 'handed_in' AS handed FROM work w JOIN work p ON p.id = w.parent_id
+    SELECT w.id AS occurrence_id, w.parent_id AS task_id, p.state = 'handed_in' AND EXISTS (SELECT 1 FROM work_events h JOIN turns t ON t.root_kind = w.kind
+        AND t.root_id = w.id WHERE h.work_id = p.id AND h.kind = 'handed_in' AND json_extract(h.payload, '$.scope') = 'run' AND h.created_at >= w.opened_at
+        AND t.ended_at >= datetime(h.created_at / 1000, 'unixepoch')) AS handed FROM work w JOIN work p ON p.id = w.parent_id
      WHERE w.kind = ? AND w.state IN ('open','claimed') AND p.task_kind IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.root_kind = w.kind AND t.root_id = w.id AND t.ended_at IS NULL)
   `).all(OCCURRENCE_KIND) as Array<{ occurrence_id: string; task_id: string; handed: number }>;
   return rows.flatMap((row) => {
     const deliveryId = owedRunDelivery(row.occurrence_id);
-    return deliveryId || row.handed ? [{ occurrenceId: row.occurrence_id, taskId: row.task_id, deliveryId, handedIn: !!row.handed }] : [];
+    return deliveryId || (row.handed && occurrenceOwesDeliverable(row.occurrence_id).owes) ? [{ occurrenceId: row.occurrence_id, taskId: row.task_id, deliveryId, handedIn: !!row.handed }] : [];
   });
 }
 

@@ -1,6 +1,8 @@
 // A status note every ten minutes: in each run's own turn the agent writes its notes file, hands the run in, and only
 // then writes its one line to the owner. The run waits for its turn to end and closes on that line: no "finished
 // without delivering anything" alert, three runs in a row. A run handed in whose turn wrote nothing is still told.
+// A hand-in the engine did not leave for its turn's end (a one-time task's, with no run scope) is not picked up again
+// by every later tick.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'node:path';
 
@@ -61,5 +63,16 @@ describe('a run handed in before its line is closed on that line', () => {
     await runTurn(task, false);
     expect(runs(task).at(-1)!.state, 'recorded undelivered').toBe('abandoned');
     expect(ghosts()).toBe(1);
+  });
+
+  it('a one-time task handed in during its run is not taken up again by each later tick', async () => {
+    box.at('2026-03-03T09:00:00Z');
+    const made = await box.call('work_open', { kind: 'task', title: 'Water note', goal: 'one line about the plants', scheduled_start: '2026-03-03T09:05:00Z' });
+    const task = /task_id=([\w-]+)/.exec(made.content)![1]!;
+    box.db().prepare("UPDATE work SET task_kind = 'notify' WHERE id = ?").run(task);
+    box.at('2026-03-03T09:05:30Z');
+    await box.checkScheduledTasks();
+    await runTurn(task, true);
+    expect([await closeRunsThatDelivered(), await closeRunsThatDelivered()]).toEqual([0, 0]);
   });
 });
