@@ -103,6 +103,7 @@ const turnCtx = (over: Record<string, unknown> = {}): PostCallClassifyContext['t
   engineStartAckDeliveredThisTurn: false,
   root: null,
   conversationId: 'conv-1',
+  address: { kind: 'person', name: 'the owner' },
   ...over,
 } as unknown as PostCallClassifyContext['turnCtx']);
 
@@ -254,5 +255,17 @@ describe('t125 — the silent turns (Q2): a turn that owes a person never ends i
         expect(out.directive).toBe('continue');
       });
     }
+  });
+
+  it('a turn addressed to nobody that keeps coming back empty ends, and is never told to answer "the user"', () => {
+    const wake = ctxFor({ ...NOBODY_OWED, turnCtx: turnCtx({ address: { kind: 'engine', name: 'engine' } }) });
+    const first = runEmptyResponse(afterHistorySearches({ toolCallsExecutedThisTurn: 0 }), wake);
+    expect(first.directive).toBe('continue');
+    if (first.directive !== 'continue') throw new Error('unreachable');
+    const second = runEmptyResponse(first.state, wake);
+    expect(second.directive).toBe('exit');
+    if (second.directive !== 'exit') throw new Error('unreachable');
+    expect(second.reason).toBe('empty-response-no-person');
+    expect(steerFired(second.state.steerQueue, 'empty-response')).toBe(false);
   });
 });

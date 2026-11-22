@@ -83,6 +83,7 @@ const ctxFor = (over: Partial<PostCallClassifyContext> = {}): PostCallClassifyCo
     startAckSteerRequested: false,
     startAckSteerArmedThisTurn: false,
     engineStartAckDeliveredThisTurn: false,
+    address: { kind: 'person', name: 'the owner' },
   },
   isA2ATurn: false,
   isEngineTurn: false,

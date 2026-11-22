@@ -11,7 +11,6 @@ import { clearSteerQueueFor, steerFired, type SteerFloorId } from '../../steer-q
 import { outputTruncationClassifier } from '../../classifiers/output.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext } from './index.js';
-import { userWords } from '../../turn-address.js';
 import { replyCanBeRequired } from '../../forced-reply.js';
 
 const logger = createLogger('v2-loop');
@@ -123,6 +122,8 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     }
     // Silence to another Dojo box is an allowed answer: no nudge, no toast; finalize settles its request.
     if (ctx.counterpartyIsAgentSender) return requestExit(state, 'empty-response-peer-box');
+    // The nudge asks for a reply to a person: a turn addressed to nobody ends instead.
+    if (ctx.turnCtx.address?.kind !== 'person') return requestExit(state, 'empty-response-no-person');
     // A person still owed is answered by the required reply at the loop's exit, where one follows.
     const followed = replyCanBeRequired(ctx.latestUserSource, ctx.inboundChannel, ctx.counterpartyIsAgentSender);
     if (owesAPerson && followed) return requestExit(state, 'empty-response-owed');
@@ -133,7 +134,7 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
       }, agentId);
       state = persistEngineSteer(state, {
         agentId, turnNumber, floor: 'empty-response', atLoop: state.loopCount,
-        content: `[System: You returned an empty response. Please respond to ${userWords(ctx.turnCtx.address)}'s last message or call a tool to continue your task. If you are finished, say so clearly.]`,
+        content: `[System: You returned an empty response. Please respond to ${ctx.turnCtx.address.name}'s last message or call a tool to continue your task. If you are finished, say so clearly.]`,
       }, { broadcast });
       return continueLoop(state);
     }
