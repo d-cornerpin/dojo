@@ -25,7 +25,7 @@ async function handedInFromAnotherTurn(day: string): Promise<string> {
   await turn({ kind: 'engine', id: `hint-${day}` }, async () => {
     await checkScheduledTasks();
     const r = await handIn(shop, line('Time to call the shop.', 'dashboard'));
-    expect(r.content).toContain('not addressed to the asker');
+    expect(r.content).toContain('reached him only on the dashboard, but he asked by imessage');
   });
   await closeRunsThatDelivered();
   expect(runState(shop).state, 'the dashboard line settles nothing owed by text').toBe('open');

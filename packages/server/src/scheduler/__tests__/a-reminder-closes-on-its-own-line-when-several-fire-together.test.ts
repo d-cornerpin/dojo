@@ -38,7 +38,7 @@ describe('a reminder closes on its own line when several fire together', () => {
     await turn(stepTwo, async () => {
       await checkScheduledTasks();
       const r = await handIn(shop, line('Time to call the shop.', 'dashboard'));
-      expect(r.content).toContain('not addressed to the asker');
+      expect(r.content).toContain('reached him only on the dashboard, but he asked by imessage');
     });
     await closeRunsThatDelivered();
     expect(runState(shop).state, 'he asked by text: the dashboard line is not his reminder').toBe('open');
