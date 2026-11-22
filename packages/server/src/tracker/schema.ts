@@ -348,12 +348,13 @@ export function closeProjectAndOpenTasks(params: {
     .all(projectId) as Array<{ id: string; state: string }>;
   const alreadyClosed = tasks.filter((t) => isTerminalName(t.state)).length;
   // The decision closes the project's open tasks with it; a project its tasks already settled is closed.
-  const settled = isTerminalName((getDb().prepare('SELECT state FROM work WHERE id = ?').get(projectId) as { state: string } | undefined)?.state ?? '');
-  if (verdict === 'cancel' && !settled) for (const t of tasks) if (!isTerminalName(t.state)) callOff(t.id, OWNER, reason);   // each task is called off as what it is
+  const stateNow = (id: string): string => (getDb().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string } | undefined)?.state ?? '';
+  if (verdict === 'cancel' && !isTerminalName(stateNow(projectId))) for (const t of tasks) if (!isTerminalName(t.state)) callOff(t.id, OWNER, reason);   // each task is called off as what it is
+  const settled = isTerminalName(stateNow(projectId));
   const pr = settled ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
   const unsettled = pr?.kind === 'refused' ? [{ workId: projectId, text: pr.text }]
     : (pr?.unclosed ?? []).map((workId) => ({ workId, text: 'did not close with its project' }));
-  const tasksClosed = pr?.kind === 'decided' ? tasks.length - alreadyClosed - pr.unclosed.length : 0;
+  const tasksClosed = tasks.filter((t) => !isTerminalName(t.state) && isTerminalName(stateNow(t.id))).length;
   logger.info('Project bulk-closed by the owner', { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, verdict });
 
   for (const t of tasks) {

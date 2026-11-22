@@ -121,6 +121,7 @@ function schema(db: Database.Database): void {
       notes TEXT, result_delivery_id TEXT, remaining_children INTEGER,
       compile_pending INTEGER NOT NULL DEFAULT 0, reply_conversation_id TEXT,
       ttl_at INTEGER, opened_at INTEGER, updated_at INTEGER);
+    CREATE TABLE work_events (id INTEGER PRIMARY KEY, work_id TEXT, kind TEXT, payload TEXT, actor TEXT, created_at INTEGER);
   `);
 }
 
