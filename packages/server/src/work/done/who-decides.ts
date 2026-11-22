@@ -9,6 +9,7 @@ import { turnContext } from '../../agent/turn-context.js';
 import { repliesSince, type ThreadReply } from '../../memory/message-store.js';
 import { AUDIT_KIND } from '../audit-trail.js';
 import { taskScope } from '../tracker-view.js';
+import { workingExpr } from '../terminal-states.js';
 import { latestHandIn, workerOf, workersOf } from './record.js';
 
 export type Decider = { kind: 'agent'; agentId: string } | { kind: 'owner' };
@@ -83,6 +84,12 @@ export const requestOf = (id: string) => getDb().prepare(`SELECT a.state IN ('op
   AND (a.root_id = w.source_message_id OR EXISTS (SELECT 1 FROM work p WHERE p.id = 'piece:' || a.id || ':' || w.a2a_thread_id))
   AND a.agent_id = w.requester_id LEFT JOIN deliveries d ON d.id = a.result_delivery_id WHERE w.id = ?`)
   .get(id) as { owed: number; root: string; id: string | null; who: string | null; at: string | null } | undefined;
+/** The working task another agent holds for `requesterId`'s request `messageId`, with its holder's name, or null. */
+export function delegatedTaskOf(requesterId: string, messageId: string | null): { id: string; holder: string } | null {
+  const held = messageId ? getDb().prepare(`SELECT w.id, COALESCE(g.name, w.agent_id) AS holder FROM work w LEFT JOIN agents g ON g.id = w.agent_id
+    WHERE ${taskScope('w')} AND w.requester_id = ? AND w.agent_id <> w.requester_id AND ${workingExpr('w', true)}`).all(requesterId) as Array<{ id: string; holder: string }> : [];
+  return held.find((t) => requestOf(t.id)?.root === messageId) ?? null;
+}
 /** Until when this hand-in is held (0 when nothing holds it): the PM's questions, or for good while its request is owed. */
 export function questionsHoldUntil(workId: string): number {
   if (requestOf(workId)?.owed) return Infinity;

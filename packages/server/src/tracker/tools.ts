@@ -32,6 +32,8 @@ import { turnContext, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 import { setHold, clearHold, ownerAskedToLift, holdOf, workingExpr } from '../work/done/hold.js';
+import { delegatedTaskOf } from '../work/done/who-decides.js';
+import { requestOfTurn } from '../work/job-continuation.js';
 
 const logger = createLogger('tracker-tools');
 
@@ -422,10 +424,12 @@ export async function trackerCreateTask(agentId: string, args: Record<string, un
       assignedTo = member.id;
     }
 
-    // Duplicate guard for tool-error loops that re-create the same task: the exact title by the same creator and
-    // assignee within 5 minutes. allow_duplicate=true overrides it.
+    // Duplicate guard: the request this turn serves is already a helper's task, or a tool-error loop re-creates a
+    // task with the exact title by the same creator and assignee within 5 minutes. allow_duplicate=true overrides it.
     const allowDuplicate = (args.allow_duplicate as boolean) ?? false;
     if (!allowDuplicate) {
+      const delegated = args.kind === 'reminder' ? null : delegatedTaskOf(agentId, requestOfTurn(agentId));
+      if (delegated) return `Error: this request is already task ${delegated.id.slice(0, 8)}, held by ${delegated.holder}; nothing opened. If this is separate work, re-call with allow_duplicate=true.`;
       const db = getDb();
       const exact = db.prepare(`
         SELECT w.id AS id, substr(w.id, 1, 8) as id8 FROM work w
