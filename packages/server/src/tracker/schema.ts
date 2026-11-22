@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
@@ -349,9 +350,13 @@ export function closeProjectAndOpenTasks(params: {
   const alreadyClosed = tasks.filter((t) => isTerminalName(t.state)).length;
   // The decision closes the project's open tasks with it; a project its tasks already settled is closed.
   const stateNow = (id: string): string => (getDb().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string } | undefined)?.state ?? '';
-  if (verdict === 'cancel' && !isTerminalName(stateNow(projectId))) for (const t of tasks) if (!isTerminalName(t.state)) callOff(t.id, OWNER, reason);   // each task is called off as what it is
-  const settled = isTerminalName(stateNow(projectId));
-  const pr = settled ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
+  // One unit: each open task called off as what it is, then the project's own decision.
+  const pr = withUnit(() => {
+    if (verdict === 'cancel' && !isTerminalName(stateNow(projectId))) {
+      for (const t of tasks) if (!isTerminalName(t.state)) callOff(t.id, OWNER, reason);
+    }
+    return isTerminalName(stateNow(projectId)) ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
+  });
   const unsettled = pr?.kind === 'refused' ? [{ workId: projectId, text: pr.text }]
     : (pr?.unclosed ?? []).map((workId) => ({ workId, text: 'did not close with its project' }));
   const tasksClosed = tasks.filter((t) => !isTerminalName(t.state) && isTerminalName(stateNow(t.id))).length;
@@ -368,7 +373,7 @@ export function closeProjectAndOpenTasks(params: {
     broadcast({ type: 'tracker:project_updated', data: project });
   }
 
-  return { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, unsettled, projectClosed: settled || pr?.kind === 'decided' };
+  return { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, unsettled, projectClosed: isTerminalName(stateNow(projectId)) };
 }
 
 export function updateProject(
