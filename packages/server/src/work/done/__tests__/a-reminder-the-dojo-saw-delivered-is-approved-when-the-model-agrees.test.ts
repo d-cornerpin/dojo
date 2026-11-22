@@ -3,6 +3,7 @@
 // model, or a task that owes no message: the run goes to the manager as before. A one-time reminder's only run is its
 // final one, decided the same way on whichever channel it went. A reminder asked on the dashboard, whose request settled
 // on the agent's confirmation, closes on the one line its run's own turn wrote there: that line is never a start line.
+// A reminder a contact asked for by text is never closed on the owner's dashboard copy: it stays not delivered.
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
 vi.mock('../../../db/connection.js', async () => (await import('./helpers/done-db.js')).connectionMock());
@@ -116,5 +117,18 @@ describe('a reminder the Dojo saw delivered is approved when the model agrees', 
     inTurn(2, 'occurrence', 'run-1', deliveredToOwner(WORKER, 'Time to stretch: you have been at the desk a while.'));
     expect(await closeRunsThatDelivered()).toBe(1);
     expect(doneDb().prepare("SELECT state FROM work WHERE id = 'run-1'").get()).toEqual({ state: 'done' });
+  });
+
+  it('a contact asked by text, and only the owner\'s dashboard copy went out: the run is not closed', async () => {
+    aDeliveredRun('reminder', true, true, 'dashboard');
+    doneDb().prepare(`INSERT INTO messages (id, agent_id, conversation_id, lane, role, content, channel, sender_id, authorized, inbound_meta, sent_at, created_at)
+      VALUES ('m-contact', ?, 'conv-contact', 'owner', 'user', 'Remind me at six to feed the cat', 'sms', '+15550001111', 1, ?, ?, ?)`)
+      .run(WORKER, JSON.stringify({ channel: 'sms', sender: '+15550001111', relation: 'known_contact' }), Date.now() - 60_000, Date.now() - 60_000);
+    doneDb().prepare("UPDATE work SET source_message_id = 'm-contact' WHERE id = ?").run(TASK);
+    expect(await closeRunsThatDelivered()).toBe(0);
+    expect(doneDb().prepare("SELECT state FROM work WHERE id = 'run-1'").get()).toEqual({ state: 'open' });
+    doneDb().prepare("UPDATE deliveries SET root_kind = 'occurrence', root_id = 'run-1', channel = 'sms', tool = 'sms', recipient_id = '+15550001111' WHERE id = ?")
+      .run(deliveredToOwner(WORKER, 'Time to feed the cat.'));
+    expect(await closeRunsThatDelivered()).toBe(1);   // the text that reached the contact closes it
   });
 });
