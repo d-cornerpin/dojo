@@ -1,5 +1,5 @@
 // The owner's hold and the engine's "waiting for a reply" hold keep the request on the task, card or not; a paused
-// helper keeps it too. A hold the helper set itself is a stall: its card ends the request. A cancel tells at once.
+// helper keeps it too. A hold the helper set itself is a stall: its card ends the request. The owner's cancel ends it as his.
 // The main agent's own kept task is laddered like any other, and its card never ends the request.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -33,12 +33,12 @@ let ask = '';
 beforeEach(async () => { freshBoard(); pmCanRun(PM); anchorBack(2 * 60 * MIN); resetLadderWorld(); ask = await keptRequest(WORKER, TASK, MAIN); });
 
 describe('a held or paused helper keeps the request', () => {
-  it('the owner\'s hold: kept, and his cancel tells at once', async () => {
+  it('the owner\'s hold: kept, and his cancel ends the request as called off by him', async () => {
     expect(setHold(TASK, 'paused', 'until the budget is signed', 'owner').ok).toBe(true);
     await allTheWay();
     expect(await keptState(ask)).toEqual(['claimed', 'open']);
     expect(decide({ workId: TASK, deciderAgentId: null, verdict: 'cancel', reason: 'The report is no longer needed' }).kind).toBe('decided');
-    expect(await keptState(ask)).toEqual(['failed', 'abandoned']);
+    expect(await keptState(ask)).toEqual(['abandoned', 'abandoned']);
   });
 
   it('the engine\'s "waiting for a reply" hold: carded, still kept', async () => {
