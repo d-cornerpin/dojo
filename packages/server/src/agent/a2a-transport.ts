@@ -37,7 +37,7 @@ import {
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, mediaJobs, type PutBackKind } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, requestParts, type PutBackKind } from '../work/ask-settlement.js';
 import { endPiece } from '../work/call-off.js';
 import { servedBy } from '../work/task-turns.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
@@ -1078,11 +1078,16 @@ function applyDeclaredHandOff(
   };
 }
 
-/** The countdown reached zero and it was not all called off by the owner (`endPiece`): nothing came back, the
- *  fail-closed notice; else the answer goes back to the agent. */
+/** The countdown reached zero and it was not ended quietly as the owner's (`endPiece`): nothing came back while
+ *  another part of the request still works, it goes back to its agent; nothing at all, the fail-closed notice; else
+ *  the answer goes back to the agent. */
 export async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
-    if (mediaJobs(join.rootId).out > 0) return;   // its pictures or songs still work: the request goes on with them
+    if (requestParts(join.id) === 'working') {
+      handBackAsk(join.id, { agentId: join.agentId, turnNumber: null, cause: 'free', actorId: 'a2a-join', reason: 'a helper\'s part of it ended; the rest still works' });
+      serveLater({ kind: 'ask', id: join.id }, Date.now(), 'a helper\'s part of it ended');
+      return;
+    }
     const failReason = joinFailureReason(joinPieces(join.id));
     const claimed = failJoinClosed(join.id, { reason: failReason, expectedState: join.parentState });
     if (claimed.kind !== 'applied') return;

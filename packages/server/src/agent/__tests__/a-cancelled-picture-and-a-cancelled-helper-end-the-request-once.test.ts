@@ -25,7 +25,7 @@ describe('a cancelled picture and a cancelled helper end the request once', () =
     delegated(); picture();
     expect(await boardCancel('task-helper-1')).toBe(200);
     await settled();
-    expect([stateOf(ASK), failedNotices()]).toEqual(['blocked', 0]);
+    expect([stateOf(ASK), failedNotices()]).toEqual(['open', 0]);   // back with its agent, the picture still working
     setCancelled('job-pic');
     await settled();
     expect([endedBy(ASK), failedNotices()]).toEqual([{ state: 'abandoned', by: 'owner' }, 0]);

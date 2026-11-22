@@ -4,7 +4,7 @@ import { getDb } from '../db/connection.js';
 import { afterCommit, withUnit } from '../db/unit.js';
 import { isTerminal, settlePieceWithoutResult, transition, type Actor, type PieceSettleResult } from './store.js';
 import { decide, refused, type DecideResult } from './done/decide.js';
-import { endedByHim } from './ask-settlement.js';
+import { cardOfSql, requestParts } from './ask-settlement.js';
 import { clearReferencesToWork } from './work-refs.js';
 
 /** The owner (no decider; `via` relays his words), or an agent, whose `ownerQuote` makes it his once `decide` verifies it. */
@@ -17,8 +17,7 @@ const ended = (id: string, reason: string): DecideResult => ({ kind: 'decided', 
 function endRequest(askId: string, by: CallOffBy, reason: string): DecideResult {
   const r = transition(askId, { to: 'abandoned', by: by.deciderAgentId === null ? 'owner' : 'agent', actorId: by.deciderAgentId ?? by.via ?? 'owner', reason });
   if (r.kind !== 'applied') return refused(`[${askId}] was not ended (${r.detail}).`);
-  const cards = getDb().prepare(`SELECT c.id FROM work a JOIN work c ON c.kind = 'task' AND c.root_kind <> 'a2a_thread'
-      AND c.requester_id = a.agent_id AND c.source_message_id = a.root_id AND c.state NOT IN ('done', 'failed', 'abandoned') WHERE a.id = ?`)
+  const cards = getDb().prepare(`SELECT c.id FROM work a JOIN work c ON ${cardOfSql('c', 'a')} AND c.state NOT IN ('done', 'failed', 'abandoned') WHERE a.id = ?`)
     .all(askId) as Array<{ id: string }>;
   for (const c of cards) decide({ workId: c.id, deciderAgentId: by.deciderAgentId, verdict: 'cancel', reason });
   return ended(askId, reason);
@@ -29,8 +28,10 @@ function endRequest(askId: string, by: CallOffBy, reason: string): DecideResult 
 export function endPiece(pieceId: string, reason: string, by: Actor, actorId: string): PieceSettleResult & { judged: boolean } {
   const s = settlePieceWithoutResult(pieceId, { to: 'abandoned', reason, actorId, by });
   const open = s.result.kind === 'applied' && s.join.complete && !isTerminal(s.join.parentState);
-  const his = open && by === 'owner' && endedByHim(s.join.id) && endRequest(s.join.id, { deciderAgentId: null, via: actorId }, reason).kind === 'decided';
-  return { ...s, judged: !open || his };
+  // His end of its last working part, with nothing come back, ends the request quietly as his.
+  const quiet = open && by === 'owner' && s.join.outcome === 'fail-closed' && requestParts(s.join.id) !== 'working';
+  if (quiet) endRequest(s.join.id, { deciderAgentId: null, via: actorId }, reason);
+  return { ...s, judged: !open || quiet };
 }
 
 export function callOff(workId: string, by: CallOffBy, reason: string): DecideResult {
@@ -53,7 +54,10 @@ export function callOff(workId: string, by: CallOffBy, reason: string): DecideRe
     if (s && !s.judged) afterCommit(() => void import('../agent/a2a-transport.js').then((m) => m.resolveCompletedJoin(s.join)));
     if (isPiece && s?.result.kind !== 'applied') return refused(`[${workId}] was not ended (${s?.result.kind}).`);
     if (d.kind !== 'decided' || !owner || !w.request) return d;
-    if (w.cards === 1 || endedByHim(w.request)) { endRequest(w.request, { deciderAgentId: null, via: by.deciderAgentId ?? undefined }, reason); return d; }
+    if (w.cards === 1 || requestParts(w.request) !== 'working') {
+      endRequest(w.request, { deciderAgentId: null, via: by.deciderAgentId ?? undefined }, reason);
+      return d;
+    }
     return { ...d, text: `${d.text} Its request [${w.request}] goes on with its other parts; to end all of it on his words, work_close_request(id="${w.request}", disposition="dropped", note=<his exact words>).` };
   });
 }
