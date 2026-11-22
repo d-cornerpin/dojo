@@ -129,14 +129,9 @@ export async function runCounterpartyAndRecord(
   // Independent of `runtime.ts`'s identity check on this marker (see its doc in `shared-state.ts`):
   // every new turn starts with no declared-patience marker.
   declaredPatienceHonestFailTurn.delete(agentId);
-  // Restart rehydration of session tools, once per agent per process, at the turn and never in the
-  // assembly read path, where a mutation would break the cached tools prefix.
-  try {
-    const { rehydrateSessionToolsFromHistory } = await import('../../../../tools/tool-docs.js');
-    rehydrateSessionToolsFromHistory(agentId);
-  } catch { /* best effort; never break a turn over a cache warm-up */ }
   // Forward links: the work item's `claimed_by_turn` (read by delivery close and boot reconciliation)
-  // and the message's `served_by_turn`. Stamped here, not at the claim, since the number exists only now.
+  // and the message's `served_by_turn`. Stamped here, not at the claim, since the number exists only now, and with
+  // no await since the number was published, so a Stop never sees the turn without what it took up.
   try {
     if (triggerWorkId) {
       const wroteAgain = firstServedAt(triggerWorkId) === null;
@@ -168,6 +163,12 @@ export async function runCounterpartyAndRecord(
       markServedByRowid(terminalWakeA2A.rowid, turnNumber);
     }
   } catch { /* best effort */ }
+  // Restart rehydration of session tools, once per agent per process, at the turn and never in the
+  // assembly read path, where a mutation would break the cached tools prefix.
+  try {
+    const { rehydrateSessionToolsFromHistory } = await import('../../../../tools/tool-docs.js');
+    rehydrateSessionToolsFromHistory(agentId);
+  } catch { /* best effort; never break a turn over a cache warm-up */ }
 
   // Snapshot turn boundary so context assembly excludes mid-run user messages
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
