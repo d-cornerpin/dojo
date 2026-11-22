@@ -25,8 +25,8 @@ export interface EngineSteerParams {
   key?: string;
   /** The stored row's text when it differs from the delivered steer (a long order is stored as its first line). */
   rowContent?: string;
-  /** The request whose put-back this steer carries; recorded as shown when the steer reaches a model call. */
-  shown?: SteerShown;
+  /** The requests whose put-backs this steer carries; recorded as shown when the steer reaches a model call. */
+  shown?: readonly SteerShown[];
 }
 
 // Row and broadcast are best-effort; the queue entry is the always-enqueued delivery; the latch dedups.

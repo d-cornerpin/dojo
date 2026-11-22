@@ -196,8 +196,7 @@ export async function injectAndRecord(
         ? markSteerDelivered(state.steerQueue, steerAwaitingConfirm)
         : markSteerAttempted(state.steerQueue, steerAwaitingConfirm),
     });
-    const shown = delivered ? steerAwaitingConfirm.shown : undefined;
-    if (shown) recordPiecesShown(shown.askId, agentId, turnNumber, shown.putBackId);
+    for (const shown of delivered ? steerAwaitingConfirm.shown ?? [] : []) recordPiecesShown(shown.askId, agentId, turnNumber, shown.putBackId);
   }
   writeContextReceipt({
     agentId,
