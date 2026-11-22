@@ -83,8 +83,8 @@ async function decideOrReview(workId: string, h: HandInRecord): Promise<void> {
     .catch((err: unknown) => logger.warn('hand-in: the decider could not be woken', { workId, error: String(err) }));
 }
 
-/** Every unserved prompt for this work (its assignment notice, triggers, pokes) retires, so handed-in work
- *  is never driven again. Rows written before prompts carried a task id are matched on the notice text. */
+/** Every unserved prompt for this work (its assignment notice, triggers, pokes) but an open run's own retires, so
+ *  handed-in work is never driven again. Rows written before prompts carried a task id are matched on the notice text. */
 function retireQueuedPrompts(workerId: string, workId: string): void {
   try {
     retireEngineEventsForTask(workId, 'task_handed_in');

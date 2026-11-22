@@ -21,9 +21,9 @@ export function spentTask(taskId: string): Spent | null {
   ).get(taskId) as { status: string; is_paused: number } | undefined;
   if (!task) return { reason: 'task_missing', state: 'task row gone' };
   if (isTerminalTaskStatus(task.status)) return { reason: 'task_terminal', state: `task ${task.status}` };
-  // Handed-in awaits its decision (a prompt would redo it); a paused schedule is spent, a hold is not.
-  if (task.status === 'handed_in') return { reason: 'task_handed_in', state: 'task handed in' };
+  // A paused schedule is spent, a hold is not; handed-in awaits its decision (a prompt would redo it).
   if (task.is_paused === 1) return { reason: 'task_paused', state: 'task paused' };
+  if (task.status === 'handed_in') return { reason: 'task_handed_in', state: 'task handed in' };
   return null;
 }
 

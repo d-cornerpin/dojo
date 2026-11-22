@@ -260,8 +260,11 @@ function retireOneEngineEvent(
 }
 
 type EventReferent = { run_id: string | null; task_id: string | null; origin_intent: string | null; root_kind: string | null; root_id: string | null };
-const spentReferent = (ev: EventReferent): ReturnType<typeof spentRun> =>
-  (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.task_id ? spentTask(ev.task_id) : null) ?? spentWakeAsk(ev);
+/** A run's prompt is spent by its run, or by its task ending or pausing, never by the task's hand-in. */
+const spentReferent = (ev: EventReferent): ReturnType<typeof spentRun> => {
+  const task = ev.task_id ? spentTask(ev.task_id) : null;
+  return (ev.run_id ? spentRun(ev.run_id) : null) ?? (ev.run_id && task?.reason === 'task_handed_in' ? null : task) ?? spentWakeAsk(ev);
+};
 
 export function retireSpentEngineEvents(agentId: string): number {
   let retired = 0;

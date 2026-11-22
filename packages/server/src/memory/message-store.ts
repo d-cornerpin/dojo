@@ -556,14 +556,14 @@ export function sweepByRowid(
   ).run({ rowid: p.rowid, agentId: p.agentId ?? null }).changes;
 }
 
-/** Unclaimed engine events of a spent task or run; the referent column is a fixed enum, never caller SQL. */
+/** Unclaimed engine events of a spent run, or of a spent task but not its runs' prompts; the referent is a fixed enum, never caller SQL. */
 export function sweepByReferent(
   p: { referent: 'task_id' | 'run_id'; id: string },
 ): number {
   const db = getDb();
   return db.prepare(
     `UPDATE messages SET swept_at = ${NOW_MS}
-       WHERE ${p.referent} = ? AND served_by_turn IS NULL AND swept_at IS NULL`,
+       WHERE ${p.referent} = ? ${p.referent === 'task_id' ? 'AND run_id IS NULL' : ''} AND served_by_turn IS NULL AND swept_at IS NULL`,
   ).run(p.id).changes;
 }
 
