@@ -1123,7 +1123,8 @@ function applyDeclaredHandOff(
   };
 }
 
-/** The countdown reached zero: nothing came back, the fail-closed notice; else the answer goes back to the agent. */
+/** The countdown reached zero: nothing came back, the fail-closed notice, unless the owner called off one of its
+ *  pieces, which ends the request as his with nobody told; else the answer goes back to the agent. */
 async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
     if (getDb().prepare(`SELECT 1 FROM work c WHERE c.parent_id = ? AND ${CALLED_OFF_BY_OWNER('c')}`).get(join.id)) {

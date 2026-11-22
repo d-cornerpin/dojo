@@ -458,7 +458,7 @@ agentsRouter.put('/:id', async (c) => {
   return c.json({ ok: true, data: rowToAgentDetail(row) });
 });
 
-// DELETE /:id: terminate agent (cascade)
+// DELETE /:id: the owner removes an agent; the work it was given is called off first, so those requests end as his
 agentsRouter.delete('/:id', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
