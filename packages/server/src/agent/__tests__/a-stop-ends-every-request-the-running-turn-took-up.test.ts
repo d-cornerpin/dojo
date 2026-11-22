@@ -58,4 +58,18 @@ describe('a stop ends every request the running turn took up', () => {
       expect(text).not.toMatch(/ended: do not do this\][^[]*What time is it in Tokyo/);
     }
   });
+
+  it('pressed just after that turn ended, Stop ends the same requests, and with nothing running the waiting one too', async () => {
+    for (const [id, content] of [['m-bike', 'Make me a picture of a red bicycle'], ['m-quick', 'Write me a poem about autumn']]) {
+      insertMessage({ id, agentId: AGENT, role: 'user', content, channel: 'imessage', senderId: PERSON, conversationId: CONV });
+      claimAsk(`ask:${id}`, AGENT);
+    }
+    liveTurn(AGENT, { turnNumber: 2, root: { kind: 'ask', id: 'm-quick', sourceMessageId: 'm-quick' } });
+    stampClaimingTurn('ask:m-bike', 2);
+    transition('ask:m-bike', { to: 'blocked', by: 'agent', actorId: AGENT, expectedState: 'claimed', reason: 'held: its picture is still being made' });
+    endTurnContext(AGENT);
+    testDb().prepare("UPDATE turns SET ended_at = datetime('now'), exit_reason = 'answered' WHERE agent_id = ? AND turn_number = 2").run(AGENT);
+    stopByOwner(AGENT);
+    expect([stateOf('ask:m-bike'), stateOf('ask:m-quick'), requestState()]).toEqual(['abandoned', 'abandoned', 'abandoned']);
+  });
 });

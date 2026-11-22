@@ -180,18 +180,12 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
   ).get(agentId) as { n: number; kind: string | null; id: string | null } | undefined;
   const root = live ? live.root : latest?.kind && latest.id ? { kind: latest.kind, id: latest.id } : null;
 
-  // The live turn's requests: every ask it took up, and another agent's request (re-read, so a swept one is not ended
-  // twice); else the latest turn's, behind its root.
+  // The requests the live turn took up, else the latest turn's, and another agent's request (re-read, so a swept one
+  // is not ended twice).
   let request = live?.servedRequest ? requestRow('seq = ?', live.servedRequest.rowid)
     : !live && !root && latest ? requestRow('served_by_turn = ?', latest.n) : undefined;
-  const taken = live ? requestsTakenUpBy(agentId, live.turnNumber!) : [];
-  const ask = live ? undefined : root?.kind === 'ask' ? { id: askIdForMessage(root.id) }
-    : root?.kind === 'engine' ? one(`SELECT CASE WHEN root_kind = 'ask' THEN 'ask:' || root_id
-        WHEN task_id LIKE 'ask:%' THEN task_id END AS id FROM messages WHERE id = ?`, root.id)
-    : root?.kind === 'a2a' ? one(`SELECT parent_id AS id FROM work WHERE agent_id = ? AND root_kind = 'a2a_thread'
-        AND root_id = ? AND parent_id IS NOT NULL ORDER BY opened_at DESC LIMIT 1`, agentId, root.id)
-    : undefined;
-  if (root?.kind === 'a2a' && !ask) request ??= requestRow('a2a_thread_id = ?', root.id);
+  const taken = live ? requestsTakenUpBy(agentId, live.turnNumber!) : latest ? requestsTakenUpBy(agentId, latest.n) : [];
+  if (root?.kind === 'a2a' && (live || taken.length === 0)) request ??= requestRow('a2a_thread_id = ?', root.id);
   const run = root?.kind === 'occurrence'
     ? one("SELECT parent_id AS id FROM work WHERE id = ? AND parent_id IS NOT NULL AND state = 'open'", root.id)
     : undefined;
@@ -202,7 +196,7 @@ export function stoppedRequestsOf(agentId: string): StoppedRequests {
   const parkedAsks = parked.map((j) => (j.origin?.kind === 'ask' ? askIdForMessage(j.origin.messageId) : null));
   const waiting = live ? [] : (db.prepare(`SELECT a.id FROM work a WHERE a.agent_id = ? AND a.kind = 'ask' AND a.state = 'blocked'
     AND ${helperWorksOnSql('a')}`).all(agentId) as Array<{ id: string }>).map((a) => a.id);
-  const asks = [...new Set([ask?.id, ...taken, ...parkedAsks, ...waiting])]
+  const asks = [...new Set([...taken, ...parkedAsks, ...waiting])]
     .filter((id): id is string => !!id && !!one(`SELECT id FROM work WHERE id = ?
       AND (state IN ('claimed', 'blocked') OR (state = 'open' AND next_attempt_at IS NOT NULL))`, id));
   const candidates = [request,
