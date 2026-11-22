@@ -201,13 +201,14 @@ describe('(c) what the engine can count is handed in for its worker, never set d
     engineHandedIn(tasks[0]);
   });
 
-  it('a task its worker paused in the same turn is not handed in, whatever was charged to it', async () => {
+  it.each(['held by its worker', 'a paused schedule'])('a task %s in the same turn is not handed in, whatever was charged to it', async (how) => {
     const { conv, tasks } = askAndTasks('dashboard');
     const file = (await import('node:path')).join(process.env.DOJO_HOME ?? '/tmp', 'plan.md');
     (await import('node:fs')).writeFileSync(file, 'The plan, with two open questions for the owner.');
     db().prepare(`INSERT INTO audit_log (id, agent_id, action_type, target, result, root_kind, root_id) VALUES ('a-plan', ?, 'file_write', ?, 'success', 'ask', 'msg-ask')`).run(AGENT, file);
     db().prepare(`INSERT INTO work_ledger (work_id, item_key, tool, first_at, last_at) VALUES (?, ?, 'file_write', ?, ?)`).run(tasks[0], `file:${file}`, Date.now(), Date.now());
-    expect(setHold(tasks[0], 'paused', "waiting on the owner's answers", AGENT).ok).toBe(true);
+    if (how === 'a paused schedule') db().prepare('UPDATE work SET is_paused = 1 WHERE id = ?').run(tasks[0]);
+    else expect(setHold(tasks[0], 'paused', "waiting on the owner's answers", AGENT).ok).toBe(true);
     const only = line('d-paused', 'dashboard', conv, 'I need two answers from you before I can go on.');
     await finalizeTurnRecord(freshState(), ctxFor(conv, 'dashboard', only));
     expect(states(tasks)).toEqual(['claimed', 'claimed']);

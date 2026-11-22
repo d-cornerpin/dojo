@@ -276,13 +276,13 @@ export async function finalizeTurnRecord(
       }, agentId);
     }
     // Engine hand-in for a task opened and delivered this turn that it can count as finished (a charged
-    // file, or its measure at 0) and that its worker did not put on hold: delivered work is never steered back to the model.
+    // file, or its measure at 0), not on hold and not a paused schedule: delivered work is never steered back to the model.
     if (answerRow && terminalDeliveryForTurn(agentId, turnNumber)) {
       try {
         const { engineHandIn } = await import('../../../../work/done/hand-in.js');
         const { engineProof } = await import('../../../../work/done/proof.js');
         const sameTurnOpen = db.prepare(
-          `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.origin_turn = ? AND w.state = 'claimed' AND NOT ${heldExpr('w')}`,
+          `SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.origin_turn = ? AND w.state = 'claimed' AND w.is_paused = 0 AND NOT ${heldExpr('w')}`,
         ).all(agentId, turnNumber) as Array<{ id: string }>;
         for (const t of sameTurnOpen) {
           const counted = engineProof(t.id).map(({ kind, ref }) => ({ kind, ref }));
