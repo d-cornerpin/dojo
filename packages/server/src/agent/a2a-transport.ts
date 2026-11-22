@@ -1421,8 +1421,8 @@ export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; fa
   return out;
 }
 
-/** A request was called off: each helper's turn on that work stops, and the owner's call-off cancels its task. */
-export async function tellHelpersTheRequestEnded(pieces: Array<{ helper: string | null; thread: string }>, byOwner: boolean): Promise<void> {
+/** A request was called off: each helper's turn on that work stops and its task is cancelled, as his when the owner's. */
+export async function tellHelpersTheRequestEnded(pieces: Array<{ helper: string | null; thread: string; asker: string }>, byOwner: boolean): Promise<void> {
   const { decide } = await import('../work/done/decide.js');
   for (const piece of pieces) {
     if (!piece.helper) continue;
@@ -1431,7 +1431,7 @@ export async function tellHelpersTheRequestEnded(pieces: Array<{ helper: string 
     ).get(piece.helper, piece.thread) as { id: string } | undefined)?.id;
     const live = turnContext(piece.helper);
     if (live && [live.root?.id, live.servedJob, live.servedWork?.taskId].some((w) => w === piece.thread || (!!task && w === task))) stopAgent(piece.helper);
-    if (task && byOwner) decide({ workId: task, deciderAgentId: null, verdict: 'cancel', reason: 'the request it was for was called off by the owner' });
+    if (task) decide({ workId: task, deciderAgentId: byOwner ? null : piece.asker, verdict: 'cancel', reason: `the request it was for was called off${byOwner ? ' by the owner' : ''}` });
   }
 }
 

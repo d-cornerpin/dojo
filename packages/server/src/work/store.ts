@@ -235,8 +235,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     // A request that ends ends its open pieces with it: called off, they are abandoned and their helpers' work stopped;
     // failed, they fail, nobody is told, and a late answer takes the late road.
     const ends = row.kind === 'ask' && (input.to === 'abandoned' || input.to === 'failed') && !isTerminal(from);
-    const pieces = ends ? db.prepare(`SELECT id, assignee_agent AS helper, root_id AS thread FROM work
-      WHERE parent_id = ? AND kind = 'task' AND state IN ${CHILD_OPEN_STATES}`).all(workId) as Array<{ id: string; helper: string | null; thread: string }> : [];
+    const pieces = ends ? db.prepare(`SELECT id, assignee_agent AS helper, root_id AS thread, agent_id AS asker FROM work
+      WHERE parent_id = ? AND kind = 'task' AND state IN ${CHILD_OPEN_STATES}`).all(workId) as Array<{ id: string; helper: string | null; thread: string; asker: string }> : [];
     const ended = pieces.filter((p) => transition(p.id, {
       to: input.to, by: input.by, actorId, evidenceRef: input.evidenceRef,
       reason: input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',

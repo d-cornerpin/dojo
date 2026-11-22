@@ -1,6 +1,7 @@
 // A request that ends ends its helpers' work with it: called off ("never mind" in the person's words, or Stop),
-// its pieces are abandoned, a helper's turn on that work is stopped, the owner's Stop cancels the helper's task in
-// his name, no note wakes a helper, and a later answer relays nothing; failed for want of an answer, its pieces end,
+// its pieces are abandoned, a helper's turn on that work is stopped, its task is cancelled (in the owner's name only
+// for his Stop) so the stall ladder never chases it, no note wakes a helper, and a later answer relays nothing; failed
+// for want of an answer, its pieces end,
 // nobody is touched, and a late answer still goes back to the agent for the person.
 // Stop with nothing running ends a request waiting on a helper even when a later turn served something else; Stop
 // while a turn runs ends only that turn's request.
@@ -27,6 +28,7 @@ import { claimAsk } from '../../work/store.js';
 import { openTurnContext, endTurnContext } from '../turn-context.js';
 import { testDb, AGENT, PERSON } from '../v2/__tests__/helpers/reply-sender.js';
 import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shared-state.js';
+import { runLadder, LADDER_ENTRY } from '../../work/done/ladder.js';
 import { delegatedTextRequest, helperAnswers, helperTask, relayRows, requestState, HELPER, CONV, ASK, THREAD } from './helpers/text-relay.js';
 
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
@@ -46,7 +48,7 @@ const helperMidTurn = (): void => { Object.assign(openTurnContext(HELPER), { tur
 const settled = async (): Promise<void> => { await vi.dynamicImportSettled(); await vi.dynamicImportSettled(); };
 
 describe("ending a request ends its helpers' work", () => {
-  it('never mind in the person\'s words: the piece ends, the helper mid-turn on it is stopped, and its answer relays nothing', async () => {
+  it('never mind in the person\'s words: the piece ends, the helper mid-turn on it is stopped, the ladder leaves its task, and its answer relays nothing', async () => {
     helperMidTurn();
     insertMessage({ id: 'm-2', agentId: AGENT, role: 'user', content: 'Never mind, we booked it already.', channel: 'imessage', senderId: PERSON, conversationId: CONV });
     const r = await trackerHandlers['work_close_request:commitment']({
@@ -56,7 +58,10 @@ describe("ending a request ends its helpers' work", () => {
     expect([requestState(), pieceState()]).toEqual(['abandoned', 'abandoned']);
     await settled();
     expect(isStopFenced(HELPER)).toBe(true);
-    expect([cancelledByOwner(), helperPrompts()]).toEqual([false, 0]);   // a contact's words are not the owner's cancel
+    expect([helperTaskState(), cancelledByOwner(), helperPrompts()]).toEqual(['abandoned', false, 0]);   // a contact's words are not the owner's cancel
+    endTurnContext(HELPER); activeRuns.delete(HELPER);
+    await runLadder(Date.now() + 3_600_000);
+    expect(testDb().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'task-helper-1' AND json_extract(payload, '$.entry_kind') = ?").get(LADDER_ENTRY.hint)).toEqual({ n: 0 });
     expect(await deliverA2AMessage({ intent: 'ANSWER', threadId: THREAD, requiresResponse: false, payload: 'Free on the 14th.', toAgent: AGENT, fromAgent: HELPER } as never))
       .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
     expect(relayRows()).toEqual([]);
