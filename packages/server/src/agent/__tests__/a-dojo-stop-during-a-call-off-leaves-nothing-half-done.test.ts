@@ -1,6 +1,7 @@
 // A stop of the Dojo during a call-off leaves nothing half done: every record a call-off changes is written in the one
 // unit with the end (nothing waits on a step after commit), so the first start owes nothing. A box whose helpers' jobs
-// were left open under pieces called off before this build has them ended once by its update (migration 910).
+// were left open under pieces called off before this build has them ended once by its update (migration 910): only
+// where the owner called the piece off or its helper is gone, never a live helper's job.
 import { describe, it, expect, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -29,38 +30,39 @@ describe('a Dojo stop during a call-off leaves nothing half done', () => {
     expect([stateOf(ASK), nextOwed(AGENT)]).toEqual(['abandoned', []]);
   });
 
-  it('the update ends a job left open under a piece called off before it, once (forward, back to the old copy, forward)', () => {
+  /** The old build's leftover: the piece abandoned, recorded as older builds wrote it, its helper's job left open. */
+  const leftover = (by: string, actor: string): void => {
     delegated();
-    testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?").run(Date.now(), pieceOf());   // the old build's leftover
-    const update = (): void => { testDb().prepare("DELETE FROM _migrations WHERE name = '910_end_jobs_of_called_off_pieces.sql'").run(); runMigrations(); };
+    testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?").run(Date.now(), pieceOf());
+    testDb().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'transition', ?, ?, ?)")
+      .run(pieceOf(), JSON.stringify({ from: 'open', to: 'abandoned', by }), actor, Date.now());
+    testDb().prepare("UPDATE work SET state = 'failed', closed_at = ? WHERE id = ?").run(Date.now(), ASK);   // its request settled
+  };
+  const update = (): void => { testDb().prepare("DELETE FROM _migrations WHERE name = '910_end_jobs_of_called_off_pieces.sql'").run(); runMigrations(); };
+
+  it('the update ends a job whose piece the owner called off, once (forward, back to the old copy, forward)', () => {
+    leftover('owner', 'owner');
     update();
     expect(endedBy('task-helper-1')?.state).toBe('abandoned');
     update();
     expect(stateOf('task-helper-1')).toBe('abandoned');
   });
 
-  it('the update keeps the job of a helper the engine gave up on, and ends the one his call-off left', () => {
-    const update = (): void => { testDb().prepare("DELETE FROM _migrations WHERE name = '910_end_jobs_of_called_off_pieces.sql'").run(); runMigrations(); };
-    for (const by of ['scheduler', 'owner']) {
-      delegated();
-      const piece = pieceOf();
-      testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?").run(Date.now(), piece);
-      testDb().prepare("INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, 'transition', ?, 'engine', ?)")
-        .run(piece, JSON.stringify({ from: 'open', to: 'abandoned', by }), Date.now());
-      testDb().prepare("UPDATE work SET state = 'failed', closed_at = ? WHERE id = ?").run(Date.now(), ASK);   // its request settled, the helper still working
-      update();
-      expect(stateOf('task-helper-1'), by).toBe(by === 'scheduler' ? 'claimed' : 'abandoned');
-    }
+  it("the update keeps the job of a live helper the old reaper gave up on, and ends it once that helper is gone", () => {
+    leftover('agent', 'work-reaper');
+    update();
+    expect(stateOf('task-helper-1'), 'its helper may still be working').toBe('claimed');
+    testDb().prepare("UPDATE agents SET status = 'terminated' WHERE id = 'agent-helper'").run();
+    update();
+    expect(stateOf('task-helper-1')).toBe('abandoned');
   });
 
   it('the update leaves alone a job reused by a new piece on its thread', () => {
-    delegated();
-    testDb().prepare("UPDATE work SET state = 'abandoned', closed_at = ? WHERE id = ?").run(Date.now(), pieceOf());
+    leftover('owner', 'owner');
     // A new job for the same helper reuses the thread and its task: a new piece is open on it.
     testDb().prepare(`INSERT INTO work (id, kind, parent_id, agent_id, assignee_agent, requester, root_kind, root_id, state, intent, wakes, closes_thread, opened_at, updated_at)
       VALUES ('piece:new', 'task', ?, ?, 'agent-helper', 'agent', 'a2a_thread', 'thread-relay-0001', 'open', 'ASSIGN', 1, 0, ?, ?)`).run(ASK, AGENT, Date.now(), Date.now());
-    testDb().prepare("DELETE FROM _migrations WHERE name = '910_end_jobs_of_called_off_pieces.sql'").run();
-    runMigrations();
+    update();
     expect(stateOf('task-helper-1')).toBe('claimed');
   });
 });
