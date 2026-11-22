@@ -1,6 +1,7 @@
 // The owner asks how his long job is going while it runs: his question's turn carries the job (one turn chain, so a
 // second question ends its stretch at the next step), the question is answered and closed on its own delivery, and
-// the job goes on in its own turn from its row.
+// the job goes on in its own turn from its row. Worked six calls deep, that turn opens no second task: the six-call
+// floor finds the job's task carrying it.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('./helpers/agent-requests.js')).connectionMock());
@@ -11,10 +12,27 @@ import { runMigrations } from '../../db/migrations.js';
 import { nextOwed } from '../v2/owed.js';
 import { advance, initState } from '../v2/state.js';
 import { turnWindow } from '../v2/steps/post-call-classify/job-turn-end.js';
-import { freshAgentsDb, HELPER } from './helpers/agent-requests.js';
+import { turnContext } from '../turn-context.js';
+import { countTrackerWorkThisIteration } from '../v2/steps/execute/tracker-counting.js';
+import { runTrackerFloors } from '../v2/steps/execute/tracker-floors.js';
+import type { ExecuteContext } from '../v2/steps/execute/index.js';
+import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
 import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
 
 beforeEach(() => { freshAgentsDb(runMigrations); });
+
+/** Six untracked work calls in the live turn, through the tracker floors. */
+async function sixWorkCalls(): Promise<void> {
+  const bag = turnContext(HELPER)!;
+  const result = { toolCalls: Array.from({ length: 6 }, (_, i) => ({ id: `tc-${i}`, name: 'write_file', arguments: { path: `/tmp/clue${i}.txt`, content: 'x' } })) };
+  const state = initState({ agentId: HELPER, contextWindow: 100_000, turnNumber: bag.turnNumber, lastUserMessageContent: 'how is it going?', lastUserMessageId: bag.root?.id ?? null } as unknown as Parameters<typeof initState>[0]);
+  const ectx = {
+    agentId: HELPER, turnCtx: bag, turnNumber: bag.turnNumber, db: testDb(), agent: { name: 'Helper' }, result,
+    counterparty: { kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard', senderId: 'owner', threadId: null, senderIsAgent: false },
+    counterpartyIsAgentSender: false, chosenConvKey: bag.convKey, engineStartAckDeliveredThisTurn: false, staleTaskWindowMinutes: 45,
+  } as unknown as ExecuteContext;
+  await runTrackerFloors(countTrackerWorkThisIteration(state, ectx), ectx);
+}
 
 const oneStepIn = () => advance(initState({ agentId: HELPER, turnNumber: 2, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]), { loopCount: 1 });
 
@@ -45,5 +63,15 @@ describe('how is it going gets an answer and the job goes on', () => {
       window = turnWindow(oneStepIn(), HELPER);
     });
     expect(window).toBe('checkpoint');
+  });
+
+  it('the question\'s turn works the job six calls deep and the board still holds the one task', async () => {
+    await ownerAsks('m-1');
+    await stretch('parks');
+    const tasks = (): number => (testDb().prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'task' AND agent_id = ?").get(HELPER) as { n: number }).n;
+    expect(tasks()).toBe(1);
+    await ownerAsks('m-2', 'how is it going?');
+    await stretch('parks', sixWorkCalls);
+    expect(tasks()).toBe(1);
   });
 });
