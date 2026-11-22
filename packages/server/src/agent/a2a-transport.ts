@@ -1061,6 +1061,7 @@ async function landReplyOnJoin(p: LandInput): Promise<{ handled: boolean; handOf
     return { handled: true, handOff };
   }
   const join = settle.join;
+  if (!joinState(child.parentId)) return { handled: false, handOff };   // a piece under a task: the answer wakes its agent
   if (!join.complete) {
     logger.info('join: piece landed, holding for the rest', {
       agentId: p.agentId, thread: p.threadShort, landed: join.landed, total: join.total,

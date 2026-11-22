@@ -642,10 +642,11 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
         attempted: ids.length, counted: landed.length,
       }, p.agentId);
     }
+    // Only a request counts down and is answered; pieces under a task are a record of the work it handed on.
     db.prepare(
       `UPDATE work SET remaining_children = ?, ttl_at = ?, reply_conversation_id = ?,
                        compile_pending = 0, updated_at = ?
-        WHERE id = ?`,
+        WHERE id = ? AND kind = 'ask'`,
     ).run(landed.length, p.ttlAt, replyConversationId, at, p.parentWorkId);
     appendEvent(p.parentWorkId, 'join_opened', p.agentId, {
       children: landed.length, threads: threads.map((t) => t.threadId), ttl_at: p.ttlAt,
