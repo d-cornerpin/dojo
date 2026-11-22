@@ -122,8 +122,8 @@ export function runEmptyResponse(state: AgentTurnState, ctx: PostCallClassifyCon
     }
     // Silence to another Dojo box is an allowed answer: no nudge, no toast; finalize settles its request.
     if (ctx.counterpartyIsAgentSender) return requestExit(state, 'empty-response-peer-box');
-    // The nudge asks for a reply to a person: a turn addressed to nobody ends instead.
-    if (ctx.turnCtx.address?.kind !== 'person') return requestExit(state, 'empty-response-no-person');
+    // The nudge asks for a reply to someone: an engine or notification turn addresses nobody and ends instead.
+    if (ctx.turnCtx.address.kind === 'engine' || ctx.turnCtx.address.kind === 'notification') return requestExit(state, 'empty-response-no-person');
     // A person still owed is answered by the required reply at the loop's exit, where one follows.
     const followed = replyCanBeRequired(ctx.latestUserSource, ctx.inboundChannel, ctx.counterpartyIsAgentSender);
     if (owesAPerson && followed) return requestExit(state, 'empty-response-owed');

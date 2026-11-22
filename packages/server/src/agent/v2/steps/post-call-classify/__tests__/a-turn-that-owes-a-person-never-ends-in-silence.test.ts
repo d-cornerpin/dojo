@@ -268,4 +268,16 @@ describe('t125 — the silent turns (Q2): a turn that owes a person never ends i
     expect(second.reason).toBe('empty-response-no-person');
     expect(steerFired(second.state.steerQueue, 'empty-response')).toBe(false);
   });
+
+  it('a helper\'s turn for its maker that keeps coming back empty gets its one nudge, naming the maker', () => {
+    const helper = ctxFor({ ...NOBODY_OWED, isA2ATurn: true, turnCtx: turnCtx({ address: { kind: 'agent', name: 'Maker' } }) });
+    const first = runEmptyResponse(afterHistorySearches({ toolCallsExecutedThisTurn: 0 }), helper);
+    expect(first.directive).toBe('continue');
+    if (first.directive !== 'continue') throw new Error('unreachable');
+    const second = runEmptyResponse(first.state, helper);
+    expect(second.directive).toBe('continue');
+    if (second.directive !== 'continue') throw new Error('unreachable');
+    expect(steerFired(second.state.steerQueue, 'empty-response')).toBe(true);
+    expect(JSON.stringify(second.state.steerQueue)).toContain('respond to Maker\'s last message');
+  });
 });
