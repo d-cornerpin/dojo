@@ -27,13 +27,14 @@ const logger = createLogger('work-effects');
 /** The PM module, loaded once and shared, so a burst of hand-ins never races its own import. */
 let pmAgent: Promise<typeof import('../../tracker/pm-agent.js')> | null = null;
 
-/** The hand-in-time effects, in order; a run owing a message, handed in in its own turn, waits for that turn to end. */
+/** The hand-in-time effects, in order; a run owing a message, handed in in its own turn, waits for that turn to end (`waits`). */
 export function onHandedIn(workId: string, handInEventId?: number, wordsFollow?: true): void {
   const h = latestHandIn(workId, handInEventId);
   if (!h) return;
   const run = h.scope === 'run' ? inFlightOccurrence(workId) : null;
   const atTurnEnd = !!run && occurrenceOwesDeliverable(run.id).owes
     && !!getDb().prepare("SELECT 1 FROM turns WHERE root_kind = 'occurrence' AND root_id = ? AND ended_at IS NULL").get(run.id);
+  if (h.scope === 'run') getDb().prepare("UPDATE work_events SET payload = json_set(payload, '$.waits', ?) WHERE id = ?").run(atTurnEnd ? 1 : 0, h.eventId);
   const advanced = h.scope !== 'run' || atTurnEnd ? Promise.resolve() : import('../../scheduler/runner.js')
     .then(({ onTaskRunComplete }) => onTaskRunComplete(workId, h.outcome === 'finished' ? 'complete' : 'failed', h.note))
     .catch((err: unknown) => logger.warn('run hand-in: the schedule did not advance', { workId, error: String(err) }));

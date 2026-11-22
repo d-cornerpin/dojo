@@ -1,13 +1,22 @@
 // A status note every ten minutes: in each run's own turn the agent writes its notes file, hands the run in, and only
 // then writes its one line to the owner. The run waits for its turn to end and closes on that line: no "finished
 // without delivering anything" alert, three runs in a row. A run handed in whose turn wrote nothing is still told.
-// A hand-in the engine did not leave for its turn's end (a one-time task's, with no run scope) is not picked up again
-// by every later tick.
+// A hand-in the engine did not leave for its turn's end (a one-time task's, with no run scope), or one taken up once
+// whose schedule then failed to advance, is not picked up again by every later tick.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'node:path';
 
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: async () => {} }));
+const advance = vi.hoisted(() => ({ fails: false, calls: 0 }));
+vi.mock('../runner.js', async (orig) => {
+  const m = await orig<typeof import('../runner.js')>();
+  return { ...m, onTaskRunComplete: async (...a: Parameters<typeof m.onTaskRunComplete>) => {
+    if (!advance.fails) return m.onTaskRunComplete(...a);
+    advance.calls += 1;
+    throw new Error('the schedule could not be written');
+  } };
+});
 const box = await import('./helpers/missed-runs-box.js');
 const { openTurnContext, endTurnContext } = await import('../../agent/turn-context.js');
 const { closeRunsThatDelivered } = await import('../runner.js');
@@ -74,5 +83,18 @@ describe('a run handed in before its line is closed on that line', () => {
     await box.checkScheduledTasks();
     await runTurn(task, true);
     expect([await closeRunsThatDelivered(), await closeRunsThatDelivered()]).toEqual([0, 0]);
+  });
+
+  it('a run taken up once whose schedule fails to advance is not taken up again by each later tick', async () => {
+    box.at('2026-03-04T08:00:00Z');
+    const made = await box.call('work_open', { kind: 'task', title: 'Bin note', goal: 'a line about the bins every ten minutes', scheduled_start: '2026-03-04T08:05:00Z', repeat_interval: 10, repeat_unit: 'minutes' });
+    const task = /task_id=([\w-]+)/.exec(made.content)![1]!;
+    box.db().prepare("UPDATE work SET task_kind = 'notify' WHERE id = ?").run(task);
+    box.at('2026-03-04T08:05:30Z');
+    await box.checkScheduledTasks();
+    advance.fails = true;
+    await runTurn(task, false);
+    expect([await closeRunsThatDelivered(), await closeRunsThatDelivered(), advance.calls]).toEqual([0, 0, 1]);
+    advance.fails = false;
   });
 });
