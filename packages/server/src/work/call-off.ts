@@ -6,6 +6,7 @@ import { isTerminal, settlePieceWithoutResult, transition, type Actor, type Piec
 import { decide, refused, type DecideResult } from './done/decide.js';
 import { cardOfSql, requestParts } from './ask-settlement.js';
 import { clearReferencesToWork } from './work-refs.js';
+import { onHelperEnded } from './task-ended.js';
 
 /** The owner (no decider; `via` relays his words), or an agent, whose `ownerQuote` makes it his once `decide` verifies it. */
 export interface CallOffBy { deciderAgentId: string | null; ownerQuote?: string; via?: string }
@@ -62,12 +63,13 @@ export function callOff(workId: string, by: CallOffBy, reason: string): DecideRe
   });
 }
 
-/** A helper's removal or end calls off its open pieces: as the owner's when `by` is his, else each asker's plain end. */
-export function callOffHelpersWork(helperId: string, by?: CallOffBy): void {
+/** A helper ended (`terminateAgent`) has its open pieces called off: as the owner's when he removed it, else each
+ *  asker's plain end. */
+onHelperEnded((helperId, byOwner) => {
   const pieces = getDb().prepare(`SELECT id, agent_id AS asker FROM work WHERE root_kind = 'a2a_thread' AND assignee_agent = ?
     AND state IN ('open', 'claimed', 'blocked')`).all(helperId) as Array<{ id: string; asker: string }>;
-  for (const p of pieces) callOff(p.id, by ?? { deciderAgentId: p.asker }, 'its helper was ended');
-}
+  for (const p of pieces) callOff(p.id, byOwner ? OWNER : { deciderAgentId: p.asker }, 'its helper was ended');
+});
 
 /**
  * The owner deletes a tracker row and its children (deeper descendants are detached), so a helper's work on them

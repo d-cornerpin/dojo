@@ -16,7 +16,7 @@ import { validateAlwaysLoadedTools } from './always-loaded-tools.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { postAgentNotice } from './agent-notice.js';
 import { writeAgentStatus } from './agent-status.js';
-import { callOffHelpersWork, type CallOffBy } from '../work/call-off.js';
+import { notifyHelperEnded } from '../work/task-ended.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { setHold, heldExpr, workingExpr } from '../work/done/hold.js';
 import { moveAssignee } from '../work/row-authority.js';
@@ -370,8 +370,8 @@ export function jobBrief({ systemPrompt, initialMessage }: { systemPrompt: strin
   return `Your task: ${systemPrompt}\n\nIMPORTANT INSTRUCTIONS:\n${steps.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
 }
 
-/** End an agent; the work it was given for others is called off first, as the owner's when `by` is his. */
-export function terminateAgent(agentId: string, reason?: string, by?: CallOffBy): void {
+/** End an agent; the work it was given for others is called off first, as the owner's when he removes it. */
+export function terminateAgent(agentId: string, reason?: string, byOwner = false): void {
   const db = getDb();
 
   const agent = db.prepare('SELECT id, name, status FROM agents WHERE id = ?').get(agentId) as {
@@ -405,7 +405,7 @@ export function terminateAgent(agentId: string, reason?: string, by?: CallOffBy)
     }, agentId);
   }
 
-  try { callOffHelpersWork(agentId, by); } catch (err) {
+  try { notifyHelperEnded(agentId, byOwner); } catch (err) {
     logger.warn('terminateAgent: the work it was given was not called off', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
   }
   writeAgentStatus(agentId, 'terminated');

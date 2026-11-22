@@ -79,7 +79,7 @@ function neverMindHold(agentId: string, tc: ToolCall, turnCtx: TurnContext, refu
     .all(`ask:${turnCtx.root.id}`, agentId, helper.id) as Array<Parameters<typeof ownerWords>[0] & { id: string; title: string | null }>).find((r) => ownerWords(r, 0) !== null) : undefined;
   if (!other) return null;
   refusedOnceSigs.add('never-mind');
-  return { toolCallId: tc.id, name: tc.name, isError: true, content: `[Engine: not sent yet] ${String(a.agent)} is working on his earlier request "${other.title ?? other.id}" [${other.id}]. If his message calls it off, end it with `
+  return { toolCallId: tc.id, name: tc.name, isError: true, content: `[Engine: not sent yet] ${String(a.agent)} is working on his earlier request ${other.title ? `"${other.title}" ` : ''}[${other.id}]. If his message calls it off, end it with `
     + `work_close_request(id="${other.id}", disposition="dropped", note=<his exact words>): the Dojo stops the job and nothing more comes back. If not, send your message again; it will go.` };
 }
 

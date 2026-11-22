@@ -16,7 +16,7 @@ import { testDb, AGENT, PERSON } from '../../v2/__tests__/helpers/reply-sender.j
 import { delegatedTextRequest, helperTask, ASK, CONV, HELPER, THREAD } from './text-relay.js';
 
 export const SECOND = 'agent-second';
-export const T2 = 'thread-relay-0002';
+export const T2 = 'thread-second-0002';   // its short token differs from THREAD's
 const now = (): number => Date.now();
 
 export const settled = async (): Promise<void> => { for (let i = 0; i < 6; i++) { await vi.dynamicImportSettled(); await new Promise((r) => setImmediate(r)); } };
