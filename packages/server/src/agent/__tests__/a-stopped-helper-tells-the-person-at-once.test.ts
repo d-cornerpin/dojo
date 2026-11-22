@@ -26,6 +26,8 @@ import { decide } from '../../work/done/decide.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
 import { deleteTrackerRow } from '../../work/tracker-store.js';
 import { newestPutBack } from '../../work/ask-settlement.js';
+import { setHold } from '../../work/done/hold.js';
+import { runLadder } from '../../work/done/ladder.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import {
   agentLines, agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, helperTask, passesRun, requestState, served, textsSent, ASK, HELPER, THREAD,
@@ -38,7 +40,7 @@ async function told(): Promise<[string, number, number]> {
   return [requestState(), failedNotices(), agentLines()];
 }
 
-beforeEach(() => { activeRuns.clear(); delegatedTextRequest(); });
+beforeEach(() => { vi.useRealTimers(); activeRuns.clear(); delegatedTextRequest(); });
 
 describe('a stopped helper tells the person at once', () => {
   it('kept past its deadline while the task is open; the owner cancels it on the board while the helper runs: called off by him', async () => {
@@ -55,6 +57,19 @@ describe('a stopped helper tells the person at once', () => {
     expect(await deliverA2AMessage({ intent: 'COMPLETE', threadId: THREAD, requiresResponse: true, payload: 'Done anyway.', toAgent: AGENT, fromAgent: HELPER } as never))
       .toMatchObject({ delivered: false, reason: 'REQUEST_ENDED' });
     expect(textsSent()).toEqual([]);
+  });
+
+  it('a helper that paused its task waiting on the owner keeps the request past his card, however long he takes', async () => {
+    testDb().prepare("UPDATE _migrations SET applied_at = datetime(applied_at, '-2 hours') WHERE name LIKE '901%'").run();
+    served();
+    expect(setHold(helperTask(), 'paused', 'Waiting on the owner to pick the date', HELPER)).toEqual({ ok: true });
+    for (const hours of [0.35, 24, 24 * 5]) {
+      vi.setSystemTime(Date.now() + hours * HOUR);
+      await runLadder();
+      await sweepExpiredJoins();
+      expect(await told()).toEqual(['blocked', 0, 0]);
+    }
+    expect(testDb().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = 'task-helper-1' AND kind = 'validation_escalated'").get()).toEqual({ n: 1 });
   });
 
   it('the owner removes the helper on the dashboard mid-job: called off by him, nobody is told', async () => {

@@ -96,10 +96,10 @@ export function workerBusy(agentId: string, work: OwedWork, seen = new Set<strin
 }
 
 /** SQL: piece `c` has a task on its thread still open, its agent not ended, and not ended by the owner's card: a card
- *  never ends it while the owner or the engine holds the task, or when the task is the join's own agent's. */
+ *  never ends it while the task is paused (waiting on him) or held by him or the engine, or is the join's own agent's. */
 const ALIVE = (c: string): string => `EXISTS (SELECT 1 FROM work t JOIN agents h ON h.id = t.agent_id AND h.status <> 'terminated'
   WHERE t.kind = 'task' AND t.a2a_thread_id = ${c}.root_id AND t.state NOT IN ('done', 'failed', 'abandoned')
-    AND ((t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
+    AND (t.hold_kind = 'paused' OR (t.hold_kind IS NOT NULL AND ${holdSetBySql('t')} IN ('owner', 'user', 'engine')) OR t.agent_id = ${c}.agent_id OR NOT ${cardedSinceStallSql('t')}))`;
 
 /** Open pieces of a join, alive by their task (ALIVE), a run in flight on a task still open by a helper not ended,
  *  or with no task a busy helper or a question back its asker owes. `tasked`: null no task, 1 one open by a live helper. */
