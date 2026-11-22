@@ -77,12 +77,11 @@ export function holdingQuestions(workId: string): PMQuestion[] {
   return pmQuestions(workId).filter((q) => q.at >= handAt && q.at < handAt + QUEUED_TURN_BOUND_MS);
 }
 
-/** The request a card was opened for (by its message, or by a piece on its thread; the newest), of the card's requester
- *  (`owed`: an answer is coming, it was not stood down), its message `root`, and its answer. */
+/** The request a card was opened for (by its message, or by its piece's id, which keeps its first thread through a
+ *  hand-off; the newest), of the card's requester (`owed`: an answer is coming, not stood down), its message `root`, its answer. */
 export const requestOf = (id: string) => getDb().prepare(`SELECT a.state IN ('open', 'claimed') OR (a.state = 'blocked' AND (a.remaining_children > 0
   OR a.compile_pending = 1)) AS owed, a.root_id AS root, d.id, d.recipient_display AS who, d.created_at AS at FROM work w JOIN work a ON a.kind = 'ask'
-  AND (a.root_id = w.source_message_id
-    OR EXISTS (SELECT 1 FROM work p WHERE p.parent_id = a.id AND p.root_kind = 'a2a_thread' AND p.root_id = w.a2a_thread_id))
+  AND (a.root_id = w.source_message_id OR EXISTS (SELECT 1 FROM work p WHERE p.id = 'piece:' || a.id || ':' || w.a2a_thread_id))
   AND a.agent_id = w.requester_id LEFT JOIN deliveries d ON d.id = a.result_delivery_id WHERE w.id = ? ORDER BY a.opened_at DESC LIMIT 1`)
   .get(id) as { owed: number; root: string; id: string | null; who: string | null; at: string | null } | undefined;
 /** The working task another agent holds for `requesterId`'s request `messageId`, with its holder's name, or null. */
