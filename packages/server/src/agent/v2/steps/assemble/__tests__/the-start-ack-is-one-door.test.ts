@@ -42,6 +42,7 @@ const AGENT = FXID.n4;
 // ── The checkpoint's own inputs, at the one moment it runs: assemble, mid-array. ──
 type Bag = Record<string, unknown>;
 const bag = (over: Bag = {}): Bag => ({
+  startAckTimer: {},   // a person waits on the turn
   startAckSteerRequested: false,
   startAckSteerArmedThisTurn: false,
   startAckSteersInjected: 0,
@@ -105,6 +106,12 @@ describe('§2 the checkpoint opener still arms exactly as it did', () => {
     });
     expect(turnCtx.startAckSteerArmedThisTurn).toBe(false);
     expect(fired(state)).toEqual([]);
+  });
+
+  it('a request on a turn nobody waits on (a run or a clock turn) arms no steer, so no hold follows', () => {
+    const first = runCheckpoint({ turnCtx: bag({ startAckSteerRequested: true, startAckTimer: null }), loopCount: 2 });
+    const next = runCheckpoint({ turnCtx: first.turnCtx, state: advance(first.state, { loopCount: 3 }) });
+    expect([next.turnCtx.startAckSteersInjected, fired(next.state)]).toEqual([0, []]);
   });
 
   it('no request, no steer — the door does not open itself', () => {
