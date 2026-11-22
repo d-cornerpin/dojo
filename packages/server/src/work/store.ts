@@ -424,6 +424,10 @@ export function firstServedAt(workId: string): number | null {
     .get(workId) as { at: number | null }).at;
 }
 
+/** SQL: row `w` was moved to abandoned by `by` (owner, scheduler, ...), by its own record. */
+export const abandonedBySql = (w: string, by: string): string => `EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = ${w}.id
+  AND e.kind = 'transition' AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = '${by}')`;
+
 /** SQL: a helper still works on a piece of request `w`; the engine's reaps never end such a request. */
 export const helperWorksOnSql = (w: string): string => `EXISTS (SELECT 1 FROM work x WHERE x.parent_id = ${w}.id
   AND x.root_kind = 'a2a_thread' AND x.state IN ('open', 'claimed', 'blocked'))`;

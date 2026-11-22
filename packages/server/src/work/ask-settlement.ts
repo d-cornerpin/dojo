@@ -24,7 +24,7 @@ import { broadcast } from '../gateway/ws.js';
 import { announceAgentLiveWork, serveLater } from '../agent/v2/serve-later.js';
 import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import {
-  appendWorkEvent, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState, stampClaimingTurn,
+  abandonedBySql, appendWorkEvent, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState, stampClaimingTurn,
   transition,
   type WorkState,
 } from './store.js';
@@ -465,8 +465,7 @@ export function requestParts(askId: string): 'working' | 'his' | 'ended' {
     .map((t) => `EXISTS (SELECT 1 FROM ${t} g WHERE g.source_message_id = a.root_id AND ${cond})`).join(' OR ');
   const r = getDb().prepare(`SELECT EXISTS (SELECT 1 FROM work x WHERE ${part} AND x.state NOT IN ('done', 'failed', 'abandoned', 'handed_in'))
         OR ${media(`g.status NOT IN (${TERMINAL_JOB_STATUS_SQL})`)} AS working,
-      NOT EXISTS (SELECT 1 FROM work x WHERE ${part} AND NOT (x.state = 'abandoned' AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = x.id
-        AND e.kind = 'transition' AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = 'owner')))
+      NOT EXISTS (SELECT 1 FROM work x WHERE ${part} AND NOT (x.state = 'abandoned' AND ${abandonedBySql('x', 'owner')}))
         AND NOT (${media("g.status <> 'cancelled'")}) AS his
     FROM work a WHERE a.id = ?`).get(askId) as { working: number; his: number } | undefined;
   return r?.working ? 'working' : r?.his ? 'his' : 'ended';
@@ -1095,9 +1094,8 @@ export interface FinalizeSettlementInput extends TurnEnd {
 
 export interface FinalizeSettlementResult { closed: number; held: number; reopened: number }
 
-/** The turn is over: every ask it took up (`root`, `claimed`), closed or assembled gets its verdict. No ask stays
- *  `claimed` by a finalized turn unless its reply is on its way (`work/__tests__/ask-done-census.test.ts`). The set is
- *  the turn's, not the conversation's: an ask picked up and answered elsewhere is still this turn's to dispose of. */
+/** The turn is over: every ask it took up (`root`, `claimed`), closed or assembled gets its verdict; none stays
+ *  `claimed` by a finalized turn unless its reply is on its way. */
 export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSettlementResult {
   const result: FinalizeSettlementResult = { closed: 0, held: 0, reopened: 0 };
   const owned: Array<{ workId: string; rowid?: number }> = servedBy(p.agentId, p.turnNumber)

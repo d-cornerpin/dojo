@@ -1078,9 +1078,8 @@ function applyDeclaredHandOff(
   };
 }
 
-/** The countdown reached zero and it was not ended quietly as the owner's (`endPiece`): nothing came back while
- *  another part of the request still works, it goes back to its agent; nothing at all, the fail-closed notice; else
- *  the answer goes back to the agent. */
+/** The countdown reached zero (not ended quietly by `endPiece`): nothing back while another part works, back to its
+ *  agent; nothing at all, the fail-closed notice; else the answer goes back to the agent. */
 export async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
     if (requestParts(join.id) === 'working') {

@@ -71,11 +71,8 @@ onHelperEnded((helperId, byOwner) => {
   for (const p of pieces) callOff(p.id, byOwner ? OWNER : { deciderAgentId: p.asker }, 'its helper was ended');
 });
 
-/**
- * The owner deletes a tracker row and its children (deeper descendants are detached), so a helper's work on them
- * is called off as his. The helper runs twice, children first, because it nulls `parent_id` on everything pointing
- * into its set: one call for both would leave the `WHERE parent_id = ?` delete matching nothing.
- */
+/** The owner deletes a tracker row and its children, calling their helpers' work off as his. References are cleared
+ *  children first: clearing the row's own first would null the `parent_id` the children's delete matches on. */
 export function deleteTrackerRow(id: string): number {
   const db = getDb();
   let changes = 0;

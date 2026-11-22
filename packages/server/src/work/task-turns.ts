@@ -13,17 +13,12 @@ const logger = createLogger('task-turns');
 export type ServedHow = 'root' | 'claimed' | 'job' | 'closed' | 'shown' | 'forwarded' | 'worked' | 'opened' | 'card' | 'run';
 /** One piece of work the turn served, how it served it, its row's kind and holder (null for a request's id with no row). */
 export interface Served { id: string; how: ServedHow; kind: string | null; holder: string | null }
-/** The ways that only inform: `shown`, the turn was shown a request's returned answer. Every other way means the turn
- *  acted for the work, so what the turn made is tied to it (and to its cards and runs). */
-const INFORMS_ONLY: readonly ServedHow[] = ['shown'];
-export const actedFor = (s: Served): boolean => !INFORMS_ONLY.includes(s.how);
-const ACTED_SQL = `s.how NOT IN (${INFORMS_ONLY.map((h) => `'${h}'`).join(', ')})`;
+/** Every way but `shown` (the turn was only shown a request's answer) means the turn acted for the work. */
+export const actedFor = (s: Served): boolean => s.how !== 'shown';
+const ACTED_SQL = "s.how <> 'shown'";
 
-// Every arm is filtered by agent (turn numbers are per agent) and starts from an index: the turn's key, the agent's own
-// rows (`ix_work_queue`; only a piece is held by an agent other than its row's), a row's events, a thread's pieces.
-// A mark that names its turn needs only to be no older than the turn; the rest are read in the turn's window, from its
-// start to the next turn's start (or a second past its end, or now while it runs).
-/** The reader; `focused` keeps the agent's own rows to the ids in `@focus`, when a caller asks about those alone. */
+// Every arm is filtered by agent and starts from an index; a mark that names its turn is read from the turn's start,
+// the rest in its window (to the next turn's start). `focused` keeps the agent's own rows to the ids in `@focus`.
 const servedSql = (focused: boolean): string => `
 WITH t AS (SELECT agent_id, turn_number, root_kind, root_id, started_at, ended_at,
              unixepoch(started_at) * 1000 AS s_ms,

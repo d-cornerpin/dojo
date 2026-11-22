@@ -101,9 +101,8 @@ function servedOf(ctx: ProofContext, agentId: string, turn: number, aboutTask: b
 export const turnServedTask = (ctx: ProofContext, agentId: string, turn: number | null): boolean =>
   turn !== null && servedOf(ctx, agentId, turn, true).some((s) => actedFor(s) && (s.id === ctx.task.id || s.id === ctx.task.ask?.id));
 type Addressed = { channel: string; recipient_id: string | null; conversation_id: string | null };
-/** Is the record of `agentId`'s turn `turn` tied to the task: `yes` when that turn served the task, one of its runs or
- *  its request; `ambiguous` when a delivery `to` the asker also reaches the asker of another task whose open run the
- *  turn served and which owes a message; else `no`. */
+/** `yes` when the record's turn served the task, a run or its request; `ambiguous` when a delivery `to` the asker also
+ *  reaches the asker of another owing task whose open run that turn served; else `no`. */
 function tieOf(ctx: ProofContext, agentId: string, turn: number | null, to?: Addressed): 'yes' | 'no' | 'ambiguous' {
   if (!turnServedTask(ctx, agentId, turn)) return 'no';
   if (!to || turn === null) return 'yes';
@@ -158,10 +157,8 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
 
 const isEngineTool = (tool: string): boolean => ENGINE_SENT_TOOLS.has(tool) || tool.endsWith('-door');
 
-/** Is this delivery the start line of its turn: only in a turn that took up the task's request, and never the line
- *  that request settled on; then the worker's first line to the asker in that turn when another line to the asker
- *  follows, or, once the turn has ended, a lone line when the request settled on some other line? Keyed to the
- *  delivery's own turn record, never to what the worker does afterwards. */
+/** The start line of a turn that took up the task's request (never its settling line): the first line to the asker
+ *  when another follows, or, the turn ended, a lone line when the request settled on another; by its own turn record. */
 function startLineOfItsTurn(ctx: ProofContext, ref: string, d: { agent_id: string; turn_number: number | null }): boolean {
   const ask = ctx.task.ask;
   if (d.turn_number === null || !ask || ref === ask.receipt

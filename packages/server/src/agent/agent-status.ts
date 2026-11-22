@@ -56,11 +56,8 @@ export function clearAgentLastError(agentId: string): void {
   `).run(agentId);
 }
 
-// Boot sweep: a dead process leaves rows 'working' and turns open; restart is the only thing that can know that.
-// No updated_at bump (the 75-minute reaper reads it). No turn survives a restart. A turn the dead process did not run
-// was left by an older one and is closed at its own start, so nothing reads it as the dead process's work: one that
-// started before the dead process (`previousStartMs`, its boot stamp) or, with no stamp, any but the newest open turn
-// of an agent left working.
+// Boot sweep: no turn survives a restart (no updated_at bump: the 75-minute reaper reads it). A turn an older process
+// left (started before `previousStartMs`; with no stamp, any but a working agent's newest) closes at its own start.
 export function resetWorkingAgentsToIdleAtBoot(previousStartMs: number | null = null): number {
   getDb().prepare(`UPDATE turns SET ended_at = started_at, exit_reason = 'terminated', answered = 0 WHERE ended_at IS NULL
     AND (unixepoch(started_at) < @prev OR (@prev IS NULL AND (agent_id NOT IN (SELECT id FROM agents WHERE status = 'working')

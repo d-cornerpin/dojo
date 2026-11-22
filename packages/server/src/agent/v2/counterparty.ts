@@ -14,7 +14,7 @@ import {
 } from '../../memory/message-store.js';
 import { conversationIdentityOf, type ConversationIdentity } from '../../memory/conversations.js';
 import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
-import { askIdForMessage } from '../../work/store.js';
+import { abandonedBySql, askIdForMessage } from '../../work/store.js';
 import { spentRun, spentTask, spentWakeAsk } from './work-lineage.js';
 import { postAgentNotice } from '../agent-notice.js';
 import { spendServe } from './serve-later.js';
@@ -391,16 +391,13 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
 /** How long a helper's result, or another agent's request once served, stays owed. */
 export const TERMINAL_WAKE_WINDOW_MS = 45 * 60_000;
 
-/** A message on thread `m.a2a_thread_id` is for ended work: the NEWEST piece on the thread that this agent holds or was
- *  given was called off, by its own record; one the engine gave up (`by` scheduler) keeps the late road unless the
- *  owner then cancelled the helper's job on it. */
-const ENDED_BY = (row: string, by: string): string => `EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = ${row}.id AND e.kind = 'transition'
-  AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = '${by}')`;
+/** A message on `m.a2a_thread_id` is for ended work: the thread's newest piece of this agent was called off; one the
+ *  engine gave up (`by` scheduler) keeps the late road unless the owner then cancelled the helper's job on it. */
 export const RESULT_FOR_ENDED_REQUEST = (m: string): string => `EXISTS (SELECT 1 FROM work p
   WHERE p.id = (SELECT n.id FROM work n WHERE (n.agent_id = ${m}.agent_id OR n.assignee_agent = ${m}.agent_id) AND n.root_kind = 'a2a_thread'
                   AND n.root_id = ${m}.a2a_thread_id ORDER BY n.opened_at DESC LIMIT 1)
-    AND p.state = 'abandoned' AND (NOT ${ENDED_BY('p', 'scheduler')} OR EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task'
-      AND t.root_kind <> 'a2a_thread' AND t.agent_id = p.assignee_agent AND t.a2a_thread_id = p.root_id AND t.state = 'abandoned' AND ${ENDED_BY('t', 'owner')})))`;
+    AND p.state = 'abandoned' AND (NOT ${abandonedBySql('p', 'scheduler')} OR EXISTS (SELECT 1 FROM work t WHERE t.kind = 'task'
+      AND t.root_kind <> 'a2a_thread' AND t.agent_id = p.assignee_agent AND t.a2a_thread_id = p.root_id AND t.state = 'abandoned' AND ${abandonedBySql('t', 'owner')})))`;
 export const resultForEndedRequest = (agentId: string, threadId: string): boolean => !!getDb().prepare(
   `SELECT 1 FROM (SELECT ? AS agent_id, ? AS a2a_thread_id) m WHERE ${RESULT_FOR_ENDED_REQUEST('m')}`).get(agentId, threadId);
 
