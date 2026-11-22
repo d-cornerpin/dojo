@@ -1,14 +1,17 @@
 // Several reminders the owner texted for fire within minutes and are worked in turns rooted on other things, as in
 // the lived round. Each run closes on a line its own work made: the shop run on "Time to call the shop.", never on
 // the stretch text another turn sent. A line a turn sent while it served two reminders is tied to both (ambiguous):
-// it still counts as delivered, so no "finished without delivering anything to you" card ever follows.
+// it still counts as delivered, so no "finished without delivering anything to you" card ever follows. A line sent in a
+// turn that served nothing on record is tied to no run: the run is undelivered, never handed in finished on it.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: async () => {} }));
 const box = await import('./helpers/reminders-box.js');
-const { at, turn, line, reminder, openRun, runState, handIn, ghosts, checkScheduledTasks, closeRunsThatDelivered, otherTasksHint, freeCheckSays, decidedBy } = box;
+const { at, db, turn, line, reminder, openRun, runState, handIn, ghosts, checkScheduledTasks, closeRunsThatDelivered, otherTasksHint, freeCheckSays, decidedBy, lastHandIn } = box;
 const { proofFor } = await import('../../work/done/proof.js');
+const { cleanupStaleRuns } = await import('../runner.js');
+const realNow = Date.now();
 
 beforeAll(() => box.openBox());
 afterAll(() => box.closeBox());
@@ -124,5 +127,23 @@ describe('a reminder closes on its own line when several fire together', () => {
     await own(shop, 'Shop o\'clock: time to call them.');
     expect(ghosts()).toBe(0);
     expect([cat, water, shop].map((t) => runState(t).state)).toEqual(['done', 'done', 'done']);
+  });
+
+  it('its only line was sent in a turn that served nothing on record: undelivered, one card, never a finished hand-in on it', async () => {
+    const T0 = Math.floor(realNow / 60_000) * 60_000;   // the stale sweep reads rows SQLite stamps on its own clock
+    const min = (m: number): string => new Date(T0 + m * 60_000).toISOString();
+    at(min(0));
+    const shop = await reminder('Shop call', min(5));
+    await tick(min(5.5));
+    const run = openRun(shop);
+    await turn(null, () => { line('Time to call the shop.', 'dashboard'); });
+    await closeRunsThatDelivered();
+    expect(runState(shop).state, 'no turn tied the line to the run').toBe('open');
+    at(min(40));
+    cleanupStaleRuns();
+    const cards = (): unknown => db().prepare("SELECT COUNT(*) AS n FROM work_events WHERE kind = 'floor_ghosted' AND work_id IN (?, ?)").get(run, shop);
+    await vi.waitFor(() => expect(cards()).toEqual({ n: 1 }));
+    expect(runState(shop).result_delivery_id).toBeNull();
+    expect(lastHandIn(shop)).not.toBe('finished');
   });
 });

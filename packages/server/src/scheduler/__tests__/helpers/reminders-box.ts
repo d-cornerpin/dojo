@@ -92,3 +92,7 @@ export const decidedBy = (task: string): string | null => (db().prepare(
   "SELECT actor FROM work_events WHERE work_id = ? AND kind = 'decided' AND id > (SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'handed_in')",
 ).get(task, task) as { actor: string } | undefined)?.actor ?? null;
 
+/** The outcome of the task's newest hand-in, or null. */
+export const lastHandIn = (task: string): string | null => (db().prepare(
+  "SELECT json_extract(payload, '$.outcome') AS o FROM work_events WHERE work_id = ? AND kind = 'handed_in' ORDER BY id DESC LIMIT 1",
+).get(task) as { o: string } | undefined)?.o ?? null;

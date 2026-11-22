@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: async () => {} }));
 const box = await import('./helpers/reminders-box.js');
-const { at, db, turn, line, reminder, openRun, runState, handIn, ghosts, checkScheduledTasks, closeRunsThatDelivered, freeCheckSays, decidedBy } = box;
+const { at, db, turn, line, reminder, openRun, runState, handIn, ghosts, checkScheduledTasks, closeRunsThatDelivered, freeCheckSays, decidedBy, lastHandIn } = box;
 const { decide } = await import('../../work/done/decide.js');
 
 beforeAll(() => box.openBox());
@@ -39,6 +39,7 @@ describe('a line that serves two reminders never makes a false card', () => {
     const { shop, stretch, both } = await oneLineForBoth('2026-03-02');
     expect([runState(shop), runState(stretch)]).toEqual([{ state: 'done', result_delivery_id: both }, { state: 'done', result_delivery_id: both }]);
     expect([decidedBy(shop), decidedBy(stretch)]).toEqual(['engine', 'engine']);
+    expect(lastHandIn(shop), "the engine's own hand-in of the run it closed").toBe('finished');
     expect([taskState(shop), taskState(stretch)]).toEqual(['done', 'done']);
     expect(ghosts()).toBe(0);
   });

@@ -49,4 +49,12 @@ describe("removing a helper calls off its pieces as the owner's", () => {
     await settled();
     expect(endedBy(pieceOf())).toEqual({ state: 'abandoned', by: 'agent' });
   });
+
+  it('the main agent ends it with no words (round three, S08 step 6): piece and job end in the termination itself, a plain end', async () => {
+    delegated();
+    const r = await call(AGENT, 'kill_agent', { agent_id: HELPER });
+    expect(r.isError, String(r.content)).toBeFalsy();
+    expect([endedBy(pieceOf()), endedBy('task-helper-1')]).toEqual([{ state: 'abandoned', by: 'agent' }, { state: 'abandoned', by: 'agent' }]);
+    await settled();
+  });
 });
