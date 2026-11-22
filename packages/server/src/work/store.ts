@@ -325,7 +325,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   }
 
   // A task ended or handed in may settle its owner's request; one ended undone also judges the request on its thread.
-  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal && input.to !== 'done' ? row.a2a_thread_id : null);
+  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal && input.to !== 'done' ? row.a2a_thread_id : null, input.by === 'owner');
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
   return { kind: 'applied', value };
@@ -835,10 +835,10 @@ export function landPiece(
  *  countdown like a success; the join's `landed` count still counts only `done` pieces. */
 export function settlePieceWithoutResult(
   childId: string,
-  p: { to: 'failed' | 'abandoned'; reason: string; content?: string | null; actorId?: string | null },
+  p: { to: 'failed' | 'abandoned'; reason: string; content?: string | null; actorId?: string | null; by?: Actor },
 ): PieceSettleResult {
   const result = loudOnPieceAbort(childId, () => transition(childId, {
-    to: p.to, by: 'agent', actorId: p.actorId ?? 'a2a', reason: p.reason,
+    to: p.to, by: p.by ?? 'agent', actorId: p.actorId ?? 'a2a', reason: p.reason,
     note: p.content || null,
   }));
   return { result, join: joinAfter(childId) };

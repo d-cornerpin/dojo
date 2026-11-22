@@ -1126,6 +1126,10 @@ function applyDeclaredHandOff(
 /** The countdown reached zero: nothing came back, the fail-closed notice; else the answer goes back to the agent. */
 async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
   if (join.outcome === 'fail-closed') {
+    if (getDb().prepare(`SELECT 1 FROM work c WHERE c.parent_id = ? AND ${CALLED_OFF_BY_OWNER('c')}`).get(join.id)) {
+      transition(join.id, { to: 'abandoned', by: 'owner', actorId: 'owner', expectedState: join.parentState, reason: 'the owner called off the work it waited on' });
+      return;
+    }
     const failReason = joinFailureReason(joinPieces(join.id));
     const claimed = failJoinClosed(join.id, { reason: failReason, expectedState: join.parentState });
     if (claimed.kind !== 'applied') return;
@@ -1289,9 +1293,6 @@ async function resolveOpenJoin(join: JoinState): Promise<'relayed' | 'failed-clo
     await resolveCompletedJoin(landed);
     return 'relayed';
   }
-  if (getDb().prepare(`SELECT 1 FROM work c JOIN work t ON t.kind = 'task' AND t.agent_id = c.assignee_agent AND t.a2a_thread_id = c.root_id
-      WHERE c.parent_id = ? AND ${CALLED_OFF_BY_OWNER('t')}`).get(landed.id)
-    && transition(landed.id, { to: 'abandoned', by: 'owner', actorId: 'owner', reason: 'the owner called off the work it waited on' }).kind === 'applied') return 'already-settled';
   for (const p of openPieces(landed.id)) if (!p.alive) await abandonPiece(p.childId, 'its helper\'s work on it has stopped', 'work-reaper');
   const state = joinState(landed.id);
   if (!state || state.complete) return state?.parentState === 'failed' ? 'failed-closed' : 'already-settled';
@@ -1461,19 +1462,21 @@ export async function failJoinPieceForAbandonedAsk(
 }
 
 /** End a piece as abandoned; a request still open whose last piece this was is answered or told, once. */
-async function abandonPiece(childId: string, reason: string, actorId: string | null): Promise<PieceSettleResult> {
-  const s = settlePieceWithoutResult(childId, { to: 'abandoned', reason, actorId });
+async function abandonPiece(childId: string, reason: string, actorId: string | null, by?: 'owner'): Promise<PieceSettleResult> {
+  const s = settlePieceWithoutResult(childId, { to: 'abandoned', reason, actorId, by });
   if (s.result.kind === 'applied' && s.join.complete && !isTerminal(s.join.parentState)) await resolveCompletedJoin(s.join, resolveAgentDisplayName(actorId) ?? undefined);
   return s;
 }
 
 /** A helper's work changed (its task ended or was deleted, the owner was carded, the helper ended): judge now every open
- *  request with a piece assigned to it or on that thread. The agent or thread bounds it: no age floor, no row limit. */
-export async function judgeKeptRequests(agentId: string, threadId: string | null = null): Promise<void> {
+ *  request with a piece assigned to it or on that thread. The agent or thread bounds it: no age floor, no row limit.
+ *  The owner's own end of that work first calls off the helper's open pieces (on that thread) as his. */
+export async function judgeKeptRequests(agentId: string, threadId: string | null = null, byOwner = false): Promise<void> {
   try {
-    const joins = getDb().prepare(`SELECT DISTINCT parent_id AS id FROM work WHERE kind = 'task' AND root_kind = 'a2a_thread' AND parent_id IS NOT NULL
-        AND state IN ('open', 'claimed', 'blocked') AND (assignee_agent = ? OR root_id = ?)`).all(agentId, threadId) as Array<{ id: string }>;
-    for (const { id } of joins) {
+    const pieces = getDb().prepare(`SELECT id, parent_id AS ask, assignee_agent AS helper, root_id AS thread FROM work WHERE kind = 'task' AND root_kind = 'a2a_thread'
+        AND parent_id IS NOT NULL AND state IN ('open', 'claimed', 'blocked') AND (assignee_agent = ? OR root_id = ?)`).all(agentId, threadId) as Array<{ id: string; ask: string; helper: string | null; thread: string }>;
+    for (const p of pieces) if (byOwner && p.helper === agentId && (threadId === null || p.thread === threadId)) await abandonPiece(p.id, 'its helper\'s work was called off by the owner', 'owner', 'owner');
+    for (const id of new Set(pieces.map((p) => p.ask))) {
       const j = joinState(id);
       if (j && !isTerminal(j.parentState)) await resolveOpenJoin(j);
     }

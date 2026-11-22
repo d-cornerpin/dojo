@@ -1,7 +1,8 @@
 // When a helper's work stops by an event the Dojo already records (its task deleted, its project deleted, the helper
 // ended, even while its run unwinds), the person waiting is told at that moment, once, with no sweep, however old the
-// request. When the owner cancels the helper's task on the board or removes the helper, the request ends as called off
-// by him: nobody is told, nothing redoes it, and a late answer is refused.
+// request. When the owner cancels the helper's task on the board or removes the helper, that piece is called off by him;
+// with nothing else back the request ends as called off by him (nobody is told, nothing redoes it, a late answer is
+// refused), and in a fan-out the other helpers' answers still go back to the agent.
 // Until then the request is kept however long the task is open. A stop the Dojo missed while it was down is caught
 // by the boot pass from the rows. A later answer reaches the person once, as an Update. A plain question (no task) is
 // kept while its helper is in a run, has not yet been served it (whatever its age, a restart or a pause), or said it is
@@ -24,6 +25,7 @@ import { writeAgentStatus } from '../agent-status.js';
 import { decide } from '../../work/done/decide.js';
 import { agentsRouter } from '../../gateway/routes/agents.js';
 import { deleteTrackerRow } from '../../work/tracker-store.js';
+import { newestPutBack } from '../../work/ask-settlement.js';
 import { testDb, AGENT } from '../v2/__tests__/helpers/reply-sender.js';
 import {
   agentLines, agentStaysSilent, delegatedTextRequest, failedNotices, helperAnswers, helperTask, passesRun, requestState, served, textsSent, ASK, HELPER, THREAD,
@@ -60,6 +62,20 @@ describe('a stopped helper tells the person at once', () => {
     activeRuns.add(HELPER);
     expect((await agentsRouter.request(`/${HELPER}`, { method: 'DELETE' })).status).toBe(200);
     expect(await told()).toEqual(['abandoned', 0, 0]);
+  });
+
+  it('a fan-out: the owner cancels one helper\'s task on the board, and the other helper\'s answer goes back to the agent', async () => {
+    const OTHER = 'agent-helper-2', T2 = 'thread-relay-0002';
+    delegatedTextRequest({}, [THREAD, T2]);
+    testDb().prepare("INSERT INTO agents (id, name, status, classification) VALUES (?, 'Other', 'idle', 'standard')").run(OTHER);
+    testDb().prepare('UPDATE work SET assignee_agent = ? WHERE parent_id = ? AND root_id = ?').run(OTHER, ASK, T2);
+    testDb().prepare('UPDATE messages SET agent_id = ? WHERE a2a_thread_id = ?').run(OTHER, T2);
+    helperTask();
+    expect(decide({ workId: 'task-helper-1', deciderAgentId: null, verdict: 'cancel', reason: 'Not needed any more' }).kind).toBe('decided');
+    expect(await told()).toEqual(['blocked', 0, 0]);
+    await deliverA2AMessage({ intent: 'ANSWER', threadId: T2, requiresResponse: false, payload: 'The garden is free.', toAgent: AGENT, fromAgent: OTHER } as never);
+    expect([await told(), newestPutBack(ASK)?.kind]).toEqual([[requestState(), 0, 0], 'compile']);
+    expect(requestState()).not.toBe('abandoned');
   });
 
   it('its task deleted', async () => {
