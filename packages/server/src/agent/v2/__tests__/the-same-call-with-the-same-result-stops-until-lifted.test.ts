@@ -73,7 +73,8 @@ async function turn(agentId: string, passes: Array<Call | Call[]>): Promise<stri
   callModelSpy.mockImplementation(async () => {
     const planned = passes[pass++];
     const toolCalls = planned === undefined ? [] : (Array.isArray(planned) ? planned : [planned]).map((c, i) => ({ id: `c-${pass}-${i}`, ...c }));
-    return { content: toolCalls.length ? '' : 'Done for now.', toolCalls, inputTokens: 1, outputTokens: 1, stopReason: toolCalls.length ? 'tool_use' : 'end_turn' };
+    // The first pass says its start line, as the start-line hint asks, so no pass is held for it.
+    return { content: toolCalls.length ? (pass === 1 ? 'On it.' : '') : 'Done for now.', toolCalls, inputTokens: 1, outputTokens: 1, stopReason: toolCalls.length ? 'tool_use' : 'end_turn' };
   });
   await runV2Turn(agentId);
   return results(agentId);

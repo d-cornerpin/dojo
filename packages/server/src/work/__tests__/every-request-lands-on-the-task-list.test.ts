@@ -633,7 +633,7 @@ describe('t139 — every multi-step request lands on the task list with its word
     const ask = 'Get the helper to draft the venue shortlist, then you check it against my calendar and send me the final pick.';
     ownerSays('msg-deleg', ask);
     script([
-      { toolCalls: [openTask('wo-deleg', 'Venue pick', 'A final venue pick checked against the calendar')] },
+      { content: 'On it, getting a shortlist first.', toolCalls: [openTask('wo-deleg', 'Venue pick', 'A final venue pick checked against the calendar')] },
       { toolCalls: [call('sa-1', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'Draft a venue shortlist of three options with day rates.' })] },
       { content: 'I have asked Helper for a shortlist and will check it against your calendar when it lands.' },
     ]);

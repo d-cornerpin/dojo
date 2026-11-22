@@ -374,7 +374,7 @@ describe('t145 A1 — a later owner message that updates an open task is linked 
   it('CONTROL: the original ask\'s own turn updating its task links nothing', async () => {
     ownerSays('msg-1', ASK);
     script([
-      { toolCalls: [openTask('wo-1', 'Team headshots', 'Headshots delivered')] },
+      { content: 'On it.', toolCalls: [openTask('wo-1', 'Team headshots', 'Headshots delivered')] },
       { toolCalls: [call('wn-0', 'work_note', { task_id: 'Team headshots', notes: 'first note' })] },
       { content: 'Starting.' },
     ]);
