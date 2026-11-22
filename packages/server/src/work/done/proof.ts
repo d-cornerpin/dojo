@@ -106,7 +106,7 @@ function found(workId: string, kinds: readonly Found[], byEngine = false, tiedOn
 export const proofFor = (workId: string): ResolvedItem[] => found(workId, ['delivery', 'file', 'receipt', 'measure']);
 
 /** The newest delivery to the asker tied to this task alone, else the newest tied to it and another (ambiguous): what a
- *  close points at, or null. `byEngine`: the engine's own run close, where the delivery may go to whoever the schedule serves. */
+ *  close points at, or null. `byEngine`: the engine's own run close. */
 export function proofDelivery(workId: string, byEngine = false): string | null {
   const tied = found(workId, ['delivery'], byEngine, true);
   return (tied.filter((i) => i.facts.tied === 'yes').pop() ?? tied.pop())?.ref ?? null;

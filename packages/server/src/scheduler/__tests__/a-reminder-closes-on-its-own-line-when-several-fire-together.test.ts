@@ -1,8 +1,8 @@
 // Several reminders the owner texted for fire within minutes and are worked in turns rooted on other things, as in
-// the lived round. Each run closes on a line its own work made: the shop run on "Time to call the shop.", never on
-// the stretch text another turn sent. A line a turn sent while it served two reminders is tied to both (ambiguous):
-// it still counts as delivered, so no "finished without delivering anything to you" card ever follows. A line sent in a
-// turn that served nothing on record is tied to no run: the run is undelivered, never handed in finished on it.
+// the lived round. Each run closes on a text its own work made: the shop run on "Time to call the shop.", never on its
+// dashboard copy or the stretch text another turn sent. A line a turn sent while it served two reminders is tied to
+// both (ambiguous): it still counts as delivered, so no "finished without delivering anything to you" card ever
+// follows. A line sent in a turn that served nothing on record is tied to no run: the run is undelivered.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
@@ -20,7 +20,7 @@ const tick = async (iso: string): Promise<void> => { at(iso); await checkSchedul
 const tieOf = (task: string, delivery: string): unknown => proofFor(task).find((i) => i.ref === delivery)?.facts.tied;
 
 describe('a reminder closes on its own line when several fire together', () => {
-  it('the lived shop and stretch reminders: the shop run waits for its turn, closes on its own line and is decided by the free check; the stretch text is ambiguous for it', async () => {
+  it('the lived shop and stretch reminders: the shop run is not closed on its dashboard line, its own turn texts it, and it closes on that text, decided by the free check', async () => {
     freeCheckSays(true);
     const day = '2026-03-02';
     at(`${day}T07:30:00Z`);
@@ -32,32 +32,30 @@ describe('a reminder closes on its own line when several fire together', () => {
     };
     await tick(`${day}T07:44:25Z`); await own(stretch, 'Stretch break: stand up and move about.');
     await tick(`${day}T07:49:25Z`); await own(stretch, 'Stand up and stretch.');
-    // A turn about step two of another job: the shop reminder fires in it, and it writes the reminder and hands it in.
+    // A dashboard turn about step two of another job: the shop reminder fires in it, and it writes the reminder there.
     const stepTwo = await otherTasksHint(day);
     at(`${day}T07:53:20Z`);
-    let shopLine = '';
     await turn(stepTwo, async () => {
       await checkScheduledTasks();
-      shopLine = line('Time to call the shop.', 'dashboard');
-      const r = await handIn(shop, shopLine); expect(r.isError, r.content).toBe(false);
-      await closeRunsThatDelivered();
-      expect(runState(shop).state, 'the turn that served the run is still running').toBe('open');
+      const r = await handIn(shop, line('Time to call the shop.', 'dashboard'));
+      expect(r.content).toContain('not addressed to the asker');
     });
+    await closeRunsThatDelivered();
+    expect(runState(shop).state, 'he asked by text: the dashboard line is not his reminder').toBe('open');
+    // The shop run's own turn texts it, before the stretch reminder fires again.
+    at(`${day}T07:53:50Z`);
+    let shopLine = '';
+    await turn({ kind: 'occurrence', id: openRun(shop) }, () => { shopLine = line('Time to call the shop.', 'imessage'); });
     await closeRunsThatDelivered();
     await new Promise((r) => setTimeout(r, 50));
+    expect(runState(shop)).toEqual({ state: 'done', result_delivery_id: shopLine });
     expect(decidedBy(shop), 'the free check read the line as the reminder').toBe('engine');
     freeCheckSays(null);
-    // The shop run's own turn sends the stretch text and hands the stretch reminder in on it.
     await tick(`${day}T07:54:25Z`);
     let stretchLine = '';
-    await turn({ kind: 'occurrence', id: openRun(shop) }, async () => {
-      stretchLine = line('Stand up and stretch.', 'imessage');
-      const r = await handIn(stretch, stretchLine); expect(r.isError, r.content).toBe(false);
-    });
+    await turn({ kind: 'occurrence', id: openRun(stretch) }, () => { stretchLine = line('Stand up and stretch.', 'imessage'); });
     await closeRunsThatDelivered();
-    expect(runState(shop)).toEqual({ state: 'done', result_delivery_id: shopLine });
     expect(runState(stretch)).toEqual({ state: 'done', result_delivery_id: stretchLine });
-    expect(tieOf(shop, stretchLine), 'the turn served both reminders').toBe('ambiguous');
     expect(ghosts()).toBe(0);
   });
 
@@ -97,7 +95,7 @@ describe('a reminder closes on its own line when several fire together', () => {
     expect(ghosts()).toBe(0);
   });
 
-  it('five schedules within five minutes, worked in turns rooted on other things as lived: no card', async () => {
+  it('five schedules within five minutes, worked in turns rooted on other things as lived: dashboard lines prove nothing he texted for, and no card', async () => {
     const day = '2026-03-05';
     at(`${day}T07:35:00Z`);
     const status = await reminder('status note', `${day}T07:40:00Z`, 10);
@@ -115,11 +113,11 @@ describe('a reminder closes on its own line when several fire together', () => {
     await tick(`${day}T07:49:25Z`); await own(stretch, 'Stand up and stretch.');
     await tick(`${day}T07:50:30Z`); await own(status, 'Status: three lists finished.');
     await tick(`${day}T07:52:25Z`);
-    await turn(null, async () => { expect((await handIn(water, line('Water the plants.', 'dashboard'))).isError).toBe(false); });
+    await turn(null, async () => { expect((await handIn(water, line('Water the plants.', 'dashboard'))).isError).toBe(true); });
     await closeRunsThatDelivered();
     await own(water, 'Time to water the plants.');
     await tick(`${day}T07:53:25Z`);
-    await turn(null, async () => { expect((await handIn(shop, line('Time to call the shop.', 'dashboard'))).isError).toBe(false); });
+    await turn(null, async () => { expect((await handIn(shop, line('Time to call the shop.', 'dashboard'))).isError).toBe(true); });
     await closeRunsThatDelivered();
     await tick(`${day}T07:54:25Z`);
     await turn({ kind: 'occurrence', id: openRun(shop) }, async () => { expect((await handIn(stretch, line('Stand up and stretch.', 'imessage'))).isError).toBe(false); });

@@ -63,7 +63,7 @@ function seedReminder(taskKind: string | null): string {
   const id = 'task-reminder';
   seedTrackerTask(mockDb.current!, {
     id, title: 'Reminder: routine', description: 'routine', status: 'in_progress',
-    agentId: AGENT, createdBy: 'owner', schedule_status: 'running',
+    agentId: AGENT, createdBy: AGENT, schedule_status: 'running',
     next_run_at: null, is_paused: 0, task_kind: taskKind,
   });
   if (taskKind) declareDeliverableOnSchedule(id);

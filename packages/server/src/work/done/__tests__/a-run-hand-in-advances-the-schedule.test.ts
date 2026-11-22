@@ -62,7 +62,7 @@ describe('a run hand-in advances the schedule', () => {
     expect(due(NEXT + 1_000)).toBe(true);
   });
 
-  it('a run that delivered to the person its schedule serves, not the asker, is handed in finished on that delivery', async () => {
+  it('a run whose only send went to someone other than the asker is not handed in finished on it: the run close asks what every close asks', async () => {
     freshBoard();
     aRunInFlight('run-1', Date.now() - 30_000);
     const at = Math.floor(Date.now() / 1000) * 1000;
@@ -72,7 +72,7 @@ describe('a run hand-in advances the schedule', () => {
        VALUES ('dlv-third', ?, 'imessage_send', 'imessage', 'friend@example.com', 'm-third', 'delivered', datetime('now'), datetime('now'), ?, 'occurrence', 'run-1')`,
     ).run(WORKER, turnRow(WORKER, 1, { kind: 'occurrence', id: 'run-1' }));
     expect(await onTaskRunComplete(TASK, 'complete', 'ran')).toBe(true);
-    expect(latestHandIn(TASK)).toMatchObject({ outcome: 'finished', items: [expect.objectContaining({ kind: 'delivery', ref: 'dlv-third' })] });
+    expect(latestHandIn(TASK)?.outcome).not.toBe('finished');
   });
 
   it.each(['busy-ack', 'imessage-door'])('an engine hand-in of a run citing an engine %s line in the run window is refused', async (tool) => {

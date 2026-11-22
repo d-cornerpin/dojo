@@ -1,6 +1,6 @@
 // The task's asker, by the engine's own record: an agent asker is the task's `requester_id` (another agent
 // than the worker); a person asker is the sender of the message the task or its project exists for, and
-// when that is the owner, his own surfaces count too (dashboard, voice, each channel's `isOwnerOn`).
+// when that is the owner, his own outside channels count too (`isOwnerOn`), and the dashboard or voice when he asked there.
 // Anything else is not the asker, so "the worker's own message to the asker" stays true.
 import { getDb } from '../../db/connection.js';
 import { ownerWords } from '../../tracker/owner-words.js';
@@ -58,7 +58,9 @@ export function deliveredToAsker(
   if (a.conversationId && d.conversation_id === a.conversationId) return true;
   if (a.senderId && d.recipient_id && d.channel === a.channel && addressesMatch(a.senderId, d.recipient_id)) return true;
   if (!a.owner) return false;
-  return d.channel === 'dashboard' || d.channel === 'voice' || (!!d.recipient_id && isOwnerOn(d.channel, d.recipient_id));
+  // Asked from off the dashboard, he is owed a send on one of his own outside channels; a dashboard line does not reach him.
+  if (d.channel === 'dashboard' || d.channel === 'voice') return a.channel === null || a.channel === 'dashboard' || a.channel === 'voice';
+  return !!d.recipient_id && isOwnerOn(d.channel, d.recipient_id);
 }
 
 /** Does a send to these agents (ids or names) reach the asker? Every recipient must be the asker. */

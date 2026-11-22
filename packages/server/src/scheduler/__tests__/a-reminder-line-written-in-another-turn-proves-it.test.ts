@@ -1,6 +1,6 @@
 // A reminder the owner texted for, whose request settled on the confirmation, fires while the agent is in a turn
 // about something else: another task's engine event (as lived), another task's run, no root at all, or the owner's
-// unrelated question on the dashboard. That turn's one line to the owner is the reminder, and a later hand-in citing
+// unrelated question on the dashboard. That turn's one text to the owner is the reminder, and a later hand-in citing
 // it is accepted, never refused as "the start line of its turn": that turn did not take up the reminder's request.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
@@ -32,7 +32,7 @@ const doors: Array<[Door, string, string]> = [
 
 describe('a reminder line written in another turn proves it', () => {
   for (const [kind, day, about] of doors) {
-    it(`a turn rooted on ${about}: its lone dashboard line is accepted`, async () => {
+    it(`a turn rooted on ${about}: its lone text is accepted`, async () => {
       at(`${day}T07:38:00Z`);
       const shop = await reminder('Shop call', `${day}T07:53:00Z`);
       const root = await otherRoot(kind, day);
@@ -40,7 +40,7 @@ describe('a reminder line written in another turn proves it', () => {
       let reminderLine = '';
       await turn(root, async () => {
         await checkScheduledTasks();
-        reminderLine = line('Time to call the shop.', 'dashboard');
+        reminderLine = line('Time to call the shop.', 'imessage');
       });
       at(`${day}T07:54:40Z`);
       let r = { isError: true, content: '' };

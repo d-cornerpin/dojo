@@ -146,7 +146,7 @@ function delivery(ctx: ProofContext, ref: string): Facts | string {
   if ((NON_ANSWERING_DISPLAY_KINDS as readonly string[]).includes(d.display_kind ?? '')) return 'is a tool chip or working note, not a message';
   const own = ownRow(ctx, d.agent_id, sqlTimeMs(d.created_at));
   if (own) return own;
-  if ((!ctx.byEngine || (ctx.asker.kind === 'person' && !ctx.asker.owner)) && !deliveredToAsker(ctx.asker, d)) return 'was not addressed to the asker (it went to someone else)';
+  if (!deliveredToAsker(ctx.asker, d)) return 'was not addressed to the asker (it went to someone else)';
   if (d.channel === 'a2a' && !handsOverWork(intentOf(d.detail) ?? intentOf(d.text))) return 'does not hand over the work (its intent is not an answer or a deliverable)';
   if (d.text === null) return 'carries no text on record, so it shows no work';
   if (claim(ctx, d.text)) return 'is only a status claim, which is never proof';

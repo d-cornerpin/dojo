@@ -27,7 +27,7 @@ describe('a run closes while its worker keeps busy', () => {
     let shopLine = '';
     await turn(stepTwo, async () => {
       await checkScheduledTasks();
-      shopLine = line('Time to call the shop.', 'dashboard');
+      shopLine = line('Time to call the shop.', 'imessage');
       expect((await handIn(shop, shopLine)).isError).toBe(false);
     });
     at('2026-03-02T07:53:40Z');
@@ -46,7 +46,7 @@ describe('a run closes while its worker keeps busy', () => {
     let shopLine = '';
     await turn(await otherTasksHint('leaked'), async () => {
       await checkScheduledTasks();
-      shopLine = line('Time to call the shop.', 'dashboard');
+      shopLine = line('Time to call the shop.', 'imessage');
       expect((await handIn(shop, shopLine)).isError).toBe(false);
     }, false);
     await closeRunsThatDelivered();
