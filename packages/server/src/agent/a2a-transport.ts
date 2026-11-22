@@ -1288,7 +1288,6 @@ async function resolveOpenJoin(join: JoinState): Promise<'relayed' | 'failed-clo
     await resolveCompletedJoin(landed);
     return 'relayed';
   }
-  // A helper's task the owner called off ends the request as called off by him; its end stops the other pieces.
   if (getDb().prepare(`SELECT 1 FROM work c JOIN work t ON t.kind = 'task' AND t.agent_id = c.assignee_agent AND t.a2a_thread_id = c.root_id
       WHERE c.parent_id = ? AND ${CALLED_OFF_BY_OWNER('t')}`).get(landed.id)
     && transition(landed.id, { to: 'abandoned', by: 'owner', actorId: 'owner', reason: 'the owner called off the work it waited on' }).kind === 'applied') return 'already-settled';

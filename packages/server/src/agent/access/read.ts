@@ -140,8 +140,7 @@ export function toolCategoryLabels(tool: string): string[] {
   return [...categoriesOf(tool)];
 }
 
-/** Held whatever the groups or an allow list say (a deny by name still wins): loading a tool, lifting a loop stop, and
- *  for an agent given a job on an agent's thread (every ASSIGN opens or stamps a task), the ways to hand it back. */
+/** Held whatever the groups or an allow list say (a deny by name wins): loading a tool, lifting a loop stop, and handing back a job. */
 export const alwaysHeld = (agentId: string): string[] => [...HELD, ...(getDb().prepare(
   "SELECT 1 FROM work WHERE agent_id = ? AND kind = 'task' AND a2a_thread_id IS NOT NULL LIMIT 1").get(agentId) ? JOB_HELD : [])];
 const HELD = ['load_tool_docs', LIFT_TOOL], JOB_HELD = ['send_to_agent', 'complete_task'];
