@@ -46,13 +46,13 @@ describe("a helper's held steps go back to its creator when it ends", () => {
     expect(moves('step-2')).toEqual([expect.stringContaining('cause=assignee_gone')]);
   });
 
-  it('a helper its creator ended hands back only its held steps; its Working task stays with it, held, and the request ends', async () => {
+  it('a helper its creator ended hands back only its held steps; the job it was given ends with its piece, and so does the request', async () => {
     seed();
     const ask = await keptRequest(HELPER, TASK, PARENT);
     terminateAgent(HELPER, 'no longer needed');
     expect(row('step-1')).toMatchObject({ agent_id: PARENT, hold_kind: 'paused', hold_reason: 'waiting on a login code' });
     expect(moves('step-2')).toEqual([expect.stringContaining('cause=assignee_gone')]);
-    expect(row(TASK)).toMatchObject({ agent_id: HELPER, hold_kind: 'paused' });
+    expect(doneDb().prepare('SELECT state FROM work WHERE id = ?').get(TASK)).toEqual({ state: 'abandoned' });   // called off with its piece
     expect(await keptState(ask), 'the person is told: the request and its piece end').toEqual(['failed', 'abandoned']);
   });
 

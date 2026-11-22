@@ -11,7 +11,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 import { runLadder } from '../ladder.js';
 import { setHold } from '../hold.js';
-import { decide } from '../decide.js';
+import { trackerRouter } from '../../../gateway/routes/tracker.js';
 import { runPMReview } from '../../../tracker/pm-agent.js';
 import { recordValidationEscalation } from '../../tracker-store.js';
 import { judgeKeptRequests } from '../../../agent/a2a-transport.js';
@@ -37,7 +37,8 @@ describe('a held or paused helper keeps the request', () => {
     expect(setHold(TASK, 'paused', 'until the budget is signed', 'owner').ok).toBe(true);
     await allTheWay();
     expect(await keptState(ask)).toEqual(['claimed', 'open']);
-    expect(decide({ workId: TASK, deciderAgentId: null, verdict: 'cancel', reason: 'The report is no longer needed' }).kind).toBe('decided');
+    expect((await trackerRouter.request(`/tasks/${TASK}/decision`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verdict: 'cancel', reason: 'The report is no longer needed' }) })).status).toBe(200);
     expect(await keptState(ask)).toEqual(['abandoned', 'abandoned']);
   });
 

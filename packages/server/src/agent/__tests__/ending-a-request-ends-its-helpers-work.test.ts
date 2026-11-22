@@ -5,6 +5,7 @@
 // nobody is touched, and a late answer still goes back to the agent for the person.
 // Stop with nothing running ends a request waiting on a helper even when a later turn served something else.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { fenceExternal } from '@dojo/shared';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
 vi.mock('../../services/imessage-bridge.js', async (orig) => (await import('../v2/__tests__/helpers/reply-sender.js')).bridgeMock(await orig()));
@@ -48,7 +49,8 @@ const settled = async (): Promise<void> => { await vi.dynamicImportSettled(); aw
 describe("ending a request ends its helpers' work", () => {
   it('never mind in the person\'s words: the piece ends, the helper mid-turn on it is stopped, the ladder leaves its task, and its answer relays nothing', async () => {
     helperMidTurn();
-    insertMessage({ id: 'm-2', agentId: AGENT, role: 'user', content: 'Never mind, we booked it already.', channel: 'imessage', senderId: PERSON, conversationId: CONV });
+    insertMessage({ id: 'm-2', agentId: AGENT, role: 'user', content: fenceExternal('text message', PERSON, 'Never mind, we booked it already.', { addressedToAgent: true }), channel: 'imessage', senderId: PERSON, conversationId: CONV,
+      inboundMeta: JSON.stringify({ channel: 'imessage', sender: PERSON, relation: 'known_contact' }) });
     const r = await trackerHandlers['work_close_request:commitment']({
       agentId: AGENT, args: { id: ASK, disposition: 'dropped', note: 'Never mind, we booked it already.' }, toolCallId: 'tc-1', turnNumber: 2,
     } as never) as { content: string; isError?: boolean };

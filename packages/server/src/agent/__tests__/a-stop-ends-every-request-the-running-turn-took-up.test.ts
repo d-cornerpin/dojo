@@ -54,8 +54,8 @@ describe('a stop ends every request the running turn took up', () => {
       .toEqual({ state: 'abandoned', hold: null });
     for (let call = 0; call < 2; call++) {   // every call of the next turn sees it
       const text = JSON.stringify((await assembleContext(AGENT, 'm')).messages);
-      expect(text).toMatch(/called off: do not do this\][^[]*Write me a poem about autumn/);
-      expect(text).not.toMatch(/called off: do not do this\][^[]*What time is it in Tokyo/);
+      expect(text).toMatch(/ended: do not do this\][^[]*Write me a poem about autumn/);
+      expect(text).not.toMatch(/ended: do not do this\][^[]*What time is it in Tokyo/);
     }
   });
 });

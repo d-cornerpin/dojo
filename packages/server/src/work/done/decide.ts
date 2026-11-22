@@ -23,6 +23,8 @@ import { whoDecides } from './who-decides.js';
 import { onDecided } from './effects.js';
 import { endStallCard } from '../../healer/owner-notices.js';
 import { resultForEndedRequest } from '../../agent/v2/counterparty.js';
+import { requestEnded } from '../ask-settlement.js';
+import { onPieceEnded } from '../task-ended.js';
 
 export type Verdict = 'approve' | 'send_back' | 'cancel' | 'owner_done';
 export interface DecideInput {
@@ -40,7 +42,7 @@ export interface DecideInput {
 export type DecideResult = { kind: 'decided'; to: WorkState; text: string; unclosed: string[] } | { kind: 'refused'; text: string };
 
 const VERDICTS: readonly Verdict[] = ['approve', 'send_back', 'cancel', 'owner_done'];
-const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
+export const refused = (text: string): DecideResult => ({ kind: 'refused', text: `Refused: ${text}` });
 
 /** The owner's open cards: each handed-in row asked of him since its newest hand-in, with when he was asked. */
 function openOwnerCards(): Map<string, number> {
@@ -139,6 +141,18 @@ function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): 
   return moved;
 }
 
+/** A helper's piece called off ends the job on it in the same unit (`transition`'s cascade): the piece's end is the
+ *  ground, recorded as the owner's when that end was his, else the engine's. */
+function endJobsOfPiece(pieceId: string, byOwner: boolean): void {
+  const jobs = getDb().prepare(`SELECT t.id, t.state FROM work p JOIN work t ON t.kind = 'task' AND t.root_kind <> 'a2a_thread'
+      AND t.agent_id = p.assignee_agent AND t.a2a_thread_id = p.root_id AND t.opened_at <= p.closed_at AND t.state NOT IN ('done', 'failed', 'abandoned')
+    WHERE p.id = ?`).all(pieceId) as Array<{ id: string; state: WorkState }>;
+  for (const t of jobs) {
+    applyDecision(t.id, t.state, 'abandoned', { verdict: 'cancel', reason: 'the job it was for was called off', deciderId: byOwner ? OWNER_ID : ENGINE_ID, by: byOwner ? 'owner' : 'agent', outcome: 'cant_be_done', run: false });
+  }
+}
+onPieceEnded(endJobsOfPiece);
+
 /** THE DECISION (header). */
 export function decide(input: DecideInput): DecideResult {
   if (!VERDICTS.includes(input.verdict)) return refused(`"${String(input.verdict)}" is not a verdict. Use approve or send_back.`);
@@ -153,8 +167,8 @@ export function decide(input: DecideInput): DecideResult {
   if ('refused' in who) return refused(who.refused);
 
   if (input.verdict === 'cancel' || input.verdict === 'owner_done') {
-    const ended = input.verdict === 'cancel' && (row.thread ? resultForEndedRequest(row.worker, row.thread)   // its request was called off
-      : !!getDb().prepare("SELECT 1 FROM work WHERE id = ? AND state = 'abandoned'").get(askIdForMessage(row.request ?? '')));
+    const ended = input.verdict === 'cancel' && (row.thread ? resultForEndedRequest(row.worker, row.thread)   // its piece was called off
+      : requestEnded(askIdForMessage(row.request ?? '')) === 'called_off');
     if (!who.owner && !ended) return refused(`only the owner cancels or closes ${name} directly. Nothing changed.`);
     if (isTerminal(row.state)) return refused(`${name} is already closed (${row.state}).`);
   } else {

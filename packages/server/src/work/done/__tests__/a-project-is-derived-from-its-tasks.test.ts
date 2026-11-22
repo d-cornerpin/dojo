@@ -88,6 +88,17 @@ describe('a project is derived from its tasks', () => {
     expect([eventCount('decided'), eventCount('decided', 'sib-open')]).toEqual([1, 1]);
   });
 
+  it("the owner's cancel of a project is one unit: a stop part way through leaves every task as it was", () => {
+    freshBoard();
+    underAProject();
+    doneDb().prepare(`INSERT INTO work (id, kind, parent_id, agent_id, requester, root_kind, root_id, state, intent, wakes, closes_thread, title, opened_at, updated_at)
+       VALUES ('sib-open', 'task', ?, ?, 'owner', 'tracker', 'sib-open', 'open', 'task', 1, 0, 'a second task', ?, ?)`).run(PROJECT, WORKER, Date.now(), Date.now());
+    // The Dojo stops while the second task is being called off, after the first one was.
+    doneDb().exec("CREATE TRIGGER cut BEFORE INSERT ON work_events WHEN NEW.work_id = 'sib-open' AND NEW.kind = 'decided' BEGIN SELECT RAISE(ABORT, 'the Dojo stopped'); END");
+    expect(() => closeProjectAndOpenTasks({ projectId: PROJECT, taskStatus: 'cancelled', reason: 'The launch is off' })).toThrow('the Dojo stopped');
+    expect([stateOf(PROJECT), stateOf(), stateOf('sib-open')]).not.toContain('abandoned');
+  });
+
   it('the owner closing a project as done ends its open tasks cancelled, never done', () => {
     freshBoard();
     underAProject();

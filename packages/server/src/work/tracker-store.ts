@@ -9,8 +9,6 @@ import { patchAssignments } from '../db/patch.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { currentTurnNumber } from '../agent/v2/turn-record.js';
-import { clearReferencesToWork } from './work-refs.js';
-import { notifyTaskEnded } from './task-ended.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, type WorkPatchOutcome } from './outcome.js';
 import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from './store.js';
@@ -285,28 +283,6 @@ export function patchWorkWhere(
 export function bumpWorkAttempts(id: string): number {
   return getDb().prepare('UPDATE work SET attempts = attempts + 1, updated_at = ? WHERE id = ?')
     .run(now(), id).changes;
-}
-
-/**
- * The owner deletes a tracker row and its children (deeper descendants are detached), so a helper's work on them
- * is called off as his. The helper runs twice, children first, because it nulls `parent_id` on everything pointing
- * into its set: one call for both would leave the `WHERE parent_id = ?` delete matching nothing.
- */
-export function deleteTrackerRow(id: string): number {
-  const db = getDb();
-  let changes = 0;
-  const ended = db.prepare("SELECT agent_id, source_message_id, a2a_thread_id FROM work WHERE kind = 'task' AND (id = ? OR parent_id = ?)")
-    .all(id, id) as Array<{ agent_id: string; source_message_id: string | null; a2a_thread_id: string | null }>;
-  withUnit(() => {
-    const children = (db.prepare('SELECT id FROM work WHERE parent_id = ?').all(id) as
-      Array<{ id: string }>).map(r => r.id);
-    clearReferencesToWork(children);         // every reference, for the children
-    db.prepare('DELETE FROM work WHERE parent_id = ?').run(id);
-    clearReferencesToWork([id]);             // every reference, for the row itself
-    changes = db.prepare('DELETE FROM work WHERE id = ?').run(id).changes;
-  });
-  for (const t of ended) notifyTaskEnded(t.agent_id, t.source_message_id, t.a2a_thread_id, true);
-  return changes;
 }
 
 /** Detach children without deleting them (the memory route's "unfile these tasks"). */

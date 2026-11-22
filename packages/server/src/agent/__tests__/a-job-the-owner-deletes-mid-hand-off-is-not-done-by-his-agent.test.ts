@@ -13,7 +13,8 @@ vi.mock('../../services/presence.js', () => ({ getPresence: () => 'away' }));
 
 import { getAgentRuntime } from '../runtime.js';
 import { trackerRouter } from '../../gateway/routes/tracker.js';
-import { openTurnContext, endTurnContext } from '../turn-context.js';
+import { endTurnContext } from '../turn-context.js';
+import { liveTurn } from '../v2/__tests__/helpers/live-turn.js';
 import { activeRuns, stoppedAgents, stopFencedRuns, isStopFenced } from '../shared-state.js';
 import { endTurn, modelSays, steered } from '../v2/steps/post-call-classify/__tests__/post-call-kit.js';
 import { AGENT, testDb } from '../v2/__tests__/helpers/reply-sender.js';
@@ -34,9 +35,9 @@ beforeEach(() => {
 
 describe('a job the owner deletes mid hand-off is not done by his agent', () => {
   it('both turns stop, the request is his to end, the promise is not pushed, and nothing reaches him', async () => {
-    Object.assign(openTurnContext(AGENT), { turnNumber: 1, ...serving });
+    liveTurn(AGENT, { turnNumber: 1, ...serving } as never);
     activeRuns.add(AGENT);
-    Object.assign(openTurnContext(HELPER), { turnNumber: 1, root: { kind: 'a2a', id: THREAD, sourceMessageId: null } });
+    liveTurn(HELPER, { turnNumber: 1, root: { kind: 'a2a', id: THREAD, sourceMessageId: null } });
     activeRuns.add(HELPER);
     expect((await trackerRouter.request('/tasks/task-helper-1', { method: 'DELETE' })).status).toBe(200);
     await settled();

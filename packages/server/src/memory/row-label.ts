@@ -5,6 +5,7 @@
 import type { Message } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { getOwnerName } from '../config/platform.js';
+import { requestEnded } from '../work/ask-settlement.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { renderInstant, renderMessageTimeStamp } from './message-stamp.js';
 import { subjectKindsBySeq, type SubjectKind } from './message-store.js';
@@ -165,7 +166,7 @@ export class LabelFacts {
 
   /** The person's message whose request was called off (its ask abandoned): a stored, one-way fact. */
   calledOff(messageId: string): boolean {
-    if (!this.ended.has(messageId)) this.ended.set(messageId, !!getDb().prepare("SELECT 1 FROM work WHERE id = ? AND kind = 'ask' AND state = 'abandoned'").get('ask:' + messageId));
+    if (!this.ended.has(messageId)) this.ended.set(messageId, requestEnded('ask:' + messageId) === 'called_off');
     return this.ended.get(messageId) === true;
   }
 
@@ -248,7 +249,7 @@ export function labelRows(agentId: string, rows: Message[]): Map<string, string>
     const subject = rowSubject(m, facts);
     const isToolCall = m.role === 'assistant' && typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
     // A person's message whose request was called off says so on every view, so no later turn takes it as work.
-    const mark = (label: string): string => (m.role === 'user' && facts.calledOff(m.id) ? label.slice(0, -1) + ' · called off: do not do this]' : label);
+    const mark = (label: string): string => (m.role === 'user' && facts.calledOff(m.id) ? label.slice(0, -1) + ' · ended: do not do this]' : label);
     if (subject !== current) {
       out.set(m.id, mark(renderRowLabel(m, facts)));
       current = subject;

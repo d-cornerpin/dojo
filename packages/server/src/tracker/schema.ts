@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
@@ -21,6 +22,7 @@ import {
 import { workSettled, noteUnsettled, findObligationByTypedId, type Actor } from '../work/store.js';
 import { moveAssignee, writeAssignee } from '../work/row-authority.js';
 import { linkedTaskOf } from '../work/ask-settlement.js';
+import { callOff, OWNER } from '../work/call-off.js';
 import { requestOfTurn } from '../work/job-continuation.js';
 import { isTerminalName } from '../work/terminal-states.js';
 import { decide } from '../work/done/decide.js';
@@ -347,11 +349,17 @@ export function closeProjectAndOpenTasks(params: {
     .all(projectId) as Array<{ id: string; state: string }>;
   const alreadyClosed = tasks.filter((t) => isTerminalName(t.state)).length;
   // The decision closes the project's open tasks with it; a project its tasks already settled is closed.
-  const settled = isTerminalName((getDb().prepare('SELECT state FROM work WHERE id = ?').get(projectId) as { state: string } | undefined)?.state ?? '');
-  const pr = settled ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
+  const stateNow = (id: string): string => (getDb().prepare('SELECT state FROM work WHERE id = ?').get(id) as { state: string } | undefined)?.state ?? '';
+  // One unit: each open task called off as what it is, then the project's own decision.
+  const pr = withUnit(() => {
+    if (verdict === 'cancel' && !isTerminalName(stateNow(projectId))) {
+      for (const t of tasks) if (!isTerminalName(t.state)) callOff(t.id, OWNER, reason);
+    }
+    return isTerminalName(stateNow(projectId)) ? null : decide({ workId: projectId, deciderAgentId: null, verdict, reason });
+  });
   const unsettled = pr?.kind === 'refused' ? [{ workId: projectId, text: pr.text }]
     : (pr?.unclosed ?? []).map((workId) => ({ workId, text: 'did not close with its project' }));
-  const tasksClosed = pr?.kind === 'decided' ? tasks.length - alreadyClosed - pr.unclosed.length : 0;
+  const tasksClosed = tasks.filter((t) => !isTerminalName(t.state) && isTerminalName(stateNow(t.id))).length;
   logger.info('Project bulk-closed by the owner', { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, verdict });
 
   for (const t of tasks) {
@@ -365,7 +373,7 @@ export function closeProjectAndOpenTasks(params: {
     broadcast({ type: 'tracker:project_updated', data: project });
   }
 
-  return { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, unsettled, projectClosed: settled || pr?.kind === 'decided' };
+  return { projectId, tasksClosed, alreadyClosed, refused: unsettled.length, unsettled, projectClosed: isTerminalName(stateNow(projectId)) };
 }
 
 export function updateProject(

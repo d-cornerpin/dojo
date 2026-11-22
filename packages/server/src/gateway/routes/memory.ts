@@ -11,7 +11,8 @@ import { getEmbeddingStatus } from '../../memory/embeddings.js';
 import { isBackfillRunning, getBackfillProgress } from '../../memory/backfill.js';
 import { vectorSearch } from '../../memory/vector-search.js';
 import { taskScope, projectScope, msToText } from '../../work/tracker-view.js';
-import { deleteTrackerRow, detachChildren } from '../../work/tracker-store.js';
+import { detachChildren } from '../../work/tracker-store.js';
+import { deleteTrackerRow } from '../../work/call-off.js';
 import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('memory-routes');

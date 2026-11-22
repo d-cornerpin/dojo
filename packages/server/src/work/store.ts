@@ -19,7 +19,7 @@ import { isPrimaryAgent } from '../config/platform.js';
 import type { WorkEventKind } from './event-kinds.js';
 import { noSuchWorkDetail } from './outcome.js';
 import { retireObligationMemory } from './obligation-memory.js';
-import { notifyTaskEnded } from './task-ended.js';
+import { notifyPieceEnded, notifyTaskEnded } from './task-ended.js';
 import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
 import type { TransitionApplied, WorkOutcome } from './outcome.js';
 import { heldByOwnerSql } from './tracker-view.js';
@@ -233,18 +233,21 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
 
   withUnit(() => {
     // Work that ends ends its open pieces with it, at any depth: called off, they are abandoned; failed, they fail,
-    // nobody is told, and a late answer takes the late road. A called-off piece or request ends the work under it.
+    // nobody is told, and a late answer takes the late road. A board task finished leaves nothing it handed on open.
     const ends = (input.to === 'abandoned' || input.to === 'failed') && !isTerminal(from);
-    const pieces = ends ? db.prepare(`SELECT id FROM work WHERE parent_id = ? AND root_kind = 'a2a_thread' AND state IN ${CHILD_OPEN_STATES}`).all(workId) as Array<{ id: string }> : [];
+    const finished = input.to === 'done' && row.kind === 'task' && row.root_kind !== 'a2a_thread' && !isTerminal(from);
+    const pieces = ends || finished ? db.prepare(`SELECT id FROM work WHERE parent_id = ? AND root_kind = 'a2a_thread' AND state IN ${CHILD_OPEN_STATES}`).all(workId) as Array<{ id: string }> : [];
     for (const p of pieces) {
       transition(p.id, {
-        to: input.to, by: input.by, actorId, evidenceRef: input.evidenceRef,
-        reason: input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',
+        to: finished ? 'abandoned' : input.to, by: input.by, actorId, evidenceRef: input.evidenceRef,
+        reason: finished ? 'the work it was for is finished' : input.to === 'abandoned' ? 'the request it was for was called off' : 'the request it was for ran out of time',
       });
     }
-    if (ends && input.to === 'abandoned' && (row.kind === 'ask' || row.root_kind === 'a2a_thread')) {
+    // Called off (not given up by the engine, which keeps the late road): the work under it stops with it.
+    const calledOff = ends && input.to === 'abandoned' && input.by !== 'scheduler';
+    if (calledOff && (row.kind === 'ask' || row.root_kind === 'a2a_thread')) {
       afterCommit(() => void import('../agent/a2a-transport.js')
-        .then((m) => m.endTheWorkUnder(workId, input.by === 'owner'))
+        .then((m) => m.endTheWorkUnder(workId, input.by === 'owner', actorId))
         .catch((err: unknown) => logger.warn('the work under an ended request was not ended', { workId, error: String(err) })));
     }
 
@@ -283,6 +286,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       claim: input.claim ?? null,
       note: input.note ?? null,
     }, at);
+    // A piece called off takes its helper's job with it, in this unit (`work/done/decide.ts`).
+    if (calledOff && row.root_kind === 'a2a_thread') notifyPieceEnded(workId, input.by === 'owner');
 
     // EFFECT: a child settling decrements its parent's countdown in the same transaction as its own state
     // change, guarded at zero so a double-settle cannot drive it negative.
@@ -326,7 +331,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   }
 
   // A task ended or handed in may settle its owner's request; one ended undone also judges the request on its thread.
-  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal && input.to !== 'done' ? row.a2a_thread_id : null, input.by === 'owner');
+  if (row.kind === 'task' && (input.to === 'handed_in' || (terminal && !isTerminal(from)))) notifyTaskEnded(row.agent_id, row.source_message_id, terminal && input.to !== 'done' ? row.a2a_thread_id : null);
 
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
   return { kind: 'applied', value };
@@ -419,6 +424,10 @@ export function firstServedAt(workId: string): number | null {
     .get(workId) as { at: number | null }).at;
 }
 
+/** SQL: a helper still works on a piece of request `w`; the engine's reaps never end such a request. */
+export const helperWorksOnSql = (w: string): string => `EXISTS (SELECT 1 FROM work x WHERE x.parent_id = ${w}.id
+  AND x.root_kind = 'a2a_thread' AND x.state IN ('open', 'claimed', 'blocked'))`;
+
 /** Asks nobody can ever serve or close get an honest terminal state (`abandoned`), in five structural
  *  classes: no conversation identity, root message gone, sender ignored, agent terminated, below its
  *  agent's session boundary. The once-guard is `transition()`'s `expectedState` CAS. The reaper stays
@@ -445,7 +454,7 @@ const UNSERVABLE_OPEN_ASK_SELECT = `
          OR a.status = 'terminated'
          OR (a.session_started_at IS NOT NULL
              AND w.opened_at < (unixepoch(a.session_started_at) * 1000))
-       )`;
+       ) AND NOT ${helperWorksOnSql('w')}`;
 
 const UNSERVABLE_REASON: Readonly<Record<string, string>> = {
   'no-identity':

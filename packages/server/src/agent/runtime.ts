@@ -20,7 +20,7 @@ import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
 import { handBackOrphansOf } from '../work/orphaned-claims.js';
-import { transition } from '../work/store.js';
+import { callOff, OWNER } from '../work/call-off.js';
 import { withUnit, afterCommit } from '../db/unit.js';
 import { suppressQueuedReplies } from './v2/deliveries.js';
 import { setAgentModel } from './model-switch.js';
@@ -314,7 +314,6 @@ import { runIsLive } from './ended-mid-run.js';
 import { announceLiveWork } from './live-work.js';
 import { noteOwnerStop } from '../migration/import-agents.js';
 import { serveLater } from './v2/serve-later.js';
-import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { attachmentFenceOf, bracketed, droppedAttachmentNote } from '../tools/inbound-fences.js';
 import { userWords, currentAddress } from './v2/turn-address.js';
@@ -369,10 +368,8 @@ export function stopAgent(agentId: string): void {
   logger.info('Agent stop requested', { runInFlight, callsAborted: cut }, agentId);
 }
 
-/** The owner's Stop ends the request being served (`stoppedRequestsOf`) in one transaction: its unsent replies, the
- *  request (with its pieces, in `transition`), its job tasks (no due; held unless a schedule); then the agent stops, and
- *  the run is settled. Nothing running and nothing to end: nothing is done. What the Stop button does, for every door;
- *  import and terminate call `stopAgent`. */
+/** Every Stop door: in one unit its unsent replies go and `callOff` ends each request served and each piece it works
+ *  for another agent; a job left with no request is held. Then the agent stops. Import and terminate call `stopAgent`. */
 export function stopByOwner(agentId: string): { ended: number; repliesNotSent: number; nothingRunning?: true } {
   let s: StoppedRequests = { liveRun: false, asks: [], runTasks: [], requests: [], jobs: [] };
   try {
@@ -387,26 +384,23 @@ export function stopByOwner(agentId: string): { ended: number; repliesNotSent: n
       // With a run live or unwinding only the stopped request's replies go; with none, every queued reply is what runs.
       const dropped = suppressQueuedReplies(agentId, s.liveRun || isRunUnwinding(agentId) ? s.asks : undefined);
       let ended = s.requests.length + s.runTasks.length;
+      const pieces = s.requests.flatMap((r) => getDb().prepare(`SELECT id FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
+        AND assignee_agent = ? AND state IN ('open', 'claimed', 'blocked')`).all(r.threadId, agentId) as Array<{ id: string }>).map((p) => p.id);
       for (const id of new Set([...s.asks, ...dropped.askIds])) {
-        const r = transition(id, { to: 'abandoned', by: 'owner', reason: 'called off by the owner: he pressed Stop' });
-        if (r.kind === 'applied') ended++;
-        else logger.debug('stop: a request was not called off', { workId: id, outcome: r.kind }, agentId);
+        const r = callOff(id, OWNER, 'called off by the owner: he pressed Stop');
+        if (r.kind === 'decided') ended++;
+        else logger.debug('stop: a request was not called off', { workId: id, why: r.text }, agentId);
       }
+      for (const id of pieces) callOff(id, OWNER, 'called off by the owner: he pressed Stop');
       for (const r of s.requests) sweepByRowid({ rowid: r.rowid, agentId });
       for (const t of s.jobs) {
         serveLater({ kind: 'task', id: t }, null, 'owner stop');
-        const schedule = getDb().prepare('SELECT 1 FROM work WHERE id = ? AND schedule_status IS NOT NULL').get(t);
-        if (!schedule) setHold(t, 'paused', 'stopped by you', 'owner');
+        const left = getDb().prepare("SELECT 1 FROM work WHERE id = ? AND schedule_status IS NULL AND state NOT IN ('done', 'failed', 'abandoned')").get(t);
+        if (left) setHold(t, 'paused', 'stopped by you', 'owner');
       }
-      afterCommit(() => void Promise.all([import('../scheduler/runner.js'), import('./a2a-transport.js')])
-        .then(async ([runner, transport]) => {
-          for (const t of s.runTasks) await runner.onTaskRunComplete(t, 'skipped', 'stopped by the owner');
-          for (const r of s.requests) {
-            const thread = r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH);
-            await transport.failJoinPieceForAbandonedAsk(r.messageId, thread, agentId, 'the owner stopped this work');
-          }
-        })
-        .catch((err: unknown) => logger.warn('stop: its run or the asker was not settled', { error: String(err) }, agentId)));
+      afterCommit(() => void import('../scheduler/runner.js')
+        .then(async (runner) => { for (const t of s.runTasks) await runner.onTaskRunComplete(t, 'skipped', 'stopped by the owner'); })
+        .catch((err: unknown) => logger.warn('stop: its run was not settled', { error: String(err) }, agentId)));
       return { ended, repliesNotSent: dropped.repliesNotSent };
     });
   } catch (err) {

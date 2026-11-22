@@ -3,7 +3,7 @@
 // also means stand down.
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { transition, abandonUnservableAsks, clearPhantomCountdowns, purgeDeadA2AThreads, openPieceOnSql } from './store.js';
+import { transition, abandonUnservableAsks, clearPhantomCountdowns, purgeDeadA2AThreads, openPieceOnSql, helperWorksOnSql } from './store.js';
 import { sweepByRowid } from '../memory/message-store.js';
 // Single-sourced so the boot sweep's exclusion window cannot drift from the eligibility gate it mirrors.
 import { ENGINE_EVENT_MAX_ATTEMPTS } from '../agent/v2/counterparty.js';
@@ -182,7 +182,8 @@ export function sweepBootStaleness(): { suppressed: number; swept: number; heldT
   const STALE_ASK_WHERE =
     `w.kind = 'ask' AND w.state = 'open' AND w.next_attempt_at IS NULL
      AND w.opened_at < (unixepoch('now', '-30 minutes') * 1000)
-     AND w.opened_at >= (unixepoch(COALESCE((SELECT session_started_at FROM agents WHERE id = w.agent_id), '1970-01-01')) * 1000)`;
+     AND w.opened_at >= (unixepoch(COALESCE((SELECT session_started_at FROM agents WHERE id = w.agent_id), '1970-01-01')) * 1000)
+     AND NOT ${helperWorksOnSql('w')}`;
   const heldAgents = db.prepare(
     `SELECT w.agent_id AS id, COUNT(*) AS c FROM work w
       WHERE ${STALE_ASK_WHERE}
