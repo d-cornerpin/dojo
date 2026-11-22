@@ -443,8 +443,10 @@ function undeliveredReply(ask: AskRow, turnNumber: number | null, atVerdict: boo
 export const CALLED_OFF_BY_OWNER = (t: string): string => `${t}.state = 'abandoned' AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = ${t}.id
   AND e.kind = 'transition' AND json_extract(e.payload, '$.to') = 'abandoned' AND json_extract(e.payload, '$.by') = 'owner')`;
 
-function joinOutstanding(ask: AskRow): boolean {
-  return (ask.remaining_children ?? 0) > 0 || ask.compile_pending === 1;
+/** The request (its row, or its id) waits on delegated work. */
+export function joinOutstanding(ask: AskRow | string): boolean {
+  const a = typeof ask === 'string' ? readAsk(ask) : ask;
+  return !!a && ((a.remaining_children ?? 0) > 0 || a.compile_pending === 1);
 }
 
 /** The authority: every ask transition into `done`, and every decision not to, goes through here.

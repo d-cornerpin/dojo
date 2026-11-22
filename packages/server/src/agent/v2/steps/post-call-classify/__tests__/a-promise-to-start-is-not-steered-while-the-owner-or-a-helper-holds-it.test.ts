@@ -1,5 +1,6 @@
 // A reply that only promises to start is not pushed to "do the work now" while the owner holds the task behind the
-// request; with no hold, or a hold the agent set itself, the promise floor steers as before.
+// request, or while the request waits on a helper it was handed to; with no hold, or a hold the agent set itself, the
+// promise floor steers as before.
 import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
@@ -13,6 +14,7 @@ import { runMigrations } from '../../../../../db/migrations.js';
 import { getDb } from '../../../../../db/connection.js';
 import { openTrackerTask } from '../../../../../work/tracker-store.js';
 import { setHold } from '../../../../../work/done/hold.js';
+import { openAsk, claimAsk, openDelegationJoin } from '../../../../../work/store.js';
 import { endTurn, modelSays, steered } from './post-call-kit.js';
 import { FXID } from '../../../../../../../../deploy/checks/fixture-vocabulary.mjs';
 
@@ -41,6 +43,16 @@ describe('a promise to start and the owner\'s hold', () => {
     taskFor(request);
     modelSays({ only_promises_to_start: true });
     expect(steered(await endTurn(PROMISE, [], undefined, servingRequest(request))).filter((f) => f === 'promise-floor')).toHaveLength(1);
+  });
+
+  it('the turn handed the request to a helper: "the helper is on it" is not steered to do the work itself', async () => {
+    const request = randomUUID();
+    const ask = openAsk({ agentId: FXID.n4, messageId: request, conversationId: null, requesterId: null, openedAt: Date.now(), title: null });
+    claimAsk(ask, FXID.n4);
+    openDelegationJoin({ parentWorkId: ask, agentId: FXID.n4, replyConversationId: null, ttlAt: Date.now() + 3_600_000,
+      threads: [{ threadId: randomUUID(), assigneeAgent: 'agent-helper', intent: 'ASSIGN', hopCount: 0 }] });
+    modelSays({ only_promises_to_start: true });
+    expect(steered(await endTurn("Helper's on it; I'll text you the short list when she reports back.", [], undefined, servingRequest(request)))).not.toContain('promise-floor');
   });
 
   it('a hold the agent set itself is not the owner\'s: the promise is steered', async () => {
