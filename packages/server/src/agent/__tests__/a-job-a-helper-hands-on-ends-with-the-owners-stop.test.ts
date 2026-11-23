@@ -3,7 +3,8 @@
 // hand-on goes through the real execute step. The second agent's job ends, its turn stops, nothing wakes it, and its
 // late answer reaches nobody; at three levels the Stop reaches the third agent too. While the work is live, the second
 // agent's answer wakes the first and counts nothing down. A helper's message back to its maker (a BLOCK on the job's
-// thread, a QUESTION on a new one) is no hand-on: it opens no piece, so the job's end never stops the maker.
+// thread, a QUESTION on a new one, an ASSIGN that never joins its own goal) or to the main agent is no hand-on: it
+// opens no piece, so the job's end never stops the maker or the main agent.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -48,12 +49,12 @@ async function handedOnTwice(): Promise<string> {
 beforeEach(() => { world(); wake.mockClear(); });
 
 describe("a job a helper hands on ends with the owner's Stop", () => {
-  it('Stop while the second agent works: its job ends as his, its turn stops, nothing wakes it, and its answer reaches nobody', async () => {
+  it('Stop while the second agent works: every job ends as his, its turn stops, nothing wakes it, and its answer reaches nobody', async () => {
     const thread = await handedOnTwice();
     agentTurnOnItsRequest(BOT);
     expect(stopByOwner(AGENT)).toMatchObject({ ended: 1 });
     await settled();
-    expect(endedBy(jobOf(BOT).id)).toEqual({ state: 'abandoned', by: 'owner' });
+    expect([endedBy(ASK)?.state, endedBy(jobOf(CORA).id)?.state, endedBy(jobOf(BOT).id)]).toEqual(['abandoned', 'abandoned', { state: 'abandoned', by: 'owner' }]);
     expect(isStopFenced(BOT)).toBe(true);
     turnEnds(BOT);
     expect(nextOwed(BOT)).toEqual([]);
@@ -63,15 +64,6 @@ describe("a job a helper hands on ends with the owner's Stop", () => {
     expect(woken()).not.toContain(CORA);
     await runLadder(Date.now() + 3_600_000);
     expect(hinted(jobOf(BOT).id)).toBe(0);
-  });
-
-  it('Stop with nothing running: the second agent\'s job ends and is never served to it', async () => {
-    await handedOnTwice();
-    expect(stopByOwner(AGENT)).toMatchObject({ ended: 1 });
-    await settled();
-    expect([endedBy(ASK)?.state, endedBy(jobOf(CORA).id)?.state, endedBy(jobOf(BOT).id)]).toEqual(['abandoned', 'abandoned', { state: 'abandoned', by: 'owner' }]);
-    expect(nextOwed(BOT)).toEqual([]);
-    expect(woken()).toEqual([]);
   });
 
   it("while the work is live the second agent's answer lands on its piece, wakes the first helper, and counts nothing down", async () => {
@@ -115,5 +107,31 @@ describe("a job a helper hands on ends with the owner's Stop", () => {
       body: JSON.stringify({ verdict: 'owner_done', reason: 'Good enough' }) })).status).toBe(200);
     await settled();
     expect(isStopFenced(AGENT)).toBe(false);
+  });
+
+  it("a second-level helper's ASSIGN to the main agent opens no piece, so its job's end leaves the main agent's job and turn", async () => {
+    const thread = await handedOnTwice();
+    agentTurnOnItsRequest(BOT);
+    await respond(BOT, [['send_to_agent', { agent: AGENT, intent: 'ASSIGN', payload: 'Please text the owner: the picnic food costs about forty dollars.' }]]);
+    expect(piecesUnder(jobOf(BOT).id)).toEqual([]);
+    turnEnds(BOT);
+    agentTurnOnItsRequest(AGENT, 2);
+    const mainJob = jobOf(AGENT).id;
+    await deliverA2AMessage({ intent: 'COMPLETE', threadId: thread, requiresResponse: true, payload: 'About forty dollars.', toAgent: CORA, fromAgent: BOT } as never);
+    expect((await trackerRouter.request(`/tasks/${jobOf(BOT).id}/decision`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verdict: 'owner_done', reason: 'Good enough' }) })).status).toBe(200);
+    await settled();
+    expect([endedBy(mainJob)?.state, isStopFenced(AGENT)]).toEqual(['claimed', false]);
+  });
+
+  it("a helper's ASSIGN back to its maker on its job's thread leaves its own job's goal as it was handed", async () => {
+    ownerAsks('Get a helper to plan a picnic menu.');
+    await respond(AGENT, [assign(CORA, 'Plan a picnic menu.')], { reply: 'Cora is on it.' });
+    turnEnds(AGENT);
+    const thread = agentTurnOnItsRequest(CORA);
+    const goal = (): unknown => testDb().prepare('SELECT goal FROM work WHERE id = ?').get(jobOf(CORA).id);
+    const before = goal();
+    await respond(CORA, [['send_to_agent', { agent: AGENT, intent: 'ASSIGN', thread_id: thread, payload: 'Please text the owner that the menu is ready.' }]]);
+    expect(goal()).toEqual(before);
   });
 });
