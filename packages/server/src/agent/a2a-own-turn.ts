@@ -11,12 +11,14 @@ export function requestsAwaitingTheirOwnTurn(agentId: string): AgentRequest[] {
 }
 
 // `null` means "cannot be said": a caller that REFUSES must read it as "do not refuse". A request turn serves the
-// request the preflight picked; a job turn, the requests that arrived before its pickup mark.
-export function liveTurnServes(agentId: string, owed: Pick<AgentRequest, 'messageId'>): boolean | null {
+// messages of its request's sender on its thread; a job turn, its task's thread and the requests before its pickup mark.
+export function liveTurnServes(agentId: string, owed: Pick<AgentRequest, 'messageId' | 'threadId' | 'fromId'>): boolean | null {
   const bag = turnContext(agentId);
   if (!bag) return null;
   if (bag.kind !== 'a2a') return false;
-  if (bag.servedRequest) return bag.servedRequest.messageId === owed.messageId;
+  if (bag.servedRequest) return bag.servedRequest.threadId === owed.threadId && bag.servedRequest.fromId === owed.fromId;
+  const job = bag.servedJob && getDb().prepare('SELECT a2a_thread_id AS t FROM work WHERE id = ?').get(bag.servedJob) as { t: string | null } | undefined;
+  if (job && job.t === owed.threadId) return true;
   if (bag.pickupSeq == null) return null;
   const row = getDb().prepare('SELECT seq FROM messages WHERE id = ?').get(owed.messageId) as { seq: number } | undefined;
   if (!row) return null;

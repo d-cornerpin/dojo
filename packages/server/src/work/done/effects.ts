@@ -16,7 +16,6 @@ import { latestHandIn, workerOf, OWNER_ID, ENGINE_ID, type HandInRecord } from '
 import { decide } from './decide.js';
 import { inFlightOccurrence, owedRunDelivery, runServedByOpenTurn } from '../occurrences.js';
 import { occurrenceOwesDeliverable } from '../deliverable-declaration.js';
-import { occurrenceRunStatus } from '../occurrence-runs.js';
 import type { Question } from '../../agent/decide.js';
 import { judgment } from '../../agent/decision-hooks.js';
 import { remeasureTask } from '../../agent/tools/cat/measure-door.js';
@@ -50,7 +49,7 @@ const OWES_IT: Question = { type: 'noul',
 /** Does the small local model read the message this run, recorded complete, delivered as what its task owes? */
 async function deliveredWhatItOwes(workId: string): Promise<boolean> {
   const run = inFlightOccurrence(workId, { anyState: true });
-  if (!run || occurrenceRunStatus(run.id) !== 'complete') return false;
+  if (!run) return false;
   const t = getDb().prepare(
     `SELECT w.title, w.goal, w.task_kind AS kind, COALESCE(m.content, r.sent_text) AS message FROM work w
        JOIN deliveries d ON d.id = ? LEFT JOIN messages m ON m.id = d.message_id LEFT JOIN tool_receipts r ON r.id = d.receipt_id

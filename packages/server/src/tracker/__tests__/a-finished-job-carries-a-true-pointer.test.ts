@@ -32,6 +32,7 @@ import { openTrackerTask } from '../../work/tracker-store.js';
 import { openAsk, claimAsk, stampClaimingTurn, askIdForMessage } from '../../work/store.js';
 import { proofDelivery, proofFor, proofLines } from '../../work/done/proof.js';
 import { pmMayCall, PM_ALLOWED_TOOLS } from '../pm-agent.js';
+import { openTurnContext, endTurnContext } from '../../agent/turn-context.js';
 
 const AGENT = 'harnessbot';
 const CONV = 'conv-owner';
@@ -63,13 +64,16 @@ function seedDelivery(
   if (o.serving) mockDb.current!.prepare("UPDATE turns SET root_kind = 'ask', root_id = ? WHERE agent_id = ? AND turn_number = ?").run(o.serving, AGENT, o.turn);
 }
 
-/** A tracker task exactly as the tool path opens one. */
-function seedTask(id: string, over: { sourceMessageId?: string | null } = {}): string {
-  return openTrackerTask({
-    id, title: 'synthesize the two research pieces', status: 'in_progress',
-    assignedTo: AGENT, createdBy: AGENT,
-    origin: { kind: 'agent', sourceMessageId: over.sourceMessageId ?? null, turn: null, convKey: null },
-  });
+/** A tracker task exactly as the tool path opens one, inside the agent's live turn `turn` when given. */
+function seedTask(id: string, over: { sourceMessageId?: string | null; turn?: number } = {}): string {
+  if (over.turn !== undefined) openTurnContext(AGENT).turnNumber = over.turn;
+  try {
+    return openTrackerTask({
+      id, title: 'synthesize the two research pieces', status: 'in_progress',
+      assignedTo: AGENT, createdBy: AGENT,
+      origin: { kind: 'agent', sourceMessageId: over.sourceMessageId ?? null, turn: null, convKey: null },
+    });
+  } finally { endTurnContext(AGENT); }
 }
 
 beforeEach(() => {
@@ -132,7 +136,7 @@ describe('the close receipt is a message to the asker made during the task', () 
 });
 
 describe('the task→ask edge is stamped at create', () => {
-  it('a task opened on a turn holding a claimed ask records that ask\'s source message', () => {
+  it('a task opened in a live turn holding a claimed ask records that ask\'s source message', () => {
     mockDb.current!.prepare(
       `INSERT INTO messages (id, agent_id, role, content, lane, conversation_id, created_at)
        VALUES (?, ?, 'user', 'compare squarespace and wordpress', 'owner', ?, ?)`,
@@ -146,7 +150,7 @@ describe('the task→ask edge is stamped at create', () => {
     seedTurn(4552);
     stampClaimingTurn(askId, 4552);
 
-    const taskId = seedTask('task-edged');
+    const taskId = seedTask('task-edged', { turn: 4552 });
     const row = mockDb.current!.prepare('SELECT source_message_id FROM work WHERE id = ?')
       .get(taskId) as { source_message_id: string | null };
     expect(row.source_message_id).toBe(OWNER_MSG);
@@ -170,13 +174,13 @@ describe('the task→ask edge is stamped at create', () => {
       claimAsk(askIdForMessage(id), AGENT);
       stampClaimingTurn(askIdForMessage(id), 4552);
     }
-    const taskId = seedTask('task-two-asks');
+    const taskId = seedTask('task-two-asks', { turn: 4552 });
     expect(mockDb.current!.prepare('SELECT source_message_id FROM work WHERE id = ?').get(taskId)).toEqual({ source_message_id: null });
   });
 
   it('CONTROL: a turn holding no claimed ask stamps nothing', () => {
     seedTurn(4552);
-    const taskId = seedTask('task-no-ask');
+    const taskId = seedTask('task-no-ask', { turn: 4552 });
     const row = mockDb.current!.prepare('SELECT source_message_id FROM work WHERE id = ?')
       .get(taskId) as { source_message_id: string | null };
     expect(row.source_message_id).toBeNull();
@@ -197,7 +201,7 @@ describe('the review can show the answer it points at', () => {
     claimAsk(askId, AGENT);
     seedTurn(4552);
     stampClaimingTurn(askId, 4552);
-    const taskId = seedTask('task-pointed');
+    const taskId = seedTask('task-pointed', { turn: 4552 });
 
     // the ack, and then the real rundown three turns later
     seedMessage('msg-ack', "On it, I've handed Squarespace to one helper…", 4552);
