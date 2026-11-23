@@ -166,7 +166,7 @@ function fixErrorAgent(item: DiagnosticItem): AutoFixResult {
     return { applied: false, description: '' };
   }
 
-  // Same cause check as the paused arm.
+  // A clock is not evidence the cause cleared.
   const mayError = cooldownSweepMayRecover(item.agentId);
   if (!mayError.ok) {
     logger.info('frequent auto-fix: declining to reset an errored agent', { agentId: item.agentId, why: mayError.why });

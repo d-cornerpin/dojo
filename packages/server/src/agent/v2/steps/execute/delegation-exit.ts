@@ -1,5 +1,5 @@
-// The delegation turn-end: on a non-A2A turn a wake-intent send (QUESTION / ASSIGN / BLOCK) that went out, by
-// send_to_agent or a spawn's job, is answered on a later turn, so the turn ends here and the question is delegated.
+// The delegation turn-end: a wake-intent send (QUESTION / ASSIGN / BLOCK) that went out, by send_to_agent or a spawn's job,
+// is answered on a later turn, so a person's turn ends here delegated; a helper's turn opens it as a piece under its job.
 
 import {
   JOIN_TTL_MINUTES, findJoinChildByThread, openDelegationJoin, threadHopCount, type DelegationThread,

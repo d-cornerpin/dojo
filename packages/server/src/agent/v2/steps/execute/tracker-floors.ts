@@ -105,7 +105,7 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
       }, agentId);
     }
     if (
-      // Open a task only when no task carries this turn's work, whatever other tasks the agent holds.
+      // Open a task only when no task carries this turn's work (whatever else the agent holds) and no helper's answer came back for its request.
       !job && !(state.lastUserMessageId && (joinState(askIdForMessage(state.lastUserMessageId))?.landed ?? 0) > 0) &&
       effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT &&
       // The floor opens a row only for a turn serving a request it can link to; it never invents one.
