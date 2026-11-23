@@ -62,12 +62,11 @@ function cooldownSweepMayRecover(agentId: string): { ok: true } | { ok: false; w
   }
 }
 
-// Frequent sweep: every 5 minutes, outside the daily Healer cycle. Status recovery only (long-paused,
+// Frequent sweep: every 5 minutes, outside the daily Healer cycle. Status recovery only (the
 // long-errored); the other auto-fixes need the full diagnostic and stay in the daily cycle.
 // Stuck-working recovery lives in runtime.ts recoverStuckAgents.
 
 const FREQUENT_AUTOFIX_INTERVAL_MS = 5 * 60 * 1000;
-const PAUSED_COOLDOWN_MS = 30 * 60 * 1000;
 const ERROR_COOLDOWN_MS = 30 * 60 * 1000;
 let frequentAutoFixTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -78,29 +77,6 @@ export function runFrequentAutoFixes(): void {
     const db = getDb();
 
     void endRoomWaitsThatFit();   // a summary writer refused for low memory is asked again once memory is free
-
-    // Long-paused agents (status='paused' for >30 min).
-    const longPaused = db.prepare(`
-      SELECT id, name, status, updated_at FROM agents
-      WHERE status = 'paused' AND instr(COALESCE(last_error, ''), '[budget_stop]') != 1 AND instr(COALESCE(last_error, ''), '[no_model_fits]') != 1  -- t148: a clock is not evidence a parked agent's condition cleared
-        AND updated_at < datetime('now', '-${PAUSED_COOLDOWN_MS / 1000} seconds')
-    `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
-
-    for (const a of longPaused) {
-      // Same cause check as the daily-cycle fixer: a clock is not evidence the refusal cleared.
-      const mayPaused = cooldownSweepMayRecover(a.id);
-      if (!mayPaused.ok) {
-        logger.info('frequent auto-fix: declining to restart a paused agent', { agentId: a.id, why: mayPaused.why });
-        continue;
-      }
-      writeAgentStatus(a.id, 'idle');
-      broadcast({ type: 'agent:status', agentId: a.id, status: 'idle' });
-      logger.info('Frequent auto-fix: resumed long-paused agent', {
-        agentId: a.id, agentName: a.name, pausedSince: a.updated_at,
-      });
-      void persistAction(`Resumed ${a.name} — it had been paused for over 30 minutes`, 'success', a.id);
-      clearRecoveryBookkeeping(a.id);
-    }
 
     // Long-errored agents (status='error' for >30 min).
     const longErrored = db.prepare(`
@@ -173,37 +149,6 @@ function fixStuckAgent(item: DiagnosticItem): AutoFixResult {
   return {
     applied: true,
     description: `Unfroze ${item.agentName ?? item.agentId}: it was stuck and not responding`,
-    agentId: item.agentId,
-  };
-}
-
-function fixPausedAgent(item: DiagnosticItem): AutoFixResult {
-  if (item.code !== 'AGENT_PAUSED' || !item.agentId) return { applied: false, description: '' };
-
-  // Only resume if the agent has been paused for >30 minutes (cooldown period)
-  const db = getDb();
-  const agent = db.prepare('SELECT updated_at FROM agents WHERE id = ?').get(item.agentId) as { updated_at: string } | undefined;
-  if (!agent) return { applied: false, description: '' };
-
-  const pausedMs = Date.now() - new Date(agent.updated_at.includes('Z') ? agent.updated_at : agent.updated_at + 'Z').getTime();
-  if (pausedMs < 30 * 60 * 1000) {
-    return { applied: false, description: `${item.agentName} was paused recently, so it gets time to cool down before a restart` };
-  }
-
-  // Read the cause BEFORE writing status, so a fault a restart cannot fix keeps its diagnostic.
-  const mayPaused = cooldownSweepMayRecover(item.agentId);
-  if (!mayPaused.ok) {
-    logger.info('frequent auto-fix: declining to restart a paused agent', { agentId: item.agentId, why: mayPaused.why });
-    return { applied: false, description: `${item.agentName ?? item.agentId} was left paused: ${mayPaused.why}` };
-  }
-
-  writeAgentStatus(item.agentId, 'idle');
-  broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
-  clearRecoveryBookkeeping(item.agentId);
-
-  return {
-    applied: true,
-    description: `Restarted ${item.agentName ?? item.agentId}: it was paused after repeated errors and has had time to recover`,
     agentId: item.agentId,
   };
 }
@@ -291,7 +236,6 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
 
 const FIX_MAP: Record<string, (item: DiagnosticItem) => AutoFixResult> = {
   STUCK_AGENT: fixStuckAgent,
-  AGENT_PAUSED: fixPausedAgent,
   AGENT_ERROR: fixErrorAgent,
   ORPHANED_TASK: fixOrphanedTask,
 };

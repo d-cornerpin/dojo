@@ -270,17 +270,17 @@ describe('SWEEP CORE-2 item 2 — the Healer\'s deterministic tier is unchanged 
     expect(statusOf(INJURED)).toBe('idle');
   });
 
-  it('AGENT_PAUSED and AGENT_ERROR keep their 30-minute cooldowns, both directions', () => {
-    for (const [code, status] of [['AGENT_PAUSED', 'paused'], ['AGENT_ERROR', 'error']] as const) {
-      agedTo(INJURED, status, 5);
-      expect(runAutoFixes(`${code}-early`, [item(code, INJURED)]).fixCount,
-        `${code} restarted an agent that was still cooling down`).toBe(0);
-      expect(statusOf(INJURED)).toBe(status);
+  it('AGENT_ERROR keeps its 30-minute cooldown, both directions; AGENT_PAUSED is never restarted', () => {
+    agedTo(INJURED, 'error', 5);
+    expect(runAutoFixes('err-early', [item('AGENT_ERROR', INJURED)]).fixCount).toBe(0);
+    expect(statusOf(INJURED)).toBe('error');
+    agedTo(INJURED, 'error', 45);
+    expect(runAutoFixes('err-late', [item('AGENT_ERROR', INJURED)]).fixCount).toBe(1);
+    expect(statusOf(INJURED)).toBe('idle');
 
-      agedTo(INJURED, status, 45);
-      expect(runAutoFixes(`${code}-late`, [item(code, INJURED)]).fixCount).toBe(1);
-      expect(statusOf(INJURED)).toBe('idle');
-    }
+    agedTo(INJURED, 'paused', 45);
+    expect(runAutoFixes('paused-late', [item('AGENT_PAUSED', INJURED)]).fixCount).toBe(0);
+    expect(statusOf(INJURED)).toBe('paused');
   });
 
   it('every applied fix still leaves its healer_actions row — the Vitals panel reads it', () => {

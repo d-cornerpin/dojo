@@ -62,6 +62,6 @@ describe('t261 — the frequent sweep honours a declared-patience refusal', () =
       .toBe(PATIENCE_MSG);
 
     expect(statusOf('plain-error'), 'control: an ordinary error still resets').toBe('idle');
-    expect(statusOf('plain-paused'), 'control: an ordinary pause still resumes').toBe('idle');
+    expect(statusOf('plain-paused'), 'a paused agent waits for the owner, never a clock').toBe('paused');
   });
 });
