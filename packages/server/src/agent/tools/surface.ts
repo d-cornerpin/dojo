@@ -12,7 +12,7 @@ import { PRIMARY_ONLY_TOOLS } from './gates.js';
 import { agentCanSelfComplete } from './util.js';
 import { holdsDojoInspect, DOJO_INSPECT } from '../../inspect/grant.js';
 import { toolDefinitions } from './definitions.js';
-import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
+import { isPrimaryAgent, isPMAgent, holdsResetSession } from '../../config/platform.js';
 import { getToolConfigGeneration } from '../tool-config-generation.js';
 import { pdfToolDefinitions } from '../pdf-tools.js';
 import { googleReadToolDefinitions } from '../../google/tools-read.js';
@@ -190,9 +190,8 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
 
   // Only primary gets group, session and presence tools: PRIMARY_ONLY_TOOLS, the SAME constant that
   // executeToolInner enforces; update_agent and tunnel self-gate mutations; reset_session strips here only.
-  if (!isPrimaryAgent(agentId)) {
-    removeTools.push(...PRIMARY_ONLY_TOOLS, 'reset_session');
-  }
+  if (!isPrimaryAgent(agentId)) removeTools.push(...PRIMARY_ONLY_TOOLS);
+  if (!holdsResetSession(agentId)) removeTools.push('reset_session');
   if (!holdsDojoInspect(agentId)) removeTools.push(DOJO_INSPECT);   // the main agent, the Healer, and agents whose grant names it
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list

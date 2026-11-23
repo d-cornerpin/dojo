@@ -7,7 +7,7 @@
 // bare refusals would silently re-classify refusals. Keep both fields exact.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { isPrimaryAgent, isHealerAgent, isPMAgent, getPMAgentId } from '../../config/platform.js';
+import { isPrimaryAgent, holdsResetSession, isPMAgent, getPMAgentId } from '../../config/platform.js';
 import { effectsFor } from './registry.js';
 import {
   authorizeFs, authorizeAppleScript, authorizeNet, authorizeSpawn, authorizeSystemControl,
@@ -234,7 +234,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
     }
 
     case 'primary_or_healer':
-      return isPrimaryAgent(agentId) || isHealerAgent(agentId)
+      return holdsResetSession(agentId)
         ? skip(gate)
         : {
             gate,

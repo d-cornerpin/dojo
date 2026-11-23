@@ -113,6 +113,7 @@ export function isHealerAgent(agentId: string): boolean {
   return agentId === getHealerAgentId();
 }
 
+export const holdsResetSession = (agentId: string): boolean => isPrimaryAgent(agentId) || isHealerAgent(agentId);
 
 export function getDreamerAgentId(): string {
   return get('dreamer_agent_id', 'dreamer');
