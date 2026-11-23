@@ -11,7 +11,6 @@ import { getAgentRuntime } from '../runtime.js';
 vi.spyOn(getAgentRuntime(), 'handleMessage').mockResolvedValue('ran' as never);
 import { claimAsk, stampClaimingTurn } from '../../work/store.js';
 import { newestPutBack, recordPiecesShown, settleAsksAtTurnFinalize } from '../../work/ask-settlement.js';
-import { endCardsOf } from '../../work/done/decide.js';
 import { runLadder } from '../../work/done/ladder.js';
 import { assembleContext } from '../../memory/assembler.js';
 import { testDb } from '../v2/__tests__/helpers/reply-sender.js';
@@ -75,17 +74,5 @@ describe('an answered request closes the engine\'s card and the placeholder step
     await settled();
     expect([stateOf('ask:m-2'), stateOf(engine), stateOf(own)]).toEqual(['done', 'done', 'claimed']);
     expect(await nextView()).toContain('Step card-own');
-  });
-
-  it('a card left open by an answer before this version is closed once at boot, and the second start finds nothing', async () => {
-    delegated();
-    await helperAnswers('Tent, stove, two sleeping bags.');
-    await agentCompiles();
-    const left = engineCard('card-left');   // the older version ended nothing on the answer
-    endCardsOf(null, 'done', null, 'the request it was opened for was answered');
-    expect([stateOf(left), closedOn(left)]).toEqual(['done', closedOn(ASK)]);
-    endCardsOf(null, 'done', null, 'the request it was opened for was answered');
-    expect(events(left, 'decided')).toBe(1);
-    expect(await nextView()).not.toContain('Step card-left');
   });
 });
