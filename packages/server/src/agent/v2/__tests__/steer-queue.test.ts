@@ -177,7 +177,8 @@ describe('the declared precedence table', () => {
     // `spinning` and `no-results`.
     // `forced-reply` is the required reply's steer.
     // `start-ack-reminder` left: an ignored start-line steer is followed by one held pass, a refusal, not a steer.
-    expect(STEER_PRECEDENCE.length).toBe(22);
+    // `tracker-stop-directive` and `tracker-scaffold` went with the engine's own "Multi-step task" card (owner, 23 November).
+    expect(STEER_PRECEDENCE.length).toBe(20);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'forced-reply').length).toBe(1);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
       expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);
