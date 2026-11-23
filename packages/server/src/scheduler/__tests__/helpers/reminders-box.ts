@@ -6,7 +6,6 @@ import * as box from './missed-runs-box.js';
 
 const { openTurnContext, endTurnContext } = await import('../../../agent/turn-context.js');
 const { recordDelivery } = await import('../../../agent/v2/deliveries.js');
-const { installJudgment } = await import('../../../agent/decision-hooks.js');
 const runner = await import('../../runner.js');
 /** The reaper's close of delivered runs, with the schedule moves it starts settled. */
 export async function closeRunsThatDelivered(): Promise<void> { await runner.closeRunsThatDelivered(); await vi.dynamicImportSettled(); }
@@ -85,8 +84,6 @@ export async function otherTasksHint(tag: string): Promise<Root> {
   return { kind: 'engine', id: `hint-${tag}` };
 }
 
-/** The small local model's answer to "does this message give the person what the task owes": yes, no, or none. */
-export const freeCheckSays = (yes: boolean | null): void => installJudgment(async () => (yes === null ? null : { asked: yes }));
 /** Who decided the task's newest hand-in, or null while it waits for its decider. */
 export const decidedBy = (task: string): string | null => (db().prepare(
   "SELECT actor FROM work_events WHERE work_id = ? AND kind = 'decided' AND id > (SELECT MAX(id) FROM work_events WHERE work_id = ? AND kind = 'handed_in')",

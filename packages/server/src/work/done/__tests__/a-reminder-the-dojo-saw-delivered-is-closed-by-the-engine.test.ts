@@ -1,6 +1,6 @@
 // A finished run of a task that owes a person a message, whose delivered message the engine tied to the run, is
-// approved by the engine when the small local model reads that message as what the task owes. A no, no answer, no
-// model, or a task that owes no message: the run goes to the manager as before. A one-time reminder's only run is its
+// approved by the engine with no model call and no manager (8.6.15). A task that owes no message goes to the manager
+// as before, whatever its run said. A one-time reminder's only run is its
 // final one, decided the same way on whichever channel it went. A reminder asked on the dashboard, whose request settled
 // on the agent's confirmation, closes on the one line its run's own turn wrote there: that line is never a start line.
 // A reminder a contact asked for by text is never closed on the owner's dashboard copy: it stays not delivered. One the
@@ -62,35 +62,18 @@ function inTurn(n: number, rootKind: string, rootId: string, id: string): void {
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
-describe('a reminder the Dojo saw delivered is approved when the model agrees', () => {
-  it('the model reads the delivered message as the reminder: the engine approves the run', async () => {
-    aDeliveredRun('reminder');
-    const calls = scriptDecisions(() => yes(0.9));
-    await runFinishes();
-    expect(asked(calls)).toHaveLength(1);
-    expect(JSON.stringify(asked(calls)[0]!.state)).toContain(REMINDER);
-    expect([stateOf(), decidedBy()]).toEqual(['open', 'engine']);
-  });
-
-  for (const [why, answer] of [['the model says no', yes(0.3)], ['the model is not sure', { noul: 'unsure' }]] as const) {
-    it(`${why}: the run goes to the manager`, async () => {
-      aDeliveredRun('reminder');
-      const calls = scriptDecisions(() => answer);
+describe('a reminder the Dojo saw delivered is closed by the engine', () => {
+  for (const model of [true, false]) {
+    it(`the run delivered the reminder: the engine approves it, asking no model${model ? '' : ' (none on the box)'}`, async () => {
+      aDeliveredRun('reminder', model);
+      const calls = scriptDecisions(() => yes(0.1));
       await runFinishes();
-      expect(asked(calls)).toHaveLength(1);
-      expect([stateOf(), eventCount('decided')]).toEqual(['handed_in', 0]);
+      expect(asked(calls)).toHaveLength(0);
+      expect([stateOf(), decidedBy()]).toEqual(['open', 'engine']);
     });
   }
 
-  it('with no decision model on the box, the run goes to the manager', async () => {
-    aDeliveredRun('reminder', false);
-    const calls = scriptDecisions(() => yes(0.9));
-    await runFinishes();
-    expect(asked(calls)).toHaveLength(0);
-    expect([stateOf(), eventCount('decided')]).toEqual(['handed_in', 0]);
-  });
-
-  it('a task that owes no message is never asked about and goes to the manager', async () => {
+  it('a task that owes no message is not closed on a line its run delivered: it goes to the manager', async () => {
     aDeliveredRun('chore');
     const calls = scriptDecisions(() => yes(0.9));
     await runFinishes();
@@ -123,6 +106,15 @@ describe('a reminder the Dojo saw delivered is approved when the model agrees', 
     inTurn(2, 'occurrence', 'run-1', deliveredToOwner(WORKER, 'Time to stretch: you have been at the desk a while.'));
     expect(await closeRunsThatDelivered()).toBe(1);
     expect(doneDb().prepare("SELECT state FROM work WHERE id = 'run-1'").get()).toEqual({ state: 'done' });
+  });
+
+  it('the line that set the reminder up, in the turn that created the schedule, is no run: nothing closes or is decided', async () => {
+    freshBoard();
+    const ask = ownerSays('Remind me in 10 minutes to stretch', { agent: WORKER });
+    inTurn(1, 'ask', ask, deliveredToOwner(WORKER, 'Set for 1:43 PM.'));
+    doneDb().prepare(`UPDATE work SET task_kind = 'reminder', source_message_id = ?, schedule_status = 'running' WHERE id = ?`).run(ask, TASK);
+    expect(await closeRunsThatDelivered()).toBe(0);
+    expect(eventCount('decided')).toBe(0);
   });
 
   it('a contact asked by text, and only the owner\'s dashboard copy went out: the run is not closed', async () => {

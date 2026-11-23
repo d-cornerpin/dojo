@@ -1,13 +1,13 @@
-// R as lived (stand-up run 2): another run's hand-in arms the manager's review, and the agent hands in a stand-up
-// run in the run's own turn while that review opens. The review does not offer the stand-up run, which the engine
-// decides when its turn ends. If the Dojo dies with the run waiting, the first sweep after the boot takes it up.
+// R as lived (the shop run, then stand-up run 2): a delivered run is decided by the engine, never the manager; a
+// stand-up run handed in in its own turn while a review opens is not offered, and the engine decides it when its turn
+// ends. If the Dojo dies with the run waiting, the first sweep after the boot takes it up and the engine decides it.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: async () => {} }));
 vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => 'ran' }) }));
 const box = await import('./helpers/reminders-box.js');
-const { at, db, turn, line, reminder, openRun, handIn, checkScheduledTasks, closeRunsThatDelivered, freeCheckSays, decidedBy } = box;
+const { at, db, turn, line, reminder, openRun, handIn, checkScheduledTasks, closeRunsThatDelivered, decidedBy } = box;
 const { runPMReview } = await import('../../tracker/pm-agent.js');
 
 beforeAll(() => {
@@ -26,28 +26,25 @@ const handedInOwnTurn = (task: string, text: string, ended = true) =>
 
 describe('a run waiting for its turn is not reviewed by the manager', () => {
   it('the review that opens during the stand-up run turn leaves it out; the engine decides it at the turn end', async () => {
-    freeCheckSays(null);
     at('2026-03-02T22:40:00Z');
     const shop = await reminder('Call the shop', '2026-03-02T22:50:00Z');
     const standUp = await reminder('Stand-up note', '2026-03-02T22:50:00Z', 10, 3);
     at('2026-03-02T22:50:25Z'); await checkScheduledTasks();
     await handedInOwnTurn(shop, 'Time to call the shop.');
     await closeRunsThatDelivered();
-    expect(decidedBy(shop), 'the free check said nothing: the manager decides it').toBeNull();
+    expect(decidedBy(shop), 'delivered on its own turn: the engine decides it').toBe('engine');
     at('2026-03-02T22:50:57Z');
     await turn({ kind: 'occurrence', id: openRun(standUp) }, async () => {
       await handIn(standUp, line('Stand-up: all three tasks are on track.', 'imessage'));
       await runPMReview();
     });
-    expect(reviewsOffered()).toContain(`[${shop}]`);
+    expect(reviewsOffered()).not.toContain(`[${shop}]`);
     expect(reviewsOffered()).not.toContain(`[${standUp}]`);
-    freeCheckSays(true);
     await closeRunsThatDelivered();
     expect(decidedBy(standUp)).toBe('engine');
   });
 
-  it('the Dojo dies while the run waits for its turn: after the boot the sweep takes it up, and a no reaches the manager', async () => {
-    freeCheckSays(null);
+  it('the Dojo dies while the run waits for its turn: after the boot the sweep takes it up and the engine decides it', async () => {
     at('2026-03-03T22:40:00Z');
     const standUp = await reminder('Morning stand-up', '2026-03-03T22:50:00Z', 10, 3);
     at('2026-03-03T22:50:25Z'); await checkScheduledTasks();
@@ -55,7 +52,7 @@ describe('a run waiting for its turn is not reviewed by the manager', () => {
     at('2026-03-03T23:40:00Z');
     await closeRunsThatDelivered();     // the reaper's sweep, its first tick after the boot
     await runPMReview();
-    expect(decidedBy(standUp)).toBeNull();
-    expect(reviewsOffered()).toContain(`[${standUp}]`);
+    expect(decidedBy(standUp)).toBe('engine');
+    expect(reviewsOffered()).not.toContain(`[${standUp}]`);
   });
 });

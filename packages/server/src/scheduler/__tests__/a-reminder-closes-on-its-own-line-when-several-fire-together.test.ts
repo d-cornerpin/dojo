@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: async () => {} }));
 const box = await import('./helpers/reminders-box.js');
-const { at, db, turn, line, reminder, openRun, runState, handIn, ghosts, checkScheduledTasks, closeRunsThatDelivered, otherTasksHint, freeCheckSays, decidedBy, lastHandIn } = box;
+const { at, db, turn, line, reminder, openRun, runState, handIn, ghosts, checkScheduledTasks, closeRunsThatDelivered, otherTasksHint, decidedBy, lastHandIn } = box;
 const { proofFor } = await import('../../work/done/proof.js');
 const { cleanupStaleRuns } = await import('../runner.js');
 const realNow = Date.now();
@@ -21,7 +21,6 @@ const tieOf = (task: string, delivery: string): unknown => proofFor(task).find((
 
 describe('a reminder closes on its own line when several fire together', () => {
   it('the lived shop and stretch reminders: the shop run is not closed on its dashboard line, its own turn texts it, and it closes on that text, decided by the free check', async () => {
-    freeCheckSays(true);
     const day = '2026-03-02';
     at(`${day}T07:30:00Z`);
     const stretch = await reminder('Stretch reminder', `${day}T07:44:00Z`, 5, 3);
@@ -50,7 +49,6 @@ describe('a reminder closes on its own line when several fire together', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(runState(shop)).toEqual({ state: 'done', result_delivery_id: shopLine });
     expect(decidedBy(shop), 'the free check read the line as the reminder').toBe('engine');
-    freeCheckSays(null);
     await tick(`${day}T07:54:25Z`);
     let stretchLine = '';
     await turn({ kind: 'occurrence', id: openRun(stretch) }, () => { stretchLine = line('Stand up and stretch.', 'imessage'); });
