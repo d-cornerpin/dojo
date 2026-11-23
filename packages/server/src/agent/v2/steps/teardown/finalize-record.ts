@@ -2,7 +2,6 @@
 
 import { createLogger } from '../../../../logger.js';
 import { markServedByRowid, releaseEngineEventByRowid, setAnswerMessageId, sweepByRowid } from '../../../../memory/message-store.js';
-import { clearUntrackedWorkAcrossTurnsForConversation } from '../../../turn-state.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { heldExpr } from '../../../../work/done/hold.js';
 import { appendWorkEvent, claimingTurnOf, joinState } from '../../../../work/store.js';
@@ -166,12 +165,6 @@ export async function finalizeTurnRecord(
       logger.warn('v2: turn-end obligation disposition failed (non-fatal)', {
         agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
       }, agentId);
-    }
-    // Answered and delivered: clear this conversation's untracked-work debt; a turn that did not keeps it.
-    if (answerRow && terminalDeliveryId && chosenConvKey) {
-      try {
-        clearUntrackedWorkAcrossTurnsForConversation(agentId, chosenConvKey);
-      } catch { /* in-memory map; best effort like the rest of this arm */ }
     }
     // Audit: an ack owed and never delivered, logged plus a marker on the trigger ask. Gated on a tool
     // having started (the start-ack's own work condition), or every quick chat reply would count.

@@ -208,7 +208,7 @@ function findRecentNearDuplicateProject(creatorId: string): DuplicateMatch | nul
     ORDER BY w.opened_at DESC
     LIMIT 1
   `).get(creatorId, turnRoot.sourceMessageId) as { id: string; title: string } | undefined : undefined;
-  // The fallback reads the row's own root_kind and covers parentless tasks too: the engine floor opens a
+  // The fallback reads the row's own root_kind and covers parentless tasks too: the engine's park opens a
   // task, and a project opened right after it is the parallel work this prong steers away from.
   const engineAuto = rootMatch ?? db.prepare(`
     SELECT w.id AS id, w.title AS title FROM work w

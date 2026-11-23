@@ -135,13 +135,8 @@ export interface AgentTurnState {
   /** Channels where an explicit send went to THIS turn's counterparty. The end-of-turn auto-reply is
    *  suppressed on this, not on any send: a relay to someone else must not swallow the reply. */
   repliedToCounterpartyThisTurn: { imessage?: boolean; teams?: boolean; email?: boolean; sms?: boolean; phone?: boolean };
-  trackerToolCalledThisTurn: boolean;
-  /** Tracker work opened or advanced (DISARMING_WORK_OPS, advancing status); reads, closes never disarm. */
+  /** Tracker work opened or advanced (DISARMING_WORK_OPS, advancing status); reads and closes are not writes. */
   trackerWriteThisTurn: boolean;
-  /** A work row came into existence this turn by any path; distinct from the wider trackerWriteThisTurn. */
-  workRowOpenedThisTurn: boolean;
-  /** Real-work tool calls: not tracker calls and not TRIVIAL_TOOLS (steps/execute/tool-sets.ts). */
-  nonTrackerToolCalls: number;
   trackerStatusUpdatedThisTurn: boolean;
   /** Results of at least LOADING_RESULT_MIN_TOKENS; drives the advisory, which never refuses a read. */
   heavyLoadsThisTurn: number;
@@ -232,10 +227,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     lastAssistantTextForIM: null,
     explicitSendThisTurn: {},
     repliedToCounterpartyThisTurn: {},
-    trackerToolCalledThisTurn: false,
     trackerWriteThisTurn: false,
-    workRowOpenedThisTurn: false,
-    nonTrackerToolCalls: 0,
     trackerStatusUpdatedThisTurn: false,
     heavyLoadsThisTurn: 0,
     structuringToolCalledThisTurn: false,

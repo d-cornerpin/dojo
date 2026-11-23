@@ -323,46 +323,6 @@ afterEach(() => {
 // #7 C1 — THE FLOOR NO LONGER TITLES A TASK FROM THE TURN'S MESSAGE
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('t139 round 2 (I5) — the floor names its task from ENGINE FACTS, never the message', () => {
-  it('the title states the calls the floor counted, the most-used tool and the turn\'s start, and the note invites a rename', async () => {
-    ownerSays('msg-ping-i5', 'You there?');
-    script([{ toolCalls: imageCalls(9) }, { content: 'Yes, here.' }]);
-    await runV2Turn(PRIMARY);
-
-    const row = openTasks(PRIMARY, true)[0];
-    expect(row.title).toMatch(/^Multi-step task — 9 calls: image_create \[[A-Z][a-z]{2} \d{1,2}, \d{4}, \d{2}:\d{2} [AP]M UTC[+-]\d{2}:\d{2}\]$/);
-    expect(row.title).not.toMatch(/you there/i);
-    const note = mockDb.current!.prepare(
-      "SELECT content FROM messages WHERE role = 'system' AND content LIKE '[System] The engine opened tracker task%' ORDER BY seq DESC LIMIT 1",
-    ).get() as { content: string };
-    expect(note.content).toContain('rename it with work_update(action="edit", title=');
-  });
-});
-
-describe('t139 — a presence ping is never turned into a task title', () => {
-  it('RED at v3.3.2: nine untracked calls on a "You there?" turn do not open a task titled from the ping', async () => {
-    ownerSays('msg-ping', 'You there?');
-    script([{ toolCalls: imageCalls(9) }, { content: 'Yes, here.' }]);
-
-    await runV2Turn(PRIMARY);
-
-    const rows = openTasks(PRIMARY, true);
-    // The floor still tracks the untracked work, and the turn's answer closes it with the request —
-    expect(rows.length).toBe(1);
-    expect(rows[0].state).toBe('done');
-    expect(rows[0].root_kind).toBe('engine_scaffold');
-    // — but nothing about the row is invented from the ping's text.
-    expect(rows[0].title).not.toMatch(/you there/i);
-    expect(rows[0].description ?? '').not.toMatch(/you there/i);
-    // It is LINKED to the row the turn actually served, rather than titled from it.
-    expect(rows[0].source_message_id).toBe('msg-ping');
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════════════════
-// THE REQUEST SHAPES (t145's gate (a))
-// ════════════════════════════════════════════════════════════════════════════════════════
-
 describe('t139 — every multi-step request lands on the task list with its words', () => {
   it('long multi-step (the model opens the task): linked, and the 2,000 characters are on the list byte-for-byte', async () => {
     const ask = longAsk(2000, 'LONG');
@@ -380,37 +340,6 @@ describe('t139 — every multi-step request lands on the task list with its word
     expect(rows.length).toBe(1);
     expect(rows[0].source_message_id).toBe('msg-long');
     expect(await taskList()).toContain(ask);
-  });
-
-  it('short multi-step (the engine floor opens the task): linked, and closed with the request the turn answered', async () => {
-    const ask = 'Find three venues near the station, compare their day rates, and email me the cheapest.';
-    ownerSays('msg-short', ask);
-    script([
-      { toolCalls: Array.from({ length: 6 }, (_, k) => call(`ws-${k}`, 'web_search', { query: `venue ${k}` })) },
-      { content: 'I have three candidates and am comparing them now.' },
-    ]);
-
-    await runV2Turn(PRIMARY);
-
-    const rows = openTasks(PRIMARY, true);
-    expect(rows.length).toBe(1);
-    expect(rows[0].root_kind).toBe('engine_scaffold');
-    expect(rows[0].source_message_id).toBe('msg-short');
-    expect([rows[0].state, await taskList()]).toEqual(['done', '']);
-  });
-
-  it('background-finishing (image jobs still rendering when the turn ends): the line that closed the request closes its task', async () => {
-    const ask = 'Make nine square headshots for the team page, one per person, in the same soft studio style.';
-    ownerSays('msg-images', ask);
-    script([{ toolCalls: imageCalls(9) }, { content: 'All nine are rendering now; they will drop in as they finish.' }]);
-
-    await runV2Turn(PRIMARY);
-
-    // The turn's line closed the request while the renders run, and the engine's own task ends with it.
-    const rows = openTasks(PRIMARY, true);
-    expect(rows.length).toBe(1);
-    expect(rows[0].source_message_id).toBe('msg-images');
-    expect([rows[0].state, (mockDb.current!.prepare("SELECT state FROM work WHERE id = 'ask:msg-images'").get() as { state: string }).state]).toEqual(['done', 'done']);
   });
 
   it('email-originated (the owner asks on the email channel): linked, and labelled with the email conversation', async () => {
@@ -681,19 +610,6 @@ describe('t139 — every multi-step request lands on the task list with its word
     ]);
     await runV2Turn(PRIMARY);
     expect(composeTurnDeliverySummary(PRIMARY, 1)).not.toContain('a2a');
-  });
-
-  it('the task the engine floor opened before the agent delegated becomes the helper\'s job: one task, not two', async () => {
-    ownerSays('msg-floor-deleg', 'Make me six pictures of the beach, then have the helper plan the day around them.');
-    script([
-      { toolCalls: imageCalls(6) },
-      { content: 'On it.', toolCalls: [call('sa-fd', 'send_to_agent', { agent: 'Helper', intent: 'ASSIGN', payload: 'Plan the beach day.' })] },
-      { content: 'I have asked Helper to plan the day.' },
-    ]);
-    await runV2Turn(PRIMARY);
-    expect(openTasks()).toHaveLength(0);
-    const held = openTasks('helper');
-    expect(held.map((t) => [t.root_kind, t.source_message_id])).toEqual([['engine_scaffold', 'msg-floor-deleg']]);
   });
 
   it('delegated to one helper, whose reply the engine relays, with the task opened on the turn that reply woke: linked to the owner\'s ask', async () => {
