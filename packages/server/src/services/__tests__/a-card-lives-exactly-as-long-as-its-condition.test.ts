@@ -276,7 +276,7 @@ describe('I1: only the Healer working ends "Healer broken"', () => {
     expect(broken(), 'one text for one unchanged condition').toHaveLength(1);
     const card = (await m.cards()).find((c) => c.words.includes('Healer agent is broken'))?.words;
     expect(card).toBeDefined();
-    m.errors.clearErrors('hl'); // the Healer completed a healthy model turn
+    (await import('../../healer/owner-notices.js')).ownerConditionsOnHealthyWork('hl'); // the Healer's turn ended healthy
     expect(ended()).toContain(card);
     db().prepare("UPDATE agents SET status = 'error' WHERE id = 'hl'").run();
     m.healer.onAgentInjured('hl', 'provider down');

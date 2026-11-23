@@ -177,7 +177,7 @@ describe('the Healer itself is broken', () => {
     healer.onAgentInjured('hl', 'provider down');
     healer.onAgentInjured('hl', 'provider down');
     expect(about('Healer agent is broken')).toHaveLength(1);
-    (await import('../../agent/errors.js')).clearErrors('hl'); // r6: only the Healer working ends it (a reset is not recovery)
+    (await import('../../healer/owner-notices.js')).ownerConditionsOnHealthyWork('hl'); // a Healer turn that ended healthy (a reset is not recovery)
     healer.onAgentInjured('hl', 'provider down');
     expect(about('Healer agent is broken')).toHaveLength(2);
   });

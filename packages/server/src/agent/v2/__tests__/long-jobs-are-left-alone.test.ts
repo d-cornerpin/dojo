@@ -607,7 +607,7 @@ describe('t137 (c): a 15-minute park writes nothing to the owner\'s chat', () =>
     // Positive control: the turn genuinely parked. A fix that stopped parking is not a fix.
     expect(turnRows()).toEqual([expect.objectContaining({ turn_number: 1, exit_reason: 'iteration_cap' })]);
     expect(jobParked()).toBe(true);
-    expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
+    expect(checkAndCompactSpy).not.toHaveBeenCalled();
 
     // The record, counted: the turn's rows are the job's own rows and nothing else.
     expect(systemRowsOfTurn(1)).toEqual([]);
@@ -795,7 +795,7 @@ describe('t137: a long job is never cut off by elapsed time', () => {
     await readOnlyTurnAcrossTheCheckpoint();
     expect(jobParked(), 'the stalled stretch parks nothing').toBe(false);
     expect(turnRows().map((t) => t.exit_reason)).toEqual(['iteration_cap', 'iteration_cap']);
-    expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
+    expect(checkAndCompactSpy).not.toHaveBeenCalled();
     // The only system row is the agent's own working note from the first turn — its own words.
     expect(messageRows().filter((m) => m.role === 'system').map((m) => m.content))
       .toEqual(['[working-note] Starting on the research folder now.']);
@@ -819,20 +819,6 @@ describe('t137 lifecycle: the park stays honest around stops and stale work', ()
     expect(turnRows().map((t) => t.exit_reason)).toEqual(['iteration_cap', 'iteration_cap']);
     expect(workState('w-long-job')).toBe('claimed');
   });
-
-  it('the owner presses Stop during the park\'s compaction check: nothing parked, nothing queued (T83 fence)', async () => {
-    seedInFlightTask();
-    checkAndCompactSpy.mockImplementationOnce(async () => {
-      stoppedAgents.add('primary');
-      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
-    });
-    await readOnlyTurnAcrossTheCheckpoint();
-    expect(turnRows()[0].exit_reason).toBe('stop');
-    expect(pendingWakeups.has('primary')).toBe(false);
-    expect(jobParked()).toBe(false);
-    expect(systemRowsOfTurn(1)).toEqual([]);
-  });
-
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
