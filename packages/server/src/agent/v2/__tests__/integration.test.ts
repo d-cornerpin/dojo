@@ -377,7 +377,6 @@ import { turnContext } from '../../turn-context.js';
 // The cross-turn untracked-work debt: turns that park on the turn-time budget never
 // answer, so their debt survives the turn. It is module state, and every clause below
 // starts from a clean DB — so it starts from a clean debt map too, like the maps beside it.
-import { untrackedWorkAcrossTurns } from '../../turn-state.js';
 import { currentTurnNumber } from '../turn-record.js';
 // T82d (ANSWER-ANYWAY) — the recovery cascade under test directly, for the ONE case
 // (engine/A2A/scheduled turns) this file has no existing fixture to drive end-to-end: nothing
@@ -544,7 +543,6 @@ beforeEach(() => {
   doomedPrefillCompactionSpent.clear();
   declaredPatienceHonestFailTurn.clear();
   pendingWakeups.clear();
-  untrackedWorkAcrossTurns.clear();
   enqueueSteerSpy.mockClear();
   stampTasksSpy.mockClear();
   terminalDeliveryForTurnSpy.mockClear();
@@ -856,8 +854,8 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // The engine opened the work's task in the first window, which is movement; the second has none.
-    expect(modelCallCount).toBe(150);
+    // No step moves the job, so the first window's end is the checkpoint.
+    expect(modelCallCount).toBe(75);
     // The park is invisible housekeeping: no system row for the owner.
     const sysMsgs = mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
@@ -4028,9 +4026,8 @@ describe('a provider limit after a paid call is counted, through the real turn',
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// A STOOD-DOWN REQUEST COMES BACK WHEN THE PERSON WRITES AGAIN, through the real pickup and finalize: the new message's
-// turn claims it and settles it; a failed turn stands it down again at once, the owner is not told twice, and a serve of
-// another request of the same person lifts nothing.
+// A STOOD-DOWN REQUEST COMES BACK WHEN THE PERSON WRITES AGAIN, through the real pickup and finalize: it is reopened for its
+// own turn, never taken up by the new message's; a failed turn stands it down again, the owner is not told twice.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('a stood-down request comes back when the person writes again, through the real turn', () => {
   const state = (id: string): string => (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(`ask:${id}`) as { state: string }).state;
@@ -4039,7 +4036,7 @@ describe('a stood-down request comes back when the person writes again, through 
   const writesAgain = (id: string): void => { insertMessage({ id, agentId: 'primary', role: 'user', content: 'any news?', channel: 'dashboard',
     senderId: 'owner', conversationId: 'conv-primary', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }) }); };
 
-  it('the new message serves it with one model call; a failure holds it again; another serve lifts nothing', async () => {
+  it('the new message reopens it for its own turn; a failure there holds it again, told once', async () => {
     callModelSpy.mockRejectedValue(new Error('500 internal server error'));
     for (let turn = 1; turn <= 6; turn++) { backoffPasses(); await runV2Turn('primary'); }
     expect(state('msg-user-1')).toBe('blocked');
@@ -4048,14 +4045,13 @@ describe('a stood-down request comes back when the person writes again, through 
     writesAgain('msg-user-2');
     callModelSpy.mockClear();
     await runV2Turn('primary');
-    expect(callModelSpy, 'one turn serves both').toHaveBeenCalledTimes(1);
-    expect(state('msg-user-1'), 'the failed turn stands it down again at once').toBe('blocked');
-    expect(told(), 'told once per request').toBe(1);
+    expect(callModelSpy, 'the new message has its own turn').toHaveBeenCalledTimes(1);
+    expect(state('msg-user-1'), 'reopened, not taken up by that turn').toBe('open');
 
     backoffPasses();
     await runV2Turn('primary');
-    expect(state('msg-user-2'), 'the backoff serve of the newer request ran').not.toBe('claimed');
-    expect(state('msg-user-1'), 'a serve of another request lifts nothing').toBe('blocked');
+    expect(state('msg-user-1'), 'its own failed turn stands it down again').toBe('blocked');
+    expect(told(), 'told once per request').toBe(1);
   });
 });
 

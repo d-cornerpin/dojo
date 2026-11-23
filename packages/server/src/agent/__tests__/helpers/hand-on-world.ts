@@ -10,7 +10,6 @@ import { advance, initState } from '../../v2/state.js';
 import { runExecute, type ExecuteContext, type ExecuteOutcome } from '../../v2/steps/execute/index.js';
 import { endTurnContext, turnContext } from '../../turn-context.js';
 import { activeRuns, stoppedAgents, stopFencedRuns } from '../../shared-state.js';
-import { untrackedWorkAcrossTurns } from '../../turn-state.js';
 import { liveTurn } from '../../v2/__tests__/helpers/live-turn.js';
 import { computeTurnAddress } from '../../v2/turn-address.js';
 import { freshReplyDb, testDb, AGENT, OWNER } from '../../v2/__tests__/helpers/reply-sender.js';
@@ -31,7 +30,7 @@ export function world(): void {
   testDb().prepare("INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at) VALUES (?, ?, 'imessage', 'imessage', ?, datetime('now'))")
     .run(CONV, AGENT, OWNER);
   for (const id of Object.keys(NAMES)) endTurnContext(id);
-  activeRuns.clear(); stoppedAgents.clear(); stopFencedRuns.clear(); untrackedWorkAcrossTurns.clear();
+  activeRuns.clear(); stoppedAgents.clear(); stopFencedRuns.clear();
 }
 
 /** The owner's text to the main agent, and the main agent's turn `n` on it, as the bridge and turn start write them. */
