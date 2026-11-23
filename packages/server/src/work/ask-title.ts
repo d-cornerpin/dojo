@@ -5,7 +5,7 @@
 // Never add a value-shape ("looks like a key") test: the declared-value scrub is the one secrecy check.
 // Tested in `memory/__tests__/ask-title-at-ingest.test.ts`.
 
-import { stripInboundChannelMarker } from '@dojo/shared';
+import { stripInboundChannelMarker, unfenceExternal } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { withUnit } from '../db/unit.js';
@@ -105,13 +105,13 @@ export function priorOwnerContext(agentId: string, conversationId: string | null
 }
 
 export function buildTitlePrompt(content: string, priorContext: readonly string[] = []): string {
-  if (priorContext.length === 0) return stripInboundChannelMarker(content).slice(0, ASK_TITLE_INPUT_CHARS);
+  if (priorContext.length === 0) return unfenceExternal(stripInboundChannelMarker(content)).slice(0, ASK_TITLE_INPUT_CHARS);
   const block =
     'Earlier in this conversation, for context only — do NOT title these:\n'
     + priorContext.map((s) => `- ${s}`).join('\n')
     + '\n\nThe request to title:\n';
   const room = Math.max(0, ASK_TITLE_INPUT_CHARS - block.length);
-  return `${block}${stripInboundChannelMarker(content).slice(0, room)}`;
+  return `${block}${unfenceExternal(stripInboundChannelMarker(content)).slice(0, room)}`;
 }
 
 /** Title for this ask, or `null` to keep its id. Never throws. Imports are dynamic to avoid a cycle. */

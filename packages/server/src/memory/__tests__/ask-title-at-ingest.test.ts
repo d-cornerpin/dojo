@@ -58,6 +58,7 @@ vi.mock('../../db/connection.js', async () => {
 import { runMigrations } from '../../db/migrations.js';
 import { insertMessage, insertMessageIfAbsent, wouldOpenAsk } from '../message-store.js';
 import { askIdForMessage } from '../../work/store.js';
+import { fenceExternal } from '@dojo/shared';
 import { patchWork } from '../../work/tracker-store.js';
 import {
   acceptModelTitle, insertInboundMessageIfAbsent, replaceAskTitleFromModel,
@@ -452,6 +453,16 @@ describe('the ticket files with its own identifier and the model\'s title replac
     await settle();
     expect(callModel).toHaveBeenCalledTimes(1);
   }, SLOW);
+
+  it('a contact\'s text is titled from their words alone, without the channel header or the outside-text fence', async () => {
+    seedSystemTier();
+    callModel.mockResolvedValue(answered('Feed the cat reminder'));
+    const fenced = fenceExternal('text message', '+15555550100', 'Can you remind me in 5 minutes to feed the cat?', { addressedToAgent: true });
+    insertInboundMessageIfAbsent(ownerInbound({ id: 'm-fenced', content: `[SOURCE: SMS FROM +15555550100]\n\n${fenced}` }) as never);
+    await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(1), WAIT);
+    const asked = (callModel.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content;
+    expect(asked.trim()).toBe('Can you remind me in 5 minutes to feed the cat?');
+  });
 
   it('PIN (green before the flip too): a caller that supplies its own title is honoured and asks no model at all', async () => {
     seedSystemTier();
