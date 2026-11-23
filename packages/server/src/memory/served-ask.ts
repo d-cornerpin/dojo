@@ -66,7 +66,7 @@ export function servedAssignMessageIds(agentId: string): string[] {
       if (origin?.kind === 'a2a' && origin.threadId === bag.root.id && origin.messageId) return [origin.messageId];
     }
     const r = bag.servedRequest;
-    return r && !repliedOnThread(agentId, r.fromId, r.threadId, r.createdAt) ? [r.messageId] : [];
+    return r && !repliedOnThread(agentId, r.fromId, r.threadId, r.shownAt) ? [r.messageId] : [];
   } catch {
     return [];
   }
