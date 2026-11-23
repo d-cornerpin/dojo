@@ -84,7 +84,7 @@ describe("ending a request ends its helpers' work", () => {
     expect([helperTaskState(), cancelledByOwner(), isStopFenced(HELPER), helperPrompts()]).toEqual(['abandoned', true, true, 0]);
     // The send its turn had already made arrives: refused at the door, so the agent never sees it.
     const sent = toolResultOf(await executeTool(HELPER, { id: 'tc-h', name: 'send_to_agent', arguments: { agent: AGENT, intent: 'COMPLETE', thread_id: THREAD, payload: 'The venue is free on the 14th.' } }));
-    expect(sent.content).toContain('the request this answered was called off, so nothing was passed on');
+    expect(sent.content).toContain('the request this answered was called off by the owner, so nothing was passed on');
     expect(testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND a2a_intent = 'COMPLETE'").get(AGENT)).toEqual({ n: 0 });
   });
 

@@ -32,12 +32,14 @@ import {
   dueJoinsUnderClosedParent,
   failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCountInWindow, bumpThreadHopCount, hopWindowLapsed,
-  extendJoinTtl, jobOfPieceSql,
+  extendJoinTtl, jobOfPieceSql, abandonedBySql,
   type JoinState, type JoinPiece, type PieceSettleResult,
 } from '../work/store.js';
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
-import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, requestParts, type PutBackKind } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, requestParts, cardOfSql, type PutBackKind } from '../work/ask-settlement.js';
+import { standing, type Standing } from './v2/work-lineage.js';
+import { delegatedPiece } from '../memory/relay-facts.js';
 import { endPiece } from '../work/call-off.js';
 import { servedBy } from '../work/task-turns.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
@@ -48,7 +50,7 @@ import { renderTokens } from '../memory/lanes.js';
 import { handInHeard } from '../work/done/effects.js';
 import { latestHandIn } from '../work/done/record.js';
 import { openPieces } from '../tracker/liveness.js';
-import { FINAL_REPLY_INTENTS, FINAL_REPLY_SQL, REPLY_NEEDED_INTENTS, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
+import { FINAL_REPLY_INTENTS, FINAL_REPLY_SQL, REPLY_NEEDED_INTENTS, stripInboundChannelMarker, type A2AIntent, type A2AEnvelope, type A2ADropReason, type ChannelKind, type InboundMeta } from '@dojo/shared';
 import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { compileAskerFromMeta } from '../work/compile-asker.js';
 import { deliveryLabel } from './v2/turn-address.js';
@@ -309,6 +311,8 @@ export interface A2ADeliveryResult {
   autoTaskIsNew?: boolean;
   /** True when the engine reclassified the sender's FYI to deliverable-shaped DELIVERABLE. */
   autoPromotedFromFyi?: boolean;
+  /** On REQUEST_ENDED: how the piece it answered ended. */
+  standing?: Standing | null;
   /** Present only when the sender passed `hands_off_thread`; `message` is the line their tool
    *  result carries. A refusal is never a hold: the reply still lands and settles as it would. */
   handOff?: { applied: boolean; message: string };
@@ -399,7 +403,10 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // when no row exists, so a later read would report a delivery that never happened.
   // On a request that was called off a result is refused (it is never passed on as news); anything else wakes nobody.
   const forEndedRequest = resultForEndedRequest(target.id, threadId);
-  if (forEndedRequest && FINAL_REPLY_INTENTS.has(effectiveIntent)) { logDrop(envelope, 'REQUEST_ENDED'); return { delivered: false, reason: 'REQUEST_ENDED', threadId }; }
+  if (forEndedRequest && FINAL_REPLY_INTENTS.has(effectiveIntent)) {
+    logDrop(envelope, 'REQUEST_ENDED');
+    return { delivered: false, reason: 'REQUEST_ENDED', threadId, standing: standing(delegatedPiece(target.id, threadId) ?? '') };
+  }
   const lastDeliveryMs = threadLastDeliveryMs(threadId);
   ensureThread(threadId, envelope.fromAgent);
 
@@ -767,12 +774,9 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
 
 const JOIN_BOOT_BATCH = 50;
 
-/** The person's request as they wrote it, its leading markers stripped. */
-const stripMarkers = (content: string): string => content.replace(/^\s*(?:\[[^\]]*\]\s*)+/, '').trim();
-
 /** Short quote of the owner's ask for the fail-closed notice. */
 function questionSnippet(content: string): string {
-  const stripped = stripMarkers(content).replace(/\s+/g, ' ');
+  const stripped = stripInboundChannelMarker(content).replace(/\s+/g, ' ');
   return stripped.length > 160 ? `${stripped.slice(0, 160).trimEnd()}...` : stripped;
 }
 
@@ -932,12 +936,19 @@ function orderText(join: JoinState, kind: PutBackKind, evidence: string | null):
   const ask = askRowForJoin(join);
   const asker = compileAskerFromMeta(ask?.inbound_meta ?? null, (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle), (ch) => deliveryLabel(ch as ReplyDestination));
   const pieces = joinPieces(join.id);
+  const from = (p: JoinPiece): string => resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent';
+  // His cancelled cards (a card that is a piece's job is stood for by its piece) and his deleted ones (2.4's record).
+  const cards = (getDb().prepare(`SELECT 'step "' || c.title || '"' AS w FROM work a JOIN work c ON ${cardOfSql('c', 'a')} AND c.state = 'abandoned'
+      AND ${abandonedBySql('c', 'owner')} AND NOT EXISTS (SELECT 1 FROM work p WHERE p.parent_id = a.id AND p.root_kind = 'a2a_thread' AND ${jobOfPieceSql('c', 'p')})
+      WHERE a.id = @id UNION ALL SELECT 'step "' || json_extract(payload, '$.title') || '" (deleted)' FROM work_events
+      WHERE work_id = @id AND kind = 'audit' AND json_extract(payload, '$.marker') = 'card_deleted'`).all({ id: join.id }) as Array<{ w: string }>).map((r) => r.w);
   return compileSteerText({
-    kind, asker, request: stripMarkers(ask?.content ?? ''), files: pieceFiles(join.id),
-    helper: helperOf(pieces, evidence),
+    kind, asker, request: stripInboundChannelMarker(ask?.content ?? ''), files: pieceFiles(join.id),
+    helper: helperOf(pieces, evidence), back: pieces.filter((p) => p.state === 'done').length,
+    calledOff: [...pieces.flatMap((p, i) => (standing(p.childId) === 'called_off' ? [`piece ${i + 1} (from ${from(p)})`] : [])), ...cards],
     pieces: pieces.map((p, i) => {
       const body = (p.content ?? '').trim() || `(no content came back: this piece ${p.state === 'abandoned' ? 'was abandoned' : 'failed'})`;
-      return `Piece ${i + 1} (from ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}, thread ${p.threadId.slice(0, 8)}): "${body}"`;
+      return `Piece ${i + 1} (from ${from(p)}, thread ${p.threadId.slice(0, 8)}): "${body}"`;
     }),
   });
 }

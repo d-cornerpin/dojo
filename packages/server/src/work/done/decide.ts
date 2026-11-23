@@ -23,7 +23,8 @@ import { whoDecides } from './who-decides.js';
 import { onDecided } from './effects.js';
 import { endStallCard } from '../../healer/owner-notices.js';
 import { resultForEndedRequest } from '../../agent/v2/counterparty.js';
-import { cardOfSql, requestEnded } from '../ask-settlement.js';
+import { cardOfSql } from '../ask-settlement.js';
+import { standing } from '../../agent/v2/work-lineage.js';
 import { onPieceEnded, onRequestAnswered } from '../task-ended.js';
 
 export type Verdict = 'approve' | 'send_back' | 'cancel' | 'owner_done';
@@ -187,7 +188,7 @@ export function decide(input: DecideInput): DecideResult {
 
   if (input.verdict === 'cancel' || input.verdict === 'owner_done') {
     const ended = input.verdict === 'cancel' && (row.thread ? resultForEndedRequest(row.worker, row.thread)   // its piece was called off
-      : requestEnded(askIdForMessage(row.request ?? '')) === 'called_off');
+      : ['called_off', 'ended'].includes(standing(askIdForMessage(row.request ?? '')) ?? ''));
     if (!who.owner && !ended) return refused(`only the owner cancels or closes ${name} directly. Nothing changed.`);
     if (isTerminal(row.state)) return refused(`${name} is already closed (${row.state}).`);
   } else {

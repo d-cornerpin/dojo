@@ -447,12 +447,6 @@ export function joinOutstanding(ask: AskRow | string): boolean {
   return !!a && ((a.remaining_children ?? 0) > 0 || a.compile_pending === 1);
 }
 
-/** How the request ended, when it was called off or failed; null while it stands or once it was answered. */
-export function requestEnded(ask: AskRow | string): 'called_off' | 'failed' | null {
-  const a = typeof ask === 'string' ? readAsk(ask) : ask;
-  return a?.state === 'abandoned' ? 'called_off' : a?.state === 'failed' ? 'failed' : null;
-}
-
 /** SQL: task `c` is one of request `a`'s cards (a task its agent opened for the request's message, any holder). */
 export const cardOfSql = (c: string, a: string): string =>
   `${c}.kind = 'task' AND ${c}.root_kind <> 'a2a_thread' AND ${c}.requester_id = ${a}.agent_id AND ${c}.source_message_id = ${a}.root_id`;

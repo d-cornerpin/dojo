@@ -1,18 +1,27 @@
 // Is the work a message is about still open? One reader for the serve boundary (counterparty.ts) and the
 // approval decision (approval-decision.ts); an ask is the `work` row `ask:<messageId>`, spent once terminal.
 import { getDb } from '../../db/connection.js';
-import { askIdForMessage, isTerminal, type WorkState } from '../../work/store.js';
-import { occurrenceRunStatus } from '../../work/occurrence-runs.js';
+import { abandonedBySql, askIdForMessage, type WorkState } from '../../work/store.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../../work/tracker-view.js';
 import { isTerminalTaskStatus } from '../tool-helpers.js';
 import type { TurnRoot } from '../turn-context.js';
 
 export interface Spent { reason: string; state: string }
 
+export type Standing = 'live' | 'answered' | 'called_off' | 'ended' | 'failed';
+
+/** Is the work still open, and if not how it ended: called off by the owner, ended by anyone else (abandoned), or
+ *  failed (it ended without reaching the person). The one reader for every view and push. */
+export function standing(workId: string): Standing | null {
+  const r = getDb().prepare(`SELECT w.state, ${abandonedBySql('w', 'owner')} AS his FROM work w WHERE w.id = ?`)
+    .get(workId) as { state: WorkState; his: number } | undefined;
+  return !r ? null : r.state === 'done' ? 'answered' : r.state === 'failed' ? 'failed'
+    : r.state === 'abandoned' ? (r.his ? 'called_off' : 'ended') : 'live';
+}
+
 export function spentRun(runId: string): Spent | null {
-  const status = occurrenceRunStatus(runId);
-  if (!status) return { reason: 'run_missing', state: 'run row gone' };
-  return status === 'running' ? null : { reason: 'run_closed', state: `run ${status}` };
+  const s = standing(runId);
+  return !s ? { reason: 'run_missing', state: 'run row gone' } : s === 'live' ? null : { reason: 'run_closed', state: `run ${s}` };
 }
 
 export function spentTask(taskId: string): Spent | null {
@@ -29,9 +38,8 @@ export function spentTask(taskId: string): Spent | null {
 
 /** An owner's ask is the `work` row `ask:<messageId>`; no row means the ask no longer resolves. */
 export function spentAsk(messageId: string): Spent | null {
-  const row = getDb().prepare('SELECT state FROM work WHERE id = ?').get(askIdForMessage(messageId)) as { state: WorkState } | undefined;
-  if (!row) return { reason: 'ask_missing', state: 'ask row gone' };
-  return isTerminal(row.state) ? { reason: 'ask_closed', state: `ask ${row.state}` } : null;
+  const s = standing(askIdForMessage(messageId));
+  return !s ? { reason: 'ask_missing', state: 'ask row gone' } : s === 'live' ? null : { reason: 'ask_closed', state: `ask ${s}` };
 }
 
 /** A queued `a2a_request` wake rooted in an ask is spent only when its whole lineage is finished (the

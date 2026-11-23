@@ -25,6 +25,7 @@ import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
 import { workerBusy } from '../tracker/liveness.js';
+import { standing, type Standing } from './v2/work-lineage.js';
 import type { PermissionManifest, Agent } from '@dojo/shared';
 
 const logger = createLogger('spawner');
@@ -671,6 +672,10 @@ export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): vo
 // once to the primary so the owner hears about it in-voice. Never auto-kill.
 const SPAWN_TIMEOUT_UNDECIDED_GRACE_MS = 15 * 60 * 1000;
 
+const ENDED_JOB: Partial<Record<Standing, string>> = {
+  called_off: 'its job was called off by the owner; nothing is running for it', ended: 'its job ended; nothing is running for it', failed: 'its job ended without an answer',
+};
+
 /**
  * The timeout fired: request the creator's decision. Idempotent (guards on
  * timeout_decision_pending) so the in-memory timer, the 30s DB sweep, and the boot re-arm all reach
@@ -711,8 +716,11 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
   const createdMs = new Date(agent.created_at.replace(' ', 'T') + (agent.created_at.includes('Z') ? '' : 'Z')).getTime();
   const elapsedMinutes = Number.isNaN(createdMs) ? null : Math.max(1, Math.round((Date.now() - createdMs) / 60000));
 
-  let taskLine = 'no tracker task linked';
-  if (agent.task_id) {
+  // How the helper's newest piece ended, when it did, is what the creator hears instead of its task's status.
+  const piece = db.prepare("SELECT id FROM work WHERE root_kind = 'a2a_thread' AND assignee_agent = ? ORDER BY opened_at DESC LIMIT 1").get(agentId) as { id: string } | undefined;
+  const ended = piece ? ENDED_JOB[standing(piece.id) ?? 'live'] : undefined;
+  let taskLine = ended ?? 'no tracker task linked';
+  if (!ended && agent.task_id) {
     const t = db.prepare(`SELECT w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w WHERE w.id = ?`).get(agent.task_id) as { title: string; status: string } | undefined;
     if (t) taskLine = `linked task "${t.title}" (status: ${t.status})`;
   }
