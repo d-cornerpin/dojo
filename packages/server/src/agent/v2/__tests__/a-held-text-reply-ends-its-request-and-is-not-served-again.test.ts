@@ -15,10 +15,11 @@ import { freshReplyDb, imessage, testDb } from './helpers/reply-sender.js';
 import { claimedAsk } from './helpers/owner-stop.js';
 import { CONV, askRow, endTurn, turnRow } from './helpers/text-request.js';
 
+// The clock stands still only after the migrations, so the claim and the turn row are stamped at one instant.
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-  vi.setSystemTime(new Date());
+  vi.useRealTimers();
   freshReplyDb(runMigrations);
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
 });
 
 describe('a held text reply ends its request and is not served again', () => {

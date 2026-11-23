@@ -26,6 +26,7 @@ async function allTheWay(): Promise<void> {
     turnTaken(WORKER);
     await runPMReview();
     pmReviewEnded(PM);
+    await vi.dynamicImportSettled();   // the card step's judgement runs after an import
   }
 }
 
