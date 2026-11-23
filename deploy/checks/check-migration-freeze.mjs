@@ -21,9 +21,6 @@ import { execFileSync } from 'node:child_process';
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const DIR = 'packages/server/src/db/migrations';
 
-// Written before the order rule. A name the last release tag holds must be deleted from this list.
-const WRITTEN_BEFORE_ORDER_RULE = [];
-
 const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
 const migrationChecksum = (sqlText) =>
@@ -131,8 +128,7 @@ tags.forEach((t, i) => {
 const removed = gone.map((rel) => path.basename(rel)).filter((name) => releasedIn.has(name)).map((name) => ({ name, tag: releasedIn.get(name) }));
 // A file in no release tag sorts after every released one, so a fresh install and an updated box apply the same order.
 const lastReleased = [...releasedIn.keys()].sort().at(-1);
-const outOfOrder = files.filter((f) => lastReleased && f < lastReleased && !releasedIn.has(f) && !WRITTEN_BEFORE_ORDER_RULE.includes(f));
-const listedButReleased = WRITTEN_BEFORE_ORDER_RULE.filter((f) => releasedIn.has(f));
+const outOfOrder = files.filter((f) => lastReleased && f < lastReleased && !releasedIn.has(f));
 
 console.log('── migration freeze ──');
 console.log(`  ${single} migration(s) with one version in their whole history (cannot diverge)`);
@@ -147,7 +143,7 @@ if (debt.length > 0) {
 if (preRelease.length > 0) {
   console.log(`  ${preRelease.length} version(s) in no release tag, free to change: ` + [...new Set(preRelease.map((p) => p.name))].join(', '));
 }
-if (changed.length === 0 && removed.length === 0 && outOfOrder.length === 0 && listedButReleased.length === 0) {
+if (changed.length === 0 && removed.length === 0 && outOfOrder.length === 0) {
   console.log('✓ migration freeze: no migration a release shipped has changed, and every new one sorts after them');
   process.exit(0);
 }
@@ -163,9 +159,6 @@ for (const r of removed) {
 for (const f of outOfOrder) {
   console.error(`✗ ${f} is in no release tag and sorts before ${lastReleased}, which ${releasedIn.get(lastReleased)} holds: a fresh install would apply`);
   console.error('    it before that step and an updated box after it. Number it after every released file.');
-}
-for (const f of listedButReleased) {
-  console.error(`✗ ${f} is in ${releasedIn.get(f)} now, so it no longer needs the exemption: delete it from WRITTEN_BEFORE_ORDER_RULE.`);
 }
 if (changed.length || removed.length) {
   console.error('\n  A box that applied the old bytes keeps them and warns at every boot. Revert the');

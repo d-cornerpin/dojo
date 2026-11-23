@@ -1,6 +1,5 @@
 // A migration file new since the last release tag must sort after every file that tag holds, so a fresh
-// install and an updated box apply the steps in the same order. The few files written before that rule are
-// listed in the check, and a listed name the tag already holds fails until it is deleted from the list.
+// install and an updated box apply the steps in the same order.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,7 +10,6 @@ import { execFileSync, spawnSync } from 'node:child_process';
 
 const GATE = fileURLToPath(new URL('../check-migration-freeze.mjs', import.meta.url));
 const DIR = 'packages/server/src/db/migrations';
-const LISTED = '210_finished_rows_answer_their_verdict_request.sql';
 
 function tagged(files) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-order-test-'));
@@ -43,24 +41,6 @@ test('a new file after every tagged file passes', () => {
     box.write('901_next.sql');
     const r = box.run();
     assert.equal(r.status, 0, r.stdout + r.stderr);
-  } finally { box.clean(); }
-});
-
-test('a listed name passes while the tag does not hold it', () => {
-  const box = tagged(['001_a.sql', '900_late.sql']);
-  try {
-    box.write(LISTED);
-    const r = box.run();
-    assert.equal(r.status, 0, r.stdout + r.stderr);
-  } finally { box.clean(); }
-});
-
-test('a listed name the tag holds fails and says to delete it from the list', () => {
-  const box = tagged(['001_a.sql', LISTED, '900_late.sql']);
-  try {
-    const r = box.run();
-    assert.equal(r.status, 1, r.stdout + r.stderr);
-    assert.match(r.stderr, new RegExp(`${LISTED.replace('.', '\\.')} .*delete it from`));
   } finally { box.clean(); }
 });
 
