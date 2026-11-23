@@ -2,7 +2,7 @@
 // resolved by what the row is; everything under it ends in `transition`'s cascade, in this one unit.
 import { getDb } from '../db/connection.js';
 import { afterCommit, withUnit } from '../db/unit.js';
-import { appendWorkEvent, isTerminal, jobOfPieceSql, settlePieceWithoutResult, transition, type Actor, type PieceSettleResult } from './store.js';
+import { isTerminal, jobOfPieceSql, settlePieceWithoutResult, transition, type Actor, type PieceSettleResult } from './store.js';
 import { decide, endCardsOf, refused, type DecideResult } from './done/decide.js';
 import { cardOfSql, requestParts } from './ask-settlement.js';
 import { clearReferencesToWork } from './work-refs.js';
@@ -75,14 +75,9 @@ export function deleteTrackerRow(id: string): number {
   const db = getDb();
   let changes = 0;
   withUnit(() => {
-    // A card of a request leaves the call-off record on the request's own row, which outlives the delete.
-    const open = db.prepare(`SELECT w.id, w.title, a.id AS ask FROM work w LEFT JOIN work a ON a.kind = 'ask' AND a.agent_id = w.requester_id
-        AND a.root_id = w.source_message_id WHERE w.kind = 'task' AND w.root_kind <> 'a2a_thread' AND (w.id = ? OR w.parent_id = ?)
-      AND w.state NOT IN ('done', 'failed', 'abandoned')`).all(id, id) as Array<{ id: string; title: string | null; ask: string | null }>;
-    for (const t of open) {
-      if (t.ask) appendWorkEvent(t.ask, 'audit', 'owner', { marker: 'card_deleted', card_id: t.id, title: t.title });
-      callOff(t.id, OWNER, 'the owner deleted it on the dashboard');
-    }
+    const open = db.prepare(`SELECT id FROM work WHERE kind = 'task' AND root_kind <> 'a2a_thread' AND (id = ? OR parent_id = ?)
+      AND state NOT IN ('done', 'failed', 'abandoned')`).all(id, id) as Array<{ id: string }>;
+    for (const t of open) callOff(t.id, OWNER, 'the owner deleted it on the dashboard');
     const children = (db.prepare("SELECT id FROM work WHERE parent_id = ? AND root_kind <> 'a2a_thread'").all(id) as
       Array<{ id: string }>).map(r => r.id);
     clearReferencesToWork(children);         // every reference, for the children

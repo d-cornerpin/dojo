@@ -937,11 +937,10 @@ function orderText(join: JoinState, kind: PutBackKind, evidence: string | null):
   const asker = compileAskerFromMeta(ask?.inbound_meta ?? null, (ch, handle) => resolveRecipientDisplay(ch as ChannelKind, handle), (ch) => deliveryLabel(ch as ReplyDestination));
   const pieces = joinPieces(join.id);
   const from = (p: JoinPiece): string => resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent';
-  // His cancelled cards (a card that is a piece's job is stood for by its piece) and his deleted ones (2.4's record).
+  // His cancelled cards; a card that is a piece's job is stood for by its piece.
   const cards = (getDb().prepare(`SELECT 'step "' || c.title || '"' AS w FROM work a JOIN work c ON ${cardOfSql('c', 'a')} AND c.state = 'abandoned'
       AND ${abandonedBySql('c', 'owner')} AND NOT EXISTS (SELECT 1 FROM work p WHERE p.parent_id = a.id AND p.root_kind = 'a2a_thread' AND ${jobOfPieceSql('c', 'p')})
-      WHERE a.id = @id UNION ALL SELECT 'step "' || json_extract(payload, '$.title') || '" (deleted)' FROM work_events
-      WHERE work_id = @id AND kind = 'audit' AND json_extract(payload, '$.marker') = 'card_deleted'`).all({ id: join.id }) as Array<{ w: string }>).map((r) => r.w);
+      WHERE a.id = ?`).all(join.id) as Array<{ w: string }>).map((r) => r.w);
   return compileSteerText({
     kind, asker, request: stripInboundChannelMarker(ask?.content ?? ''), files: pieceFiles(join.id),
     helper: helperOf(pieces, evidence), back: pieces.filter((p) => p.state === 'done').length,

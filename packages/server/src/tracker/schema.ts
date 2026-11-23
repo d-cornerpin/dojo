@@ -605,8 +605,6 @@ export type IdResolution =
       triedTitle?: boolean;
       /** The typed id is this agent's own open promise (`findObligationByTypedId`), not a task. */
       promise?: boolean;
-      /** The title of a card of this agent's request that the owner deleted, matched by its id (2.4's record). */
-      deleted?: string;
     };
 
 function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: string): IdResolution {
@@ -643,9 +641,7 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
   if (agentId) {
     const byTitle = resolveByTitleScoped(kind, input, agentId);
     if (byTitle) return byTitle;
-    const deleted = db.prepare(`SELECT COALESCE(json_extract(payload, '$.title'), '') AS t FROM work_events WHERE work_id IN (SELECT id FROM work WHERE kind = 'ask'
-        AND agent_id = ?) AND kind = 'audit' AND json_extract(payload, '$.marker') = 'card_deleted' AND json_extract(payload, '$.card_id') LIKE ?`).get(agentId, `${input}%`) as { t: string } | undefined;
-    return { ok: false, reason: 'not_found', triedTitle: true, promise: kind === 'task' && !!findObligationByTypedId(agentId, input), deleted: deleted?.t };
+    return { ok: false, reason: 'not_found', triedTitle: true, promise: kind === 'task' && !!findObligationByTypedId(agentId, input) };
   }
   return { ok: false, reason: 'not_found', triedTitle: false };
 }
@@ -705,7 +701,6 @@ export function formatResolveError(
         const what = input.trim().startsWith('piece:') ? 'a piece of a request' : 'a request';
         return `Error: '${input}' is ${what} from the person who asked, not a task, so no task call takes it. It ends when you answer them; reply with your normal message.`;
       }
-      if (resolution.deleted != null) return `Error: the owner deleted "${resolution.deleted}" on the dashboard; that step is off: do not do it or report it as done.`;
       // The agent's own open promise closes through the promise ledger, not a task verb.
       if (resolution.promise) {
         return `Error: '${input}' is a promise you made, not a task, so no task call takes it. Close it with work_close_request(action='commitment', id, disposition='kept' or 'dropped').`;
