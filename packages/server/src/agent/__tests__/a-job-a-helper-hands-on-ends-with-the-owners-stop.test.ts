@@ -2,7 +2,8 @@
 // the helper's own response hands part of it to an existing agent by `send_to_agent`, then Stop. Nothing is seeded: each
 // hand-on goes through the real execute step. The second agent's job ends, its turn stops, nothing wakes it, and its
 // late answer reaches nobody; at three levels the Stop reaches the third agent too. While the work is live, the second
-// agent's answer wakes the first and counts nothing down.
+// agent's answer wakes the first and counts nothing down. A helper's message back to its maker (a BLOCK on the job's
+// thread, a QUESTION on a new one) is no hand-on: it opens no piece, so the job's end never stops the maker.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
@@ -15,7 +16,9 @@ vi.mock('../../memory/embeddings.js', () => ({ generateEmbedding: async () => ne
 import { stopByOwner, getAgentRuntime } from '../runtime.js';
 import { deliverA2AMessage } from '../a2a-transport.js';
 import { nextOwed } from '../v2/owed.js';
-import { isStopFenced } from '../shared-state.js';
+import { activeRuns, isStopFenced } from '../shared-state.js';
+import { liveTurn } from '../v2/__tests__/helpers/live-turn.js';
+import { trackerRouter } from '../../gateway/routes/tracker.js';
 import { runLadder, LADDER_ENTRY } from '../../work/done/ladder.js';
 import { imessage, testDb } from '../v2/__tests__/helpers/reply-sender.js';
 import { endedBy, settled } from './helpers/call-off-world.js';
@@ -93,5 +96,24 @@ describe("a job a helper hands on ends with the owner's Stop", () => {
     stopByOwner(AGENT);
     await settled();
     expect([endedBy(jobOf(BOT).id)?.state, endedBy(jobOf(THIRD).id)?.state, isStopFenced(THIRD)]).toEqual(['abandoned', 'abandoned', true]);
+  });
+
+  it("a helper's BLOCK and QUESTION back to its maker open no piece, and its job's end leaves the maker's turn running", async () => {
+    ownerAsks('Get a helper to plan a lake picnic menu.');
+    await respond(AGENT, [assign(CORA, 'Plan a lake picnic menu.')], { reply: 'Cora is on it.' });
+    turnEnds(AGENT);
+    const thread = agentTurnOnItsRequest(CORA);
+    expect(await respond(CORA, [
+      ['send_to_agent', { agent: AGENT, intent: 'BLOCK', thread_id: thread, payload: 'Which lake? I need it to plan the menu.' }],
+      ['send_to_agent', { agent: AGENT, intent: 'QUESTION', payload: 'Any allergies I should know about?' }],
+    ])).toMatchObject({ directive: 'exit', reason: 'a2a-reply-sent' });
+    turnEnds(CORA);
+    expect(piecesUnder(jobOf(CORA).id)).toEqual([]);
+    liveTurn(AGENT, { turnNumber: 2, kind: 'a2a', root: { kind: 'a2a', id: thread, sourceMessageId: null } });   // the main agent reads the BLOCK
+    activeRuns.add(AGENT);
+    expect((await trackerRouter.request(`/tasks/${jobOf(CORA).id}/decision`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ verdict: 'owner_done', reason: 'Good enough' }) })).status).toBe(200);
+    await settled();
+    expect(isStopFenced(AGENT)).toBe(false);
   });
 });

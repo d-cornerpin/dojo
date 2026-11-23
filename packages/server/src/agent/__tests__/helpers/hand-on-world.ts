@@ -53,8 +53,8 @@ export function agentTurnOnItsRequest(agent: string, n = 1): string {
   return request.threadId;
 }
 
-/** One model response of `agent`'s live turn, run through the real execute step; `untracked` work calls came before it. */
-export async function respond(agent: string, calls: Array<[string, Record<string, unknown>]>, o: { reply?: string; untracked?: number } = {}): Promise<ExecuteOutcome> {
+/** One model response of `agent`'s live turn, run through the real execute step. */
+export async function respond(agent: string, calls: Array<[string, Record<string, unknown>]>, o: { reply?: string } = {}): Promise<ExecuteOutcome> {
   const turnCtx = turnContext(agent)!;
   const turnNumber = turnCtx.turnNumber!;
   const main = agent === AGENT;
@@ -64,7 +64,7 @@ export async function respond(agent: string, calls: Array<[string, Record<string
     agentId: agent, contextWindow: 100_000, isAutoRouted: false, configuredModelId: 'm', turnNumber, triggeredByIMessage: main,
     triggeredByA2AReplyIntent: null, lastUserMessageContent: null, lastUserMessageId: main ? 'm-owner' : null,
     inboundChannel: main ? 'imessage' : 'a2a', inboundContext: null,
-  } as never), { phase: 'execute', loopCount: 1, nonTrackerToolCalls: o.untracked ?? 0 });
+  } as never), { phase: 'execute', loopCount: 1 });
   const triggerRow = main ? testDb().prepare("SELECT seq AS rowid FROM messages WHERE id = 'm-owner'").get() as { rowid: number } : null;
   return runExecute(state, {
     agentId: agent, turnCtx, turnNumber, db: testDb(), agent: { name: NAMES[agent] },
@@ -85,8 +85,7 @@ export async function respond(agent: string, calls: Array<[string, Record<string
 /** The turn is over: its bag closes and it no longer runs. */
 export function turnEnds(agent: string): void { endTurnContext(agent); activeRuns.delete(agent); }
 
-export const assign = (to: string, payload: string, thread?: string): [string, Record<string, unknown>] =>
-  ['send_to_agent', { agent: NAMES[to], intent: 'ASSIGN', payload, ...(thread ? { thread_id: thread } : {}) }];
+export const assign = (to: string, payload: string): [string, Record<string, unknown>] => ['send_to_agent', { agent: NAMES[to], intent: 'ASSIGN', payload }];
 export const piecesUnder = (parent: string): Array<{ id: string; state: string; assignee_agent: string }> =>
   testDb().prepare('SELECT id, state, assignee_agent FROM work WHERE parent_id = ? ORDER BY rowid').all(parent) as never;
 export const jobOf = (agent: string): { id: string; state: string } =>
