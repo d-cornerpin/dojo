@@ -154,7 +154,7 @@ function endJobsOfPiece(pieceId: string, byOwner: boolean): void {
 onPieceEnded(endJobsOfPiece);
 
 /** A request's end ends its cards: called off, every open card (any holder) is cancelled by its decider; answered, the
- *  engine's own cards, and the agent's own opened before every piece landed and came back to it, close done on its delivery. */
+ *  engine's own cards close done on its delivery. */
 export function endCardsOf(askId: string | null, to: 'done' | 'abandoned', deciderAgentId: string | null, reason: string): void {
   if (to === 'abandoned') {
     const cards = getDb().prepare(`SELECT c.id FROM work a JOIN work c ON ${cardOfSql('c', 'a')} AND c.state NOT IN ('done', 'failed', 'abandoned') WHERE a.id = ?`)
@@ -165,9 +165,7 @@ export function endCardsOf(askId: string | null, to: 'done' | 'abandoned', decid
   // From the agent's open tasks (`ix_work_queue`); never a scheduled card or one the owner holds. No id: every answered request.
   const cards = getDb().prepare(`SELECT t.id, t.state, a.result_delivery_id AS delivery FROM work a JOIN work t ON t.agent_id = a.agent_id
       AND t.kind = 'task' AND t.state IN ('open', 'claimed', 'blocked', 'sent_back', 'handed_in') AND t.source_message_id = a.root_id
-      AND t.schedule_json IS NULL AND t.next_run_at IS NULL AND NOT ${heldByOwnerSql('t')} AND (t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}'
-        OR (t.origin_kind = 'model' AND EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = a.id AND e.kind = 'compile_resolved' AND e.created_at > t.opened_at)
-          AND NOT EXISTS (SELECT 1 FROM work p WHERE p.parent_id = a.id AND p.root_kind = 'a2a_thread' AND p.state <> 'done')))
+      AND t.schedule_json IS NULL AND t.next_run_at IS NULL AND NOT ${heldByOwnerSql('t')} AND t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}'
     WHERE ${askId ? 'a.id = ?' : "a.kind = 'ask'"} AND a.state = 'done'`).all(...(askId ? [askId] : [])) as Array<{ id: string; state: WorkState; delivery: string }>;
   for (const t of cards) applyDecision(t.id, t.state, 'done', { verdict: 'approve', reason, deciderId: ENGINE_ID, by: 'engine', outcome: 'finished', run: false, delivery: t.delivery });
 }

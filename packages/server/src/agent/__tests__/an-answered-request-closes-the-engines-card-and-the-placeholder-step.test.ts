@@ -1,7 +1,5 @@
-// A request's answer ends the engine's own card for it and, once every helper's piece came back and the agent wrote
-// the compiled answer, the agent's own "send it to him" step opened beside the helper's job: closed done on the
-// request's delivery, so the next turn is shown neither, the stall ladder chases neither, and the manager reviews neither.
-// The agent's own card stays open on a request it answered itself, or whose helper's piece was called off.
+// A request's answer ends the engine's own card for it, closed done on the request's delivery, so the next turn is not
+// shown it and the stall ladder does not chase it. The agent's own cards stay open for it to hand in.
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('../../db/connection.js', async () => (await import('../v2/__tests__/helpers/reply-sender.js')).connectionMock());
 vi.mock('../../services/imessage-bridge.js', async (orig) => (await import('../v2/__tests__/helpers/reply-sender.js')).bridgeMock(await orig()));
@@ -19,7 +17,7 @@ import { assembleContext } from '../../memory/assembler.js';
 import { testDb } from '../v2/__tests__/helpers/reply-sender.js';
 import { helperAnswers, requestState } from './helpers/text-relay.js';
 import { turnReplies } from './helpers/turn-reply.js';
-import { boardCancel, delegated, ownerTurn, settled, stateOf, task, AGENT, ASK, T2 } from './helpers/call-off-world.js';
+import { delegated, ownerTurn, settled, stateOf, task, AGENT, ASK } from './helpers/call-off-world.js';
 
 const MIN = 60_000;
 const ownCard = (id: string): string => { task(id); testDb().prepare("UPDATE work SET origin_kind = 'model' WHERE id = ?").run(id); return id; };
@@ -49,20 +47,19 @@ async function agentCompiles(turn = 2): Promise<void> {
 }
 
 describe('an answered request closes the engine\'s card and the placeholder step', () => {
-  it('T2: the compiled answer closes the own step card and the engine card on its delivery; the next turn and the ladder see neither', async () => {
+  it('T2: the compiled answer closes the engine card on its delivery; the agent\'s own step card stays for it to hand in', async () => {
     delegated();
     const step = ownCard('card-send-it');
     const engine = engineCard('card-engine');
     await helperAnswers('Tent, stove, two sleeping bags.');
     await agentCompiles();
     expect(requestState()).toBe('done');
-    expect([stateOf(step), stateOf(engine)]).toEqual(['done', 'done']);
-    expect([closedOn(step), closedOn(engine)]).toEqual([closedOn(ASK), closedOn(ASK)]);
-    expect(events(step, 'handed_in'), 'no hand-in, so no manager review').toBe(0);
+    expect([stateOf(step), stateOf(engine)]).toEqual(['claimed', 'done']);
+    expect(closedOn(engine)).toBe(closedOn(ASK));
     for (const at of [6, 30, 120, 1440]) await runLadder(Date.now() + at * MIN);
-    expect([hinted(step), hinted(engine)]).toEqual([0, 0]);
+    expect(hinted(engine)).toBe(0);
     const view = await nextView();
-    expect(view).not.toContain('Step card-send-it');
+    expect(view).toContain('Step card-send-it');
     expect(view).not.toContain('Step card-engine');
   });
 
@@ -77,16 +74,6 @@ describe('an answered request closes the engine\'s card and the placeholder step
     settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 3 });
     await settled();
     expect([stateOf('ask:m-2'), stateOf(engine), stateOf(own)]).toEqual(['done', 'done', 'claimed']);
-    expect(await nextView()).toContain('Step card-own');
-  });
-
-  it('a request answered while one helper\'s job was called off leaves the own card open', async () => {
-    delegated('owner', ['thread-relay-0001', T2]);
-    const own = ownCard('card-own');
-    expect(await boardCancel('task-second-1')).toBe(200);
-    await helperAnswers('Tent, stove, two sleeping bags.');
-    await agentCompiles();
-    expect([requestState(), stateOf(own)]).toEqual(['done', 'claimed']);
     expect(await nextView()).toContain('Step card-own');
   });
 
