@@ -122,6 +122,7 @@ export async function runCounterpartyAndRecord(
       sourceMessageId: root?.sourceMessageId ?? (input.notificationTriggerRowid == null ? null : ((getDb().prepare(
         'SELECT id FROM messages WHERE seq = ?').get(input.notificationTriggerRowid) as { id: string } | undefined)?.id ?? null)),
       convKey: chosenConvKey,
+      pickupSeq: turnCtx.pickupSeq,
     });
   })();
   // Published so writeToolReceipt can stamp turn_number on engine receipts without threading it through.
