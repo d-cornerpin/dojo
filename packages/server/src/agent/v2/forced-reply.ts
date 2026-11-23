@@ -4,6 +4,7 @@ import { DELIVERABLE_OWING_TASK_KINDS } from '../../work/deliverable-declaration
 import type { TurnContext } from '../turn-context.js';
 import { turnDeliveredToPerson } from './answered-edge.js';
 import { inboundAsksNothing } from './classifiers/inbound-routing.js';
+import { personShownALineThisTurn } from './person-shown-this-turn.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { turnParkedTheJob } from './engine-exit.js';
 import { advance } from './state.js';
@@ -22,7 +23,7 @@ export async function forcedReplyDue(
 ): Promise<boolean> {
   const state = turnCtx.state!;
   if (turnCtx.forcedReplySpent || state.engineCutExit !== null || turnParkedTheJob(p.agentId)) return false;
-  if (state.lastAssistantTextForIM || turnCtx.deferredUserReplyWithTools) return false;
+  if (state.lastAssistantTextForIM || turnCtx.deferredUserReplyWithTools || personShownALineThisTurn(p.agentId, p.turnNumber) || turnDeliveredToPerson(p.agentId, p.turnNumber)) return false;
   if (!replyCanBeRequired(p.latestUserSource, state.inboundChannel, p.counterpartyIsAgentSender)) return false;
   const owesItsDeliverable = turnCtx.root?.kind === 'occurrence'
     && DELIVERABLE_OWING_TASK_KINDS.includes(turnCtx.servedWork?.taskKind ?? '')

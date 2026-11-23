@@ -136,7 +136,7 @@ export async function runCounterpartyAndRecord(
     if (triggerWorkId) {
       const wroteAgain = firstServedAt(triggerWorkId) === null;
       stampClaimingTurn(triggerWorkId, turnNumber);
-      if (wroteAgain) liftStandDowns(agentId, triggerWorkId, turnNumber);   // a request of theirs that stood down is served with it
+      if (wroteAgain) liftStandDowns(agentId, triggerWorkId);   // a request of theirs that stood down is served again on its own turn
     }
     // A turn serving a job marks the job's task, and holds the request its job started from, claimed at its pickup.
     if (turnCtx.servedJob) appendWorkEvent(turnCtx.servedJob, 'claim_turn', 'engine', { turn_number: turnNumber, agent_id: agentId, how: 'job' });

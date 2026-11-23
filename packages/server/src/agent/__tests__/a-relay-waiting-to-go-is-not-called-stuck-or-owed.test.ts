@@ -25,7 +25,7 @@ describe('a relay waiting to go is not called stuck or owed', () => {
     expect(relayRows().map((r) => r.outcome)).toEqual(['pending']);
     for (let i = 0; i < 3; i++) await sweepExpiredJoins();
     insertMessage({ id: 'm-next', agentId: AGENT, role: 'user', content: 'any news?', channel: 'imessage', senderId: PERSON, conversationId: CONV });
-    liftStandDowns(AGENT, 'ask:m-next', 3);
+    liftStandDowns(AGENT, 'ask:m-next');
     expect(requestState()).toBe('blocked');
     expect(relayRows()).toHaveLength(1);
     expect(openObligations(AGENT).map((o) => o.id)).not.toContain(ASK);

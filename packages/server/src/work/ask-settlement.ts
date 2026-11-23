@@ -24,7 +24,7 @@ import { broadcast } from '../gateway/ws.js';
 import { announceAgentLiveWork, serveLater } from '../agent/v2/serve-later.js';
 import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import {
-  abandonedBySql, appendWorkEvent, jobOfPieceSql, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState, stampClaimingTurn,
+  abandonedBySql, appendWorkEvent, jobOfPieceSql, askIdForMessage, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState,
   transition,
   type WorkState,
 } from './store.js';
@@ -413,16 +413,15 @@ export function handBackAsk(workId: string, p: { agentId: string; turnNumber: nu
 }
 
 /** The person wrote again (`triggerWorkId`, never served before): each request of that conversation stood down
- *  with nothing outstanding is claimed by this turn, so the turn's end settles it with the new message. An
+ *  with nothing outstanding is reopened for its own turn, never taken up by the new message's. An
  *  inherited ask stays parked; it closes only through its own door. */
-export function liftStandDowns(agentId: string, triggerWorkId: string, turnNumber: number): void {
+export function liftStandDowns(agentId: string, triggerWorkId: string): void {
   const held = getDb().prepare(`SELECT h.id AS id FROM work h JOIN work t ON t.id = ? AND t.conversation_id = h.conversation_id
     WHERE h.agent_id = ? AND h.kind = 'ask' AND h.state = 'blocked'`).all(triggerWorkId, agentId) as Array<{ id: string }>;
   for (const { id } of held) {
     const ask = readAsk(id);
     if (!ask || joinOutstanding(ask) || replyInFlight(id) || mediaJobs(ask.root_id).out > 0 || stillOwed(ask, null) || inheritedParkedAt(id)) continue;
-    if (transition(id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'the person wrote again' }).kind !== 'applied') continue;
-    if (claimAsk(id, agentId).kind === 'applied') stampClaimingTurn(id, turnNumber);
+    if (transition(id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'the person wrote again' }).kind === 'applied') serveLater({ kind: 'ask', id }, Date.now(), 'the person wrote again');
   }
 }
 
