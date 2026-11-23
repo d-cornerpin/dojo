@@ -514,10 +514,10 @@ export function autoCreateAssignTask(params: {
 
     // Reuse if a task already exists for this thread.
     const existing = db
-      .prepare(`SELECT work.id AS id, work.goal AS goal FROM work WHERE ${TASK_WHERE} AND work.a2a_thread_id = ? LIMIT 1`)
-      .get(params.threadId) as { id: string; goal: string | null } | undefined;
+      .prepare(`SELECT work.id AS id, work.goal AS goal, work.agent_id AS worker FROM work WHERE ${TASK_WHERE} AND work.a2a_thread_id = ? LIMIT 1`)
+      .get(params.threadId) as { id: string; goal: string | null; worker: string } | undefined;
     if (existing?.id) {
-      patchWork(existing.id, { goal: `${existing.goal ?? ''}\nAdded: ${params.payload.trim()}`.trim().slice(0, 2000) });   // reviewed against every brief
+      if (existing.worker === params.receiverId) patchWork(existing.id, { goal: `${existing.goal ?? ''}\nAdded: ${params.payload.trim()}`.trim().slice(0, 2000) });   // reviewed against every brief
       return { taskId: existing.id, isNew: false };
     }
 
