@@ -9,7 +9,6 @@ vi.mock('../../agent/runtime.js', () => ({ getAgentRuntime: () => ({ handleMessa
 const box = await import('./helpers/reminders-box.js');
 const { at, db, turn, line, reminder, openRun, handIn, checkScheduledTasks, closeRunsThatDelivered, freeCheckSays, decidedBy } = box;
 const { runPMReview } = await import('../../tracker/pm-agent.js');
-const { resetWorkingAgentsToIdleAtBoot } = await import('../../agent/agent-status.js');
 
 beforeAll(() => {
   box.openBox();
@@ -54,7 +53,6 @@ describe('a run waiting for its turn is not reviewed by the manager', () => {
     at('2026-03-03T22:50:25Z'); await checkScheduledTasks();
     await handedInOwnTurn(standUp, 'Stand-up: nothing new today.', false);
     at('2026-03-03T23:40:00Z');
-    resetWorkingAgentsToIdleAtBoot();   // the boot door
     await closeRunsThatDelivered();     // the reaper's sweep, its first tick after the boot
     await runPMReview();
     expect(decidedBy(standUp)).toBeNull();
