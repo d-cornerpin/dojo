@@ -167,10 +167,11 @@ export class LabelFacts {
     return this.receipts.get(messageId) ?? null;
   }
 
-  /** The mark of a person's message whose request ended (`standing`): a stored, one-way fact. */
+  /** The mark of a person's message whose request ended, or of a run's trigger row whose run delivered (`standing`). */
   mark(m: LabelledMessage): string {
     if (m.role !== 'user') return '';
-    if (!this.marks.has(m.id)) this.marks.set(m.id, REQUEST_MARK[standing('ask:' + m.id) ?? 'live'] ?? '');
+    const run = this.marks.has(m.id) ? null : (getDb().prepare('SELECT run_id AS r FROM messages WHERE id = ?').get(m.id) as { r: string | null } | undefined)?.r;
+    if (!this.marks.has(m.id)) this.marks.set(m.id, run ? (standing(run) === 'answered' ? ' · delivered: do not send it again' : '') : REQUEST_MARK[standing('ask:' + m.id) ?? 'live'] ?? '');
     return this.marks.get(m.id) ?? '';
   }
 
