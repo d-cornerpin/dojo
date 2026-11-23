@@ -4,7 +4,6 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { taskScope, msToText } from '../work/tracker-view.js';
 import { stripInboundChannelMarker } from '@dojo/shared';
-import { standing } from '../agent/v2/work-lineage.js';
 
 const logger = createLogger('origin-chain');
 
@@ -40,8 +39,7 @@ export function findTaskOriginChain(taskId: string): TaskOriginChain | null {
         originAt = msg.created_at;
         if (msg.channel) {
           const who = msg.counterparty_name ?? msg.counterparty_id ?? 'unknown';
-          from = (who === 'owner' ? `the owner's ${msg.channel} conversation` : `${who} via ${msg.channel}`)
-            + (standing(`ask:${task.source_message_id}`) === 'called_off' ? ' (that request was called off by the owner)' : '');
+          from = who === 'owner' ? `the owner's ${msg.channel} conversation` : `${who} via ${msg.channel}`;
         }
         if (msg.content) {
           promptExcerpt = stripInboundChannelMarker(msg.content).slice(0, 160) || null;

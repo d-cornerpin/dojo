@@ -38,8 +38,7 @@ import {
 import { joinFailureNotice, joinFailureReason } from './join-failure-notice.js';
 // The join's close is the settlement authority's, never this module's, as elsewhere.
 import { settleAskOnJoin, priorEngineJoinRelay, handBackAsk, newestPutBack, requestParts, cardOfSql, type PutBackKind } from '../work/ask-settlement.js';
-import { standing, type Standing } from './v2/work-lineage.js';
-import { delegatedPiece } from '../memory/relay-facts.js';
+import { standing } from './v2/work-lineage.js';
 import { endPiece } from '../work/call-off.js';
 import { servedBy } from '../work/task-turns.js';
 import { compileSteerText, engineRelayPreface } from '../work/join-drive.js';
@@ -311,8 +310,6 @@ export interface A2ADeliveryResult {
   autoTaskIsNew?: boolean;
   /** True when the engine reclassified the sender's FYI to deliverable-shaped DELIVERABLE. */
   autoPromotedFromFyi?: boolean;
-  /** On REQUEST_ENDED: how the piece it answered ended. */
-  standing?: Standing | null;
   /** Present only when the sender passed `hands_off_thread`; `message` is the line their tool
    *  result carries. A refusal is never a hold: the reply still lands and settles as it would. */
   handOff?: { applied: boolean; message: string };
@@ -403,10 +400,7 @@ export async function deliverA2AMessage(envelope: A2ADeliveryOptions): Promise<A
   // when no row exists, so a later read would report a delivery that never happened.
   // On a request that was called off a result is refused (it is never passed on as news); anything else wakes nobody.
   const forEndedRequest = resultForEndedRequest(target.id, threadId);
-  if (forEndedRequest && FINAL_REPLY_INTENTS.has(effectiveIntent)) {
-    logDrop(envelope, 'REQUEST_ENDED');
-    return { delivered: false, reason: 'REQUEST_ENDED', threadId, standing: standing(delegatedPiece(target.id, threadId) ?? '') };
-  }
+  if (forEndedRequest && FINAL_REPLY_INTENTS.has(effectiveIntent)) { logDrop(envelope, 'REQUEST_ENDED'); return { delivered: false, reason: 'REQUEST_ENDED', threadId }; }
   const lastDeliveryMs = threadLastDeliveryMs(threadId);
   ensureThread(threadId, envelope.fromAgent);
 
