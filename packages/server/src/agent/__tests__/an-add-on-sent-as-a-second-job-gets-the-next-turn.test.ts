@@ -20,10 +20,11 @@ import { freshAgentsDb, testDb, askerDelegates, preflightCtx, ASKER, HELPER } fr
 const THREAD = 'thread-n1-packing-list';
 const ADD_ON = 'Also add a section on where to park at the trailhead.';
 const helperSends = (payload: string) => agentsHandlers['send_to_agent']({ agentId: HELPER, args: { agent: ASKER, intent: 'COMPLETE', thread_id: THREAD, payload } } as unknown as Parameters<(typeof agentsHandlers)['send_to_agent']>[0]);
-const addOnId = (): string => (testDb().prepare('SELECT id FROM messages WHERE agent_id = ? AND content LIKE ?').get(HELPER, `%${ADD_ON}%`) as { id: string }).id;
+const addOn = () => testDb().prepare('SELECT id AS messageId, seq AS rowid, a2a_thread_id AS threadId, source_agent_id AS fromId FROM messages WHERE agent_id = ? AND content LIKE ?')
+  .get(HELPER, `%${ADD_ON}%`) as { messageId: string; rowid: number; threadId: string; fromId: string };
 const answersOnThread = (): string[] => (testDb().prepare(`SELECT content FROM messages WHERE agent_id = ? AND a2a_thread_id = ? AND a2a_intent = 'COMPLETE' ORDER BY seq`)
   .all(ASKER, THREAD) as Array<{ content: string }>).map((r) => r.content);
-const servesAddOn = () => liveTurnServes(HELPER, { messageId: addOnId() });
+const servesAddOn = () => liveTurnServes(HELPER, addOn());
 const addOnArrives = () => deliverA2AMessage({ intent: 'ASSIGN', threadId: THREAD, requiresResponse: true, payload: ADD_ON, toAgent: HELPER, fromAgent: ASKER });
 
 /** One helper turn through the real preflight and finalize; `work` runs inside it. Null when nothing was owed. */
@@ -38,7 +39,8 @@ async function helperTurn(work: () => Promise<void>): Promise<'served' | null> {
   return 'served';
 }
 
-beforeEach(() => { freshAgentsDb(runMigrations); endTurnContext(HELPER); });
+let shown: boolean | null = null;
+beforeEach(() => { freshAgentsDb(runMigrations); endTurnContext(HELPER); shown = null; });
 
 describe('an add-on sent as a second job gets the next turn', () => {
   it('the running turn hands in unrefused, the next turn is shown the add-on and answers it once', async () => {
@@ -52,11 +54,18 @@ describe('an add-on sent as a second job gets the next turn', () => {
     const goal = (testDb().prepare("SELECT goal FROM work WHERE kind = 'task' AND a2a_thread_id = ?").get(THREAD) as { goal: string }).goal;
     expect(goal).toContain(`Added: ${ADD_ON}`);
 
-    let shown: boolean | null = null;
     expect(await helperTurn(async () => { shown = servesAddOn(); expect((await helperSends('Where to park: the north lot.')).isError).toBe(false); })).toBe('served');
     expect(shown).toBe(true);
     expect(await helperTurn(async () => { await helperSends('again'); })).toBeNull();
     for (const part of ['The list of 30 items.', 'Where to park']) expect(answersOnThread().filter((c) => c.includes(part))).toHaveLength(1);
+  });
+
+  it('an add-on already there when her turn starts is served by it: her one answer goes and nothing more is owed', async () => {
+    await askerDelegates('ASSIGN', THREAD);
+    await addOnArrives();
+    expect(await helperTurn(async () => { shown = servesAddOn(); expect((await helperSends('The list, with parking.')).isError).toBe(false); })).toBe('served');
+    expect(shown).toBe(true);
+    expect(await helperTurn(async () => { await helperSends('again'); })).toBeNull();
   });
 
   it('an add-on that lands during a job turn waits for a turn that is shown it', async () => {
@@ -69,7 +78,6 @@ describe('an add-on sent as a second job gets the next turn', () => {
       sent = (await helperSends('Done.')).content;
     });
     expect(sent).not.toMatch(/handled on its own turn/);
-    let shown: boolean | null = null;
     expect(await helperTurn(async () => { shown = servesAddOn(); })).toBe('served');
     expect(shown).toBe(true);
   });

@@ -12,11 +12,12 @@ export function requestsAwaitingTheirOwnTurn(agentId: string): AgentRequest[] {
 
 // `null` means "cannot be said": a caller that REFUSES must read it as "do not refuse". A request turn serves the
 // request the preflight picked; a job turn, the requests that arrived before its pickup mark.
-export function liveTurnServes(agentId: string, owed: Pick<AgentRequest, 'messageId'>): boolean | null {
+export function liveTurnServes(agentId: string, owed: Pick<AgentRequest, 'messageId'> & Partial<Pick<AgentRequest, 'threadId' | 'fromId' | 'rowid'>>): boolean | null {
   const bag = turnContext(agentId);
   if (!bag) return null;
   if (bag.kind !== 'a2a') return false;
-  if (bag.servedRequest) return bag.servedRequest.messageId === owed.messageId;
+  if (bag.servedRequest) return bag.servedRequest.messageId === owed.messageId
+    || (bag.servedRequest.threadId === owed.threadId && bag.servedRequest.fromId === owed.fromId && (owed.rowid ?? Infinity) <= (bag.pickupSeq ?? -1));
   if (bag.pickupSeq == null) return null;
   const row = getDb().prepare('SELECT seq FROM messages WHERE id = ?').get(owed.messageId) as { seq: number } | undefined;
   if (!row) return null;
@@ -29,7 +30,7 @@ export function requestOnThreadForAnotherTurn(agentId: string, threadId: string 
   const token = threadId?.trim();
   if (!token) return null;
   const owed = requestsAwaitingTheirOwnTurn(agentId).find((r) => (token === r.threadId || a2aThreadTokenMatches(token, r.threadId))
-    && liveTurnServes(agentId, r) === false && !(turnContext(agentId)?.root?.id === r.threadId && r.rowid > (turnContext(agentId)?.pickupSeq ?? Infinity)));
+    && liveTurnServes(agentId, r) === false && turnContext(agentId)?.root?.id !== r.threadId);
   if (!owed) return null;
   return {
     threadShort: owed.threadShort,
