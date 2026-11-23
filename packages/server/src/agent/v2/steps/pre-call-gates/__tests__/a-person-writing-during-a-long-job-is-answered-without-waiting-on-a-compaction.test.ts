@@ -1,315 +1,67 @@
-// ════════════════════════════════════════════════════════════════════════════════════════
-// T84 (ANSWER-ANYWAY) — THE TURN-TIME BUDGET STOPS OVERRULING THE TOKEN MATH.
-//
-// THE INCIDENT (release ritual v3.1.26 round 5, blast `bmubdye4z6r`, subject `a504e5c9`,
-// 2026-09-21 15:42:05Z). The 15-minute checkpoint fired after two HONEST full re-prefills
-// (35K tokens at the provider's own declared 180 tok/s — roughly 400s of the 900s), and the
-// `{force:true}` it passed into `checkAndCompact` ran a full reactive compaction on an
-// assembly of 13,649 against a threshold of 51,300: 27% fill, with the engine's own log line
-// reading `needsCompactionByTokens: false`. The agent came back severed from the half of a
-// two-part ask it had not yet answered, and never delivered it.
-//
-// WHAT THIS FILE DRIVES, AND WHY IT IS NOT THE CONTRACT TEST. `contract.test.ts` mocks
-// `checkAndCompact`, so it can only ever assert what the checkpoint ASKS for. The defect was
-// not in the asking — it was that a wall-clock reason was allowed to answer a question only
-// the token math can answer. So this file runs the REAL `checkAndCompact` against a REAL
-// (in-memory, migrated) database, with the incident's own provider declaration and its own
-// assembled total, and asks what actually happened to the agent's history.
-//
-// What is real: the DB, the message rows, the provider/model join `getProviderCeilingTokens`
-// reads, `runCheckAndCompact`'s whole trigger and all three yield guards, `runLeafCompaction`,
-// the continuation counter. (t137: the checkpoint no longer writes a park message at all.) What is mocked: the
-// summarizer LLM call, the vault archive, the websocket — none of them participates in the
-// decision this file is about.
-//
-// THE MUTANT THIS FILE IS PROVEN AGAINST: put `{ force: true }` back on the
-// `checkAndCompact` call in `turn-budget.ts` and the two "far under the threshold" clauses go
-// RED — a real summary row appears and the raw history stops being intact. That is the whole
-// defect, in one flag.
-// ════════════════════════════════════════════════════════════════════════════════════════
+// Round four, sequence L: the owner texted "How far along are you?" during a long job. The next step's
+// checkpoint first awaited a full compaction (64 s of paid summaries) and only then parked the job, so his
+// answer waited on it. The checkpoint now parks at once; the routine condense runs at the next assembly.
+// Real: the database, the owner's message through the dashboard's own door, the checkpoint gate and the
+// compaction machinery it no longer calls. Scripted: the summary writer, the vault archive, the socket.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import type { WsEvent } from '@dojo/shared';
 
 const mockDb: { current: Database.Database | null } = { current: null };
-
 vi.mock('../../../../../db/connection.js', () => ({
-  getDb: () => {
-    if (!mockDb.current) throw new Error('test DB not initialized');
-    return mockDb.current;
-  },
+  getDb: () => { if (!mockDb.current) throw new Error('test DB not initialized'); return mockDb.current; },
 }));
-
-vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: vi.fn() }));
-// v3.5 field fix 3 (#11): the tool and output reserve now comes off the CAPPED figure, so the fixture's own tool
-// payload is held small (as `t206` holds it) to keep the incident's numbers: the 600s/180tps ceiling, not the
-// tool surface, is this file's subject.
-vi.mock('../../../../../tools/tool-docs.js', () => ({ measureAgentToolPayloadTokens: async () => 1000 }));
-
-const generateSummarySpy = vi.fn();
-vi.mock('../../../../../memory/summarize.js', () => ({
-  generateSummary: (...args: unknown[]) => generateSummarySpy(...args),
-}));
-
+vi.mock('../../../../../gateway/ws.js', () => ({ broadcast: vi.fn(), stampPersistedRow: (e: unknown) => e }));
+vi.mock('../../../../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: async () => undefined }) }));
+const generateSummarySpy = vi.fn(async () => ({ ok: true, text: 'A summary of the older span.', tokenCount: 12 }));
+vi.mock('../../../../../memory/summarize.js', () => ({ generateSummary: () => generateSummarySpy() }));
 vi.mock('../../../../../vault/archive.js', () => ({
-  archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'),
-  isDreamerIgnored: vi.fn(() => false),
-  getArchiveHighWaterMark: vi.fn(() => null),
-}));
-
-vi.mock('../../../../../config/platform.js', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  isSystemServiceAgent: vi.fn(() => false),
+  archiveMessagesBeforeCompaction: vi.fn(() => 'archive-1'), isDreamerIgnored: vi.fn(() => false), getArchiveHighWaterMark: vi.fn(() => null),
 }));
 
 import { runMigrations } from '../../../../../db/migrations.js';
-import { stoppedAgents } from '../../../../shared-state.js';
 import { endTurnContext } from '../../../../turn-context.js';
 import { liveTurn } from '../../../__tests__/helpers/live-turn.js';
-import { advance, initState, type AgentTurnState } from '../../../state.js';
+import { advance, initState } from '../../../state.js';
 import { runTurnTimeBudget } from '../turn-budget.js';
-import { __resetEstimateCacheForTests } from '../../../../../memory/assembled-estimate-cache.js';
+import { submitUserMessage } from '../../../../../gateway/routes/chat.js';
 import { PRE_CALL_GATES_PHASE, type PreCallGatesContext } from '../index.js';
-import type { TurnCounterparty } from '../../../counterparty.js';
 
-const AGENT = 'agent-t84-turn-budget';
+const AGENT = 'agent-long-job';
 const MODEL = 'test-model';
-const CONTEXT_WINDOW = 200_000; // getFreshTailCount(200_000) === 80
 
-// The incident's own provider declaration: 600s of declared patience at a declared 180 tok/s.
-// `getProviderCeilingTokens` turns that pair into the provider-aware ceiling the compaction
-// trigger has keyed on since T82a — 51,300 for this row, the exact threshold in the incident's
-// log line.
-const DECLARED_PATIENCE_MS = 600_000;
-const DECLARED_TOKENS_PER_SEC = 180;
-const PROVIDER_AWARE_THRESHOLD = 51_300;
-
-const FRESH_TAIL_ROWS = 80;
-// 80 × 170 = 13,600 — the incident's assembled total (13,649) to within rounding, and 26.5% of
-// the provider-aware threshold above.
-const UNDER_THRESHOLD_TOKENS_EACH = 170;
-// 80 × 750 = 60,000 — genuinely over the provider-aware threshold, so the token math itself
-// asks for the compaction. This is the (b) arm: the path this fix does not touch.
-const OVER_THRESHOLD_TOKENS_EACH = 750;
-
-// Ten rows OLDER than the fresh tail. They are the reason a failure here is unambiguous:
-// MIN_COMPACTABLE_ROWS is 6, so there IS a compactable region — "nothing happened" can never be
-// explained away as "there was nothing to compact". And 10 is under UNCOMPACTED_GAP_THRESHOLD
-// (30), so the routine GAP trigger cannot fire either, isolating the TOKEN trigger as the only
-// thing in the tree that can rebuild this history.
-const OUTSIDE_TAIL_ROWS = 10;
-
-function seed(opts: { declareCeiling: boolean; tailTokensEach: number }): void {
+/** A store far over its window: 120 rows of 2,000 tokens on a 128K model. */
+function seedOverItsWindow(): void {
   const db = mockDb.current!;
-  db.prepare(`INSERT INTO agents (id, name, status, created_at) VALUES (?, ?, 'idle', datetime('now'))`)
-    .run(AGENT, 'Turn Budget Test');
-  db.prepare(`
-    INSERT INTO providers (id, name, type, base_url, auth_type, first_chunk_timeout_ms, prefill_tokens_per_sec)
-    VALUES ('testprov', 'Test', 'openai', 'http://localhost:8080/v1', 'api_key', ?, ?)
-  `).run(
-    opts.declareCeiling ? DECLARED_PATIENCE_MS : null,
-    opts.declareCeiling ? DECLARED_TOKENS_PER_SEC : null,
-  );
-  db.prepare(`
-    INSERT INTO models (id, provider_id, name, api_model_id, is_enabled, capabilities, input_cost_per_m, context_window)
-    VALUES (?, 'testprov', 'Test Model', ?, 1, '["text"]', 1, ?)
-  `).run(MODEL, MODEL, CONTEXT_WINDOW);
-
-  const insert = db.prepare(`
-    INSERT INTO messages (id, agent_id, role, content, token_count, created_at)
-    VALUES (?, ?, ?, ?, ?, (unixepoch('2026-09-21T00:00:00Z') + ?) * 1000)
-  `);
-  let i = 0;
-  for (let n = 0; n < OUTSIDE_TAIL_ROWS; n++, i++) {
-    insert.run(`outside-${n}`, AGENT, n % 2 === 0 ? 'user' : 'assistant', `Older message ${n}`, 500, i);
-  }
-  for (let n = 0; n < FRESH_TAIL_ROWS; n++, i++) {
-    insert.run(`tail-${n}`, AGENT, n % 2 === 0 ? 'user' : 'assistant', `Recent message ${n}: filler`, opts.tailTokensEach, i);
-  }
+  db.prepare("INSERT INTO providers (id, name, type, auth_type) VALUES ('p', 'P', 'openai', 'api_key')").run();
+  db.prepare("INSERT INTO models (id, provider_id, name, api_model_id, is_enabled, capabilities, context_window) VALUES (?, 'p', 'M', ?, 1, '[\"text\"]', 128000)").run(MODEL, MODEL);
+  db.prepare("INSERT INTO agents (id, name, status, model_id) VALUES (?, 'Long Job', 'working', ?)").run(AGENT, MODEL);
+  const insert = db.prepare('INSERT INTO messages (id, agent_id, role, content, token_count, created_at) VALUES (?, ?, ?, ?, 2000, ?)');
+  for (let n = 0; n < 120; n++) insert.run(`row-${n}`, AGENT, n % 2 ? 'assistant' : 'user', `Step ${n} of the inventory`, Date.now() - 600_000 + n);
 }
-
-/** Every raw conversation row still on the record, by id. */
-function rawHistoryIds(): string[] {
-  return (mockDb.current!
-    .prepare(`SELECT id FROM messages WHERE agent_id = ? AND role IN ('user','assistant') ORDER BY created_at`)
-    .all(AGENT) as Array<{ id: string }>).map((r) => r.id);
-}
-
-/** How many summary rows the compaction machinery has written for this agent. */
-function summaryCount(): number {
-  return (mockDb.current!
-    .prepare(`SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ?`)
-    .get(AGENT) as { n: number }).n;
-}
-
-/** The last `[System: …]` row the checkpoint wrote — the person's receipt. */
-function lastSystemMessage(): string | null {
-  const row = mockDb.current!
-    .prepare(`SELECT content FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid DESC LIMIT 1`)
-    .get(AGENT) as { content: string } | undefined;
-  return row?.content ?? null;
-}
-
-const OWNER: TurnCounterparty = { kind: 'user', displayName: 'TestUser', id: 'owner' } as TurnCounterparty;
-
-/** The state as the driver hands it over, with the turn already past its 15-minute budget. */
-function stateOverBudget(overrides: Partial<AgentTurnState> = {}): AgentTurnState {
-  const fresh = initState({
-    agentId: AGENT,
-    contextWindow: CONTEXT_WINDOW,
-    isAutoRouted: false,
-    configuredModelId: MODEL,
-    turnNumber: 3,
-    triggeredByIMessage: false,
-    triggeredByA2AReplyIntent: null,
-    lastUserMessageContent: 'answer both of these in one reply',
-    lastUserMessageId: 'msg-1',
-    inboundChannel: 'dashboard',
-    inboundContext: null,
-  });
-  return advance(fresh, {
-    phase: PRE_CALL_GATES_PHASE,
-    loopCount: 1,
-    turnStartMs: Date.now() - (16 * 60 * 1000),
-    ...overrides,
-  });
-}
-
-function makeCtx(): PreCallGatesContext & { events: WsEvent[] } {
-  const events: WsEvent[] = [];
-  const ctx = {
-    agentId: AGENT,
-    turnNumber: 3,
-    contextWindow: CONTEXT_WINDOW,
-    contextModelId: MODEL,
-    configuredModelId: MODEL,
-    isAutoRouted: false,
-    counterparty: OWNER,
-    engineBlockEscapeHatch: '[escape hatch]',
-    broadcast: (event: WsEvent) => { events.push(event); },
-  } as unknown as PreCallGatesContext;
-  return Object.assign(ctx, { events });
-}
-
-/** A park dates the job's task row. */
-const jobParked = (): boolean => !!mockDb.current!.prepare('SELECT 1 FROM work WHERE agent_id = ? AND next_attempt_at IS NOT NULL').get(AGENT);
 
 beforeEach(() => {
   mockDb.current = new Database(':memory:');
   runMigrations();
-  // t194: the trigger's budget now comes from the (memoised) gauge, whose key is the message facts —
-  // two clauses with identical rows and different provider declarations must not share an answer.
-  __resetEstimateCacheForTests();
-  // The turn serves the owner's request, so its park has a task to date.
-  const bag = liveTurn(AGENT, { turnNumber: 3, root: { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask' } });
-  stoppedAgents.clear();
-  generateSummarySpy.mockReset();
-  generateSummarySpy.mockImplementation(async () => ({ ok: true, text: 'A summary of the older span.', tokenCount: 12 }));
+  seedOverItsWindow();
+  liveTurn(AGENT, { turnNumber: 3, root: { kind: 'ask', id: 'row-0', sourceMessageId: 'row-0' } });
+  generateSummarySpy.mockClear();
 });
+afterEach(() => { endTurnContext(AGENT); mockDb.current?.close(); mockDb.current = null; });
 
-afterEach(() => {
-  mockDb.current?.close();
-  mockDb.current = null;
-  endTurnContext(AGENT);
-  vi.clearAllMocks();
-});
+describe('a person writing during a long job is answered without waiting on a compaction', () => {
+  it('the owner writes mid-job: the next step parks the job, and no summary is written before it', async () => {
+    expect((await submitUserMessage(AGENT, 'How far along are you?')).ok).toBe(true);
+    const state = advance(initState({
+      agentId: AGENT, contextWindow: 128_000, isAutoRouted: false, configuredModelId: MODEL, turnNumber: 3,
+      triggeredByIMessage: false, triggeredByA2AReplyIntent: null, lastUserMessageContent: 'count the gear',
+      lastUserMessageId: 'row-0', inboundChannel: 'dashboard', inboundContext: null,
+    }), { phase: PRE_CALL_GATES_PHASE, loopCount: 2 });
 
-describe('T84 — the 15-minute checkpoint compacts only when the token math asks for it', () => {
-  it('THE INCIDENT, reproduced: at 27% of the provider-aware threshold the checkpoint rebuilds NOTHING, and the history survives', async () => {
-    // This is `a504e5c9` at 15:42:05, on a fixture that reproduces its numbers: a declared
-    // 600s/180tps box (threshold 51,300) carrying an assembled tail of ~13,600. Under the old
-    // `{force:true}` this ran a full reactive compaction and severed the agent from the ask it
-    // still owed. The ONLY input that changed between the healthy calls and this one was the
-    // clock.
-    seed({ declareCeiling: true, tailTokensEach: UNDER_THRESHOLD_TOKENS_EACH });
-    const before = rawHistoryIds();
-    expect(FRESH_TAIL_ROWS * UNDER_THRESHOLD_TOKENS_EACH).toBeLessThan(PROVIDER_AWARE_THRESHOLD);
+    const out = await runTurnTimeBudget(state, { agentId: AGENT, turnNumber: 3, configuredModelId: MODEL } as unknown as PreCallGatesContext);
 
-    const out = await runTurnTimeBudget(stateOverBudget(), makeCtx());
-
-    // No rebuild, by the two measurements that cannot be faked: no summary was written, and
-    // the summarizer was never dialled at all.
-    expect(summaryCount()).toBe(0);
-    expect(generateSummarySpy).not.toHaveBeenCalled();
-    // And the agent's own history is byte-for-byte the one it had — the half-served ask
-    // included.
-    expect(rawHistoryIds()).toEqual(before);
-
-    // THE AUTO-CONTINUE IS UNCHANGED, which is the other half of the requirement: the turn
-    // still parks and the wakeup is still queued. (t137: and nobody is told — the park is
-    // housekeeping, so it writes no row.)
     expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
-    expect(jobParked()).toBe(true);
-    expect(lastSystemMessage()).toBeNull();
-  });
-
-  it('and the checkpoint claims nothing it did not do: it writes no receipt row at all, on either arm (t137)', async () => {
-    // The engine claiming a rebuild it did not perform was the untruth this clause guarded.
-    // t137 retired the park row outright (it was role='system', so it only ever reached the
-    // owner's chat), so the property now holds by construction — and this clause pins that no
-    // row comes back, rebuilt history or not.
-    seed({ declareCeiling: true, tailTokensEach: UNDER_THRESHOLD_TOKENS_EACH });
-    const ctx = makeCtx();
-
-    await runTurnTimeBudget(stateOverBudget(), ctx);
-
-    expect(lastSystemMessage()).toBeNull();
-    expect(ctx.events).toEqual([]);
-  });
-
-  it('an UNDECLARED provider, far under the flat threshold: same answer — the clock is not evidence about size', async () => {
-    // The arm that proves the fix is not merely "the provider-aware ceiling governs". With no
-    // declaration at all the threshold is the standing 96% of 200K (192,000) and the 60,000
-    // assembled here is nowhere near it, so nothing is rebuilt here either.
-    seed({ declareCeiling: false, tailTokensEach: OVER_THRESHOLD_TOKENS_EACH });
-    const before = rawHistoryIds();
-
-    const out = await runTurnTimeBudget(stateOverBudget(), makeCtx());
-
-    expect(summaryCount()).toBe(0);
+    expect(mockDb.current!.prepare('SELECT 1 FROM work WHERE agent_id = ? AND next_attempt_at IS NOT NULL').get(AGENT)).toBeTruthy();
     expect(generateSummarySpy).not.toHaveBeenCalled();
-    expect(rawHistoryIds()).toEqual(before);
-    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
-    expect(jobParked()).toBe(true);
-  });
-
-  it('THE TOKEN PATH IS UNTOUCHED: genuinely over the provider-aware threshold, the checkpoint still compacts', async () => {
-    // The control that keeps this fix from being a deletion. Same checkpoint, same clock, same
-    // fixture shape — only the SIZE differs (60,000 against the same 51,300) — and the
-    // compaction the 2026-04-29 requirement was written for still runs, unasked-for `force`
-    // nowhere in sight.
-    seed({ declareCeiling: true, tailTokensEach: OVER_THRESHOLD_TOKENS_EACH });
-    expect(FRESH_TAIL_ROWS * OVER_THRESHOLD_TOKENS_EACH).toBeGreaterThan(PROVIDER_AWARE_THRESHOLD);
-
-    const out = await runTurnTimeBudget(stateOverBudget(), makeCtx());
-
-    expect(generateSummarySpy).toHaveBeenCalled();
-    expect(summaryCount()).toBeGreaterThan(0);
-    // t137: the checkpoint adds no row of its own on this arm either. The one system row is
-    // the compaction's own marker (memory/compaction.ts), which is that module's, not the park's.
-    const sysRows = mockDb.current!
-      .prepare(`SELECT content FROM messages WHERE agent_id = ? AND role = 'system'`).all(AGENT) as Array<{ content: string }>;
-    expect(sysRows.map((r) => r.content)).toEqual([expect.stringMatching(/^── Memory Compacted/)]);
-    expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
-    expect(jobParked()).toBe(true);
-  });
-
-  it('THE CONTINUATION LADDER HAS NO CAP: every park is the same park', async () => {
-    // The fix is about WHAT the checkpoint does to the history, never about how many times it
-    // may do it — and since t137 (OR-LONG-JOBS) nothing bounds how many times either. The
-    // crossing that used to trip the standard 3-continuation cap parks, asks the token math
-    // (which, far under threshold, still declines), and parks the job.
-    seed({ declareCeiling: true, tailTokensEach: UNDER_THRESHOLD_TOKENS_EACH });
-
-    for (let n = 1; n <= 5; n++) {
-      // Each crossing is a later turn: the job's task was opened before it, so its opening is not this turn's movement.
-      mockDb.current!.prepare("UPDATE work_events SET created_at = 0 WHERE kind = 'opened'").run();
-      mockDb.current!.prepare('UPDATE work SET next_attempt_at = NULL').run();
-      const out = await runTurnTimeBudget(stateOverBudget(), makeCtx());
-      expect(out).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' });
-      expect(jobParked()).toBe(true);
-    }
-    expect(generateSummarySpy).not.toHaveBeenCalled();
-    expect(summaryCount()).toBe(0);
+    expect((mockDb.current!.prepare('SELECT COUNT(*) AS n FROM summaries WHERE agent_id = ?').get(AGENT) as { n: number }).n).toBe(0);
   });
 });
