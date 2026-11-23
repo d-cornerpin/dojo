@@ -16,6 +16,7 @@ import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage, insertEngineEvent, recordDeliveryAttempt } from '../../../memory/message-store.js';
 import { routeTerminalReply } from '../steps/finalize/route-reply.js';
 import { armOwedClock, dueOf } from '../owed.js';
+import { getPendingEngineEvent } from '../counterparty.js';
 import { freshReplyDb, imessage, personTurn, testDb, AGENT } from './helpers/reply-sender.js';
 
 beforeEach(() => {
@@ -49,5 +50,13 @@ describe('a due reply and a due request share one clock', () => {
     const retryAt = Date.now() + 60_000;
     recordDeliveryAttempt({ agentId: AGENT, rowid: due.seq, notBefore: retryAt });
     expect(dueOf(AGENT)).toEqual({ now: false, next: retryAt });
+  });
+
+  it('an engine event due a fraction of a second ago is due to the clock and served by the pickup', () => {
+    vi.useRealTimers();   // the serve query reads the database's own clock
+    const ev = insertEngineEvent({ agentId: AGENT, content: 'remind the owner to call back', originIntent: 'scheduler', work: null });
+    recordDeliveryAttempt({ agentId: AGENT, rowid: ev.seq, notBefore: Date.now() - 1 });
+    expect(dueOf(AGENT).now).toBe(true);
+    expect(getPendingEngineEvent(AGENT)?.rowid).toBe(ev.seq);
   });
 });

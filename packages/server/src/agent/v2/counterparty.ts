@@ -355,7 +355,7 @@ export function getNextEngineEventRetryAt(agentId: string): number | null {
       `AND created_at >= (unixepoch(@sessionStart) * 1000)
        AND created_at >= (unixepoch('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours') * 1000)
        AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
-       AND next_attempt_at > (unixepoch('now') * 1000)`;
+       AND next_attempt_at > (unixepoch('now', 'subsec') * 1000)`;
     const row = db.prepare(
       `SELECT MIN(next_attempt_at) AS t FROM messages
         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${retryGates}`,
@@ -437,7 +437,7 @@ export function getPendingEngineEvent(agentId: string, opts: { pure?: true } = {
     `AND created_at >= (unixepoch(@sessionStart) * 1000)
      AND created_at >= (unixepoch('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours') * 1000)
      AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
-     AND (next_attempt_at IS NULL OR next_attempt_at <= (unixepoch('now') * 1000))`;
+     AND (next_attempt_at IS NULL OR next_attempt_at <= (unixepoch('now', 'subsec') * 1000))`;
   const rows = db.prepare(
     `SELECT seq AS rowid, id, task_id, run_id, content, origin_intent, root_kind, root_id FROM messages
        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
