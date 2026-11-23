@@ -357,7 +357,7 @@ describe('ruling 3: the clearing is noticed on the existing clocks', () => {
     m.healerAgent.startHealerSelfWatchdog();
     await vi.advanceTimersByTimeAsync(6 * 60_000); // reset to idle
     expect(ended()).not.toContain(words);
-    m.errors.clearErrors('hl'); // a healthy Healer turn
+    (await import('../../healer/owner-notices.js')).ownerConditionsOnHealthyWork('hl'); // a Healer turn that ended healthy
     expect(ended()).toContain(words);
   });
 

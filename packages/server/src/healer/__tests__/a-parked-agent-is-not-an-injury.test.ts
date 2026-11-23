@@ -3,8 +3,8 @@
 // An agent held by the spending limit (`[budget_stop]`) or by "no model fits" (`[no_model_fits]`)
 // is `paused` with that tag at the head of `last_error` (agent/v2/honest-stop.ts). Nothing is broken
 // and nothing the Healer can do changes it, so three Healer sweeps that treat `paused` as an injury
-// must leave it alone: the restart rehydrate, the diagnostic, and the 30-minute auto-fix sweep (a
-// clock is never evidence the condition cleared, t114). Release happens only through the real-event
+// must leave it alone: the restart rehydrate, the diagnostic, and the frequent auto-fix sweep (which
+// resumes no paused agent at all). Release happens only through the real-event
 // paths. Each is driven against a parked agent AND an ordinary error-loop `paused` control, so the
 // exclusion is the tag, never the status.
 
@@ -74,10 +74,9 @@ describe('t148 r3 — the three Healer sweeps leave a parked agent alone', () =>
     for (const id of PARKED) expect(paused).not.toContain(id);
   });
 
-  it('the 30-minute auto-fix sweep does not resume a parked agent: a clock is not evidence the condition cleared (control: the error-loop pause resumes)', () => {
+  it('the frequent auto-fix sweep resumes no paused agent, parked or error-loop: a paused agent waits for the owner', () => {
     runFrequentAutoFixes();
-    expect(statusOf(LOOP), 'control').toBe('idle');
-    for (const id of PARKED) expect(statusOf(id)).toBe('paused');
+    for (const id of [...PARKED, LOOP]) expect(statusOf(id)).toBe('paused');
   });
 
   it('the Healer\'s own watchdog does not reset a PARKED Healer on a clock (control: an error-loop-paused Healer is reset)', () => {

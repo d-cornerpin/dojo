@@ -26,6 +26,9 @@ import type { ToolGate } from './gates.js';
 import { callerPaths } from '../effects/scopes.js';
 import { resolveProcessCwd } from './process-run.js';
 
+/** Who holds reset_session (the main agent and the Healer): read by this gate and by the tool surface's strip. */
+export const holdsResetSession = (agentId: string): boolean => isPrimaryAgent(agentId) || isHealerAgent(agentId);
+
 /** What a gate answered, plus enough to audit and render it. */
 export interface GateOutcome {
   readonly gate: ToolGate;
@@ -234,7 +237,7 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
     }
 
     case 'primary_or_healer':
-      return isPrimaryAgent(agentId) || isHealerAgent(agentId)
+      return holdsResetSession(agentId)
         ? skip(gate)
         : {
             gate,
