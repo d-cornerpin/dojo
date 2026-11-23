@@ -60,7 +60,7 @@ export interface OpenTrackerTaskInput {
   dependsOn?: string[];
   taskKind?: string | null;
   a2aThreadId?: string | null;
-  /** Defaults to `TRACKER_ROOT_KIND`; the engine's own floor passes `engine_scaffold`. */
+  /** Defaults to `TRACKER_ROOT_KIND`; the engine passes `engine_scaffold`. */
   rootKind?: string;
   origin: TrackerOrigin;
 }

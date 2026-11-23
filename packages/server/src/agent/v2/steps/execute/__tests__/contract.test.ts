@@ -120,7 +120,6 @@ function ctxFor(over: Partial<ExecuteContext> = {}): ExecuteContext {
     interAgentTurn: false,
     hasXmlFallbackTools: false,
     effectiveModelIdForPersist: 'test-model',
-    staleTaskWindowMinutes: 45,
     engineBlockEscapeHatch: '[escape hatch]',
     engineStartAckAfterMs: 20000,
     ...over,

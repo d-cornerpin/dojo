@@ -77,7 +77,7 @@ export async function respond(agent: string, calls: Array<[string, Record<string
     startAckArmed: false, startAckArmedAtMs: 0, fireStartAckIfOwed: async () => undefined,
     result: { content: o.reply ?? '', toolCalls, inputTokens: 1, outputTokens: 1, stopReason: 'tool_use' } as unknown as ExecuteContext['result'],
     messageId: `resp-${agent}-${turnNumber}`, persistedContent: o.reply ?? null, interAgentTurn: !main, hasXmlFallbackTools: false,
-    effectiveModelIdForPersist: 'm', staleTaskWindowMinutes: 30, engineStartAckAfterMs: 30_000,
+    effectiveModelIdForPersist: 'm', engineStartAckAfterMs: 30_000,
   });
 }
 

@@ -62,8 +62,6 @@ export function steerPriority(floor: SteerFloorId): number {
   return BY_ID.get(floor)!.priority;
 }
 
-/** Floors that nudge about the same subsystem (the tracker), so one of them speaking is enough. */
-
 /** Unconfirmed pushes before an entry is abandoned, so one un-injectable steer cannot block the queue. */
 export const MAX_STEER_DELIVERY_ATTEMPTS = 3;
 

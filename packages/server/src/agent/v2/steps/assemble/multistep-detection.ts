@@ -1,6 +1,6 @@
 // Engine-side judgment of whether a person's message is work, and the start-ack steer the verdict arms.
 // Returns state (it enqueues on the steer queue). staleTaskWindowMinutes is an INPUT, never an
-// import: a guard pins the constant's declaration to `loop.ts` by path and the `execute` span reads it too.
+// import: a guard pins the constant's declaration to `loop.ts` by path.
 
 import { getDb } from '../../../../db/connection.js';
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';

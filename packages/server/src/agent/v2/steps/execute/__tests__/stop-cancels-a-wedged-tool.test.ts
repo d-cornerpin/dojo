@@ -87,7 +87,6 @@ function ctxFor(toolCalls: ToolCall[]): ExecuteContext {
     interAgentTurn: false,
     hasXmlFallbackTools: false,
     effectiveModelIdForPersist: 'test-model',
-    staleTaskWindowMinutes: 45,
     engineBlockEscapeHatch: '[escape hatch]',
     engineStartAckAfterMs: 20000,
   } as ExecuteContext;

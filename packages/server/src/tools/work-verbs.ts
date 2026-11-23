@@ -175,14 +175,6 @@ export const CLOSING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:hand_in',
 ]);
 
-/** Forward progress on open work: what the compile gate lets through besides the reply. Closing a project
- *  is not in it: that is not working the task itself. */
-export const PROGRESS_WORK_OPS: ReadonlySet<string> = new Set([
-  'work_update:status',
-  'work_update:hand_in',
-  'work_note',
-]);
-
 // Operations that write the worker's own work (opening or advancing it). A status change counts only if its
 // status ARGUMENT advances the task, a second test at the gate.
 export const DISARMING_WORK_OPS: ReadonlySet<string> = new Set([

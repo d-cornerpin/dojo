@@ -1,7 +1,6 @@
 // The owner asks how his long job is going while it runs: his question's turn carries the job (one turn chain, so a
 // second question ends its stretch at the next step), the question is answered and closed on its own delivery, and
-// the job goes on in its own turn from its row. Worked six calls deep, that turn opens no second task: the six-call
-// floor finds the job's task carrying it. A job the question's turn hands in keeps no due time, so its send-back
+// the job goes on in its own turn from its row. A job the question's turn hands in keeps no due time, so its send-back
 // starts no extra job turn.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 

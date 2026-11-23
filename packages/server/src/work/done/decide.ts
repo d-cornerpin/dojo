@@ -36,7 +36,7 @@ export interface DecideInput {
   reason: string;
   /** The owner's own words, when an agent relays his decision. */
   ownerQuote?: string;
-  /** The engine's ground: absent, a run it counted at 0; `delivered`, a delivered message the model confirmed. */
+  /** The engine's ground: absent, a run it counted at 0; `delivered`, a delivered message. */
   engineBasis?: 'delivered';
 }
 /** `unclosed`: a project's open tasks that did not close with it. */

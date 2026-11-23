@@ -47,7 +47,7 @@ export const STATE_TO_STATUS_SQL = (col: string): string =>
 
 
 /** Tracker rows are `kind IN ('task','project')` with root_kind 'legacy' (migrated), 'tracker' (opened
- *  since) or `engine_scaffold` (the engine's own floor, kept on the board so the PM can drive it).
+ *  since) or `engine_scaffold` (the engine's own, kept on the board so the PM can drive it).
  *  Join pieces are `kind='task'` rows with root_kind 'a2a_thread' and are not board rows. */
 const ENGINE_SCAFFOLD_ROOT_KIND = 'engine_scaffold';
 const TRACKER_ROOT_KINDS = "('legacy','tracker','engine_scaffold')";
