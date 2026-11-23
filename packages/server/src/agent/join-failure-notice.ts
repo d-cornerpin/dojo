@@ -5,6 +5,7 @@
 
 import { getDb } from '../db/connection.js';
 import type { JoinPiece } from '../work/store.js';
+import { standing } from './v2/work-lineage.js';
 
 const NO_ANSWER_STATES = new Set(['abandoned', 'open', 'claimed', 'blocked']);
 
@@ -18,6 +19,7 @@ export interface PieceTally {
 export function tallyPieces(pieces: readonly JoinPiece[]): PieceTally {
   const t: PieceTally = { refused: 0, empty: 0, silent: 0 };
   for (const p of pieces) {
+    if (standing(p.childId) === 'called_off') continue;   // the owner ended it: it neither answered nor stayed silent
     if (p.state === 'failed') t.refused += 1;
     else if (NO_ANSWER_STATES.has(p.state)) t.silent += 1;
     else t.empty += 1;              // `done` (or any other terminal) with nothing usable in it
