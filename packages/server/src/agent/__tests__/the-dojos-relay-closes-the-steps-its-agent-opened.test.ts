@@ -1,5 +1,5 @@
 // When the Dojo itself relays a helper's answer to the person, the steps his main agent opened for that request are
-// handed in on that same delivery: none is left open for the stall ladder to chase as unmoved work (round three's
+// closed done on that same delivery: none is left open for the stall ladder to chase as unmoved work (round three's
 // unasked turns), and none waits for a review of work already answered.
 import { describe, it, expect, vi } from 'vitest';
 
@@ -23,8 +23,8 @@ const MIN = 60_000;
 const chased = (id: string): number => (testDb().prepare("SELECT COUNT(*) AS n FROM messages WHERE agent_id = ? AND content LIKE '[Engine hint:%' AND content LIKE ?")
   .get(AGENT, `%${id}%`) as { n: number }).n;
 
-describe("the Dojo's relay hands in the steps its agent opened", () => {
-  it('a step card of the answered request is handed in on the relay, and the ladder never chases it', async () => {
+describe("the Dojo's relay closes the steps its agent opened", () => {
+  it('a step card of the answered request is done on the relay, and the ladder never chases it', async () => {
     delegated();
     task('card-step');
     testDb().prepare("UPDATE work SET origin_kind = 'model' WHERE id = 'card-step'").run();
@@ -35,6 +35,6 @@ describe("the Dojo's relay hands in the steps its agent opened", () => {
     await settled();
     expect([requestState(), relayRows().length > 0]).toEqual(['done', true]);
     for (const at of [6, 30, 120, 1440]) await runLadder(Date.now() + at * MIN);
-    expect([stateOf('card-step'), chased('card-step')]).toEqual(['handed_in', 0]);
+    expect([stateOf('card-step'), chased('card-step')]).toEqual(['done', 0]);
   });
 });

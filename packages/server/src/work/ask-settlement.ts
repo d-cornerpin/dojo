@@ -13,7 +13,7 @@ import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
 import { requestsTakenUpBy, servedBy } from './task-turns.js';
-import { ENGINE_SCAFFOLD_ROOT_KIND, PARKED_JOB_TITLE, handedInExpr, heldByOwnerSql } from './tracker-view.js';
+import { handedInExpr, heldByOwnerSql } from './tracker-view.js';
 import { delegatedRelayEvidence, turnEndedInModelSilence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
 // Imported from the leaf: `NOT_A_START_ACK` reads it at module scope, and `message-store` reaches this
@@ -636,7 +636,6 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     if (ctx.rowid != null && ctx.turnNumber != null) {
       recordServingTurnByRowid({ agentId: ask.agent_id, rowid: ctx.rowid, servedByTurn: ctx.turnNumber });
     }
-    handInCardsOf(ask, evidence.id, false);
     return out('closed', `delivered via ${evidence.tool}`, evidence.id);
   }
 
@@ -818,7 +817,6 @@ function settleOnJoin(
   appendWorkEvent(ask.id, 'compile_resolved', actorId, {
     reason, basis, delivery_id: evidence.id, tool: evidence.tool, boundary_at: boundaryMs,
   });
-  handInCardsOf(ask, evidence.id, ENGINE_SENT_TOOLS.has(evidence.tool));
   logger.info('join settled: the compiled answer reached the owner', {
     agentId: ask.agent_id, workId: ask.id, deliveryId: evidence.id, tool: evidence.tool,
   }, ask.agent_id);
@@ -861,25 +859,6 @@ function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: 
   if (ask.state === 'blocked') return out('held', 'already held on its job');
   const r = transition(ask.id, { to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason: JOB_HOLD_REASON, evidenceRef: task });
   return r.kind === 'applied' ? out('held', 'held on its job') : out('unchanged', `job hold refused: ${r.kind}`);
-}
-
-/** After commit the engine hands in the tasks `tasks` names, finished on delivery `deliveryId`; a refusal is logged. */
-function handInOnDelivery(agentId: string, tasks: () => Promise<string[]>, because: string, deliveryId: string): void {
-  afterCommit(() => void Promise.all([tasks(), import('./done/hand-in.js')]).then(([ids, { engineHandIn }]) => {
-    for (const id of ids) {
-      const r = engineHandIn(id, because, { outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }] });
-      if (r.kind === 'refused') logger.warn('the engine could not hand in a task', { task: id, why: r.text.slice(0, 200) }, agentId);
-    }
-  }).catch((err: unknown) => logger.warn('a delivered job\'s tasks were not handed in', { deliveryId, error: String(err) }, agentId)));
-}
-
-/** On any answer the card a park opened for the request is handed in; on the Dojo's own delivery of a delegated answer
- *  the agent's own open cards for it too, since the agent will not finish them. */
-function handInCardsOf(ask: AskRow, deliveryId: string, agentsCards: boolean): void {
-  const ids = (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')}
-      AND ((t.origin_kind = 'model' AND ? = 1) OR (t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}' AND t.title = '${PARKED_JOB_TITLE}'))`)
-    .all(ask.agent_id, ask.root_id, agentsCards ? 1 : 0) as Array<{ id: string }>).map((r) => r.id);
-  if (ids.length > 0) handInOnDelivery(ask.agent_id, async () => ids, 'the request this task was opened for was answered', deliveryId);
 }
 
 /** A tracker task `t` linked to the request of ask `a` by its message, not ended and not handed in. */

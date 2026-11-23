@@ -3,7 +3,7 @@
 import { getDb } from '../db/connection.js';
 import { afterCommit, withUnit } from '../db/unit.js';
 import { isTerminal, jobOfPieceSql, settlePieceWithoutResult, transition, type Actor, type PieceSettleResult } from './store.js';
-import { decide, refused, type DecideResult } from './done/decide.js';
+import { decide, endCardsOf, refused, type DecideResult } from './done/decide.js';
 import { cardOfSql, requestParts } from './ask-settlement.js';
 import { clearReferencesToWork } from './work-refs.js';
 import { onHelperEnded } from './task-ended.js';
@@ -18,9 +18,7 @@ const ended = (id: string, reason: string): DecideResult => ({ kind: 'decided', 
 function endRequest(askId: string, by: CallOffBy, reason: string): DecideResult {
   const r = transition(askId, { to: 'abandoned', by: by.deciderAgentId === null ? 'owner' : 'agent', actorId: by.deciderAgentId ?? by.via ?? 'owner', reason });
   if (r.kind !== 'applied') return refused(`[${askId}] was not ended (${r.detail}).`);
-  const cards = getDb().prepare(`SELECT c.id FROM work a JOIN work c ON ${cardOfSql('c', 'a')} AND c.state NOT IN ('done', 'failed', 'abandoned') WHERE a.id = ?`)
-    .all(askId) as Array<{ id: string }>;
-  for (const c of cards) decide({ workId: c.id, deciderAgentId: by.deciderAgentId, verdict: 'cancel', reason });
+  endCardsOf(askId, 'abandoned', by.deciderAgentId, reason);
   return ended(askId, reason);
 }
 

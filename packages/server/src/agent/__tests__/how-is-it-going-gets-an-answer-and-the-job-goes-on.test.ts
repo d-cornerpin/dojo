@@ -18,7 +18,6 @@ import { countTrackerWorkThisIteration } from '../v2/steps/execute/tracker-count
 import { runTrackerFloors } from '../v2/steps/execute/tracker-floors.js';
 import type { ExecuteContext } from '../v2/steps/execute/index.js';
 import { engineHandIn } from '../../work/done/hand-in.js';
-import { decide } from '../../work/done/decide.js';
 import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
 import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
 
@@ -78,14 +77,14 @@ describe('how is it going gets an answer and the job goes on', () => {
     expect(tasks()).toBe(1);
   });
 
-  it('the question\'s turn hands the job in: no due is left, so its send-back starts no job turn', async () => {
-    await ownerAsks('m-1');
+  it('the question\'s turn hands the job in and its answer closes it: no due is left and no job turn starts', async () => {
+    const job = await ownerAsks('m-1');
     await stretch('parks');
     const [task] = tasksOf('m-1');
     await ownerAsks('m-2', 'how is it going?');
     await stretch('answers', () => expect(engineHandIn(task, 'the hunt is finished', { outcome: 'cant_be_done' }).kind).toBe('handed_in'));
     expect(rowOf(task).due).toBeNull();
-    expect(decide({ workId: task, deciderAgentId: null, verdict: 'send_back', reason: 'Two clues are still missing' }).kind).toBe('decided');
+    expect([rowOf(job).state, rowOf(task).state], 'the answer closes the request and the task the park opened for it').toEqual(['done', 'done']);
     expect(nextOwed(HELPER).filter((i) => i.kind === 'job')).toEqual([]);
   });
 });

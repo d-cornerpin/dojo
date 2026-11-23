@@ -1,6 +1,6 @@
-// The cards the agent opened for a request (its own tracker tasks linked to the request's message) are handed in
-// by the engine on the delivery that answered the request, the Dojo's relay included; never set done, never
-// decided. Cards with no link, the engine's scaffold, another agent's cards and the join's own pieces are untouched.
+// The cards the agent opened for a request (its own tracker tasks linked to the request's message) are closed done
+// by the engine on the delivery that answered the request, the Dojo's relay included, once every piece came back.
+// Cards with no link, another agent's cards and the join's own pieces are untouched.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
@@ -36,7 +36,7 @@ vi.mock('../../config/platform.js', () => ({
 vi.mock('../runtime.js', () => ({ getAgentRuntime: () => ({ handleMessage: vi.fn(async () => {}) }) }));
 
 import { runMigrations } from '../../db/migrations.js';
-import { openAsk, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece } from '../../work/store.js';
+import { openAsk, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece, clearJoinCompilePending } from '../../work/store.js';
 import { openTrackerTask } from '../../work/tracker-store.js';
 import { setHold } from '../../work/done/hold.js';
 import { relayPiecesWhole } from '../a2a-transport.js';
@@ -56,8 +56,10 @@ const handInsOf = (id: string): Array<{ actor: string; note: string }> => (mockD
   "SELECT actor, json_extract(payload, '$.note') AS note FROM work_events WHERE work_id = ? AND kind = 'handed_in'",
 ).all(id) as Array<{ actor: string; note: string }>);
 
-/** The Dojo relays the request's answer; its verdict, and the hand-ins after it, land before this returns. */
+/** The Dojo relays the request's answer as the transport does when it relays instead of putting it back; its
+ *  verdict, and what it ends, land before this returns. */
 const relay = async (askId: string): Promise<void> => {
+  clearJoinCompilePending(askId, 'its delegated work is back');
   await relayPiecesWhole(askId, 'compile', null);
   await new Promise((r) => setImmediate(r));
 };
@@ -110,33 +112,28 @@ beforeEach(() => {
   mockDb.current.prepare(`INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES (?, ?, 'dashboard', 'owner')`).run(CONV, AGENT);
 });
 
-describe('the relay hands in the cards the agent opened for the request', () => {
-  it('a blocked card linked to the request is handed in on the relay\'s delivery, with no decision', async () => {
+describe('the relay closes the cards the agent opened for the request', () => {
+  it('a blocked card linked to the request is done on the relay\'s delivery, decided by the engine, never handed in', async () => {
     const askId = seedTwoPieceJoin();
     const linked = card({ linked: true, blocked: true });
     await relay(askId);
     expect(workRow(askId).state, 'premise: the request closed on the relay').toBe('done');
-    expect(workRow(linked).state).toBe('handed_in');
-    expect(handInsOf(linked)).toEqual([{ actor: 'engine', note: expect.stringMatching(/the request this task was opened for was answered/) }]);
-    const record = JSON.parse((mockDb.current!.prepare("SELECT payload FROM work_events WHERE work_id = ? AND kind = 'handed_in'").get(linked) as { payload: string }).payload) as
-      { outcome: string; items: Array<{ kind: string; ref: string }> };
-    expect(record.outcome).toBe('finished');
-    expect(record.items).toEqual([expect.objectContaining({ kind: 'delivery', ref: workRow(askId).result_delivery_id })]);
-    expect(mockDb.current!.prepare("SELECT COUNT(*) AS c FROM work_events WHERE work_id = ? AND kind = 'decided'").get(linked)).toEqual({ c: 0 });
+    expect([workRow(linked).state, workRow(linked).result_delivery_id]).toEqual(['done', workRow(askId).result_delivery_id]);
+    expect(handInsOf(linked)).toEqual([]);
+    expect(mockDb.current!.prepare("SELECT actor FROM work_events WHERE work_id = ? AND kind = 'decided'").all(linked)).toEqual([{ actor: 'engine' }]);
   });
 
-  it('CONTROLS: an unlinked card, the engine\'s scaffold, another agent\'s card and the pieces are untouched; nothing twice', async () => {
+  it('CONTROLS: an unlinked card, another agent\'s card and the pieces are untouched; nothing twice', async () => {
     const askId = seedTwoPieceJoin();
     const linked = card({ linked: true });
     const untied = card({ linked: false, blocked: true });
-    const scaffold = card({ linked: true, originKind: 'engine_scaffold' });
     const theirs = card({ linked: true, agentId: OTHER_AGENT });
-    const before = [workRow(scaffold).state, workRow(theirs).state];
+    const before = workRow(theirs).state;
     await relay(askId);
     await relay(askId);
     expect(workRow(untied).hold_kind).toBe('blocked');
-    expect([workRow(scaffold).state, workRow(theirs).state]).toEqual(before);
-    expect(handInsOf(linked)).toHaveLength(1);
+    expect(workRow(theirs).state).toBe(before);
+    expect(mockDb.current!.prepare("SELECT COUNT(*) AS c FROM work_events WHERE work_id = ? AND kind = 'decided'").get(linked)).toEqual({ c: 1 });
     expect((mockDb.current!.prepare('SELECT state FROM work WHERE parent_id = ? ORDER BY id').all(askId) as Array<{ state: string }>)
       .map((p) => p.state)).toEqual(['done', 'done']);
   });

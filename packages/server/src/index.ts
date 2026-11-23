@@ -353,6 +353,8 @@ async function main(): Promise<void> {
     if (repaired > 0) {
       logger.info(`Reset ${repaired} agent(s) from 'working' to 'idle' after restart`);
     }
+    // Cards their request's answer ends, left by a version before that end ended them: ended once, through the cascade.
+    (await import('./work/done/decide.js')).endCardsOf(null, 'done', null, 'the request it was opened for was answered');
   }
 
   try {
