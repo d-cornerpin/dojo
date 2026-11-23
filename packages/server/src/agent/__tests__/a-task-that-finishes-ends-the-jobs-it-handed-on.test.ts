@@ -18,11 +18,11 @@ import { delegated, endedBy, handedOn, lateReply, pieceOf, settled, stopped, HEL
 describe('a task that finishes ends the jobs it handed on', () => {
   it("the middle helper's job closed done by the owner: the job it handed on ends, its helper stops", async () => {
     delegated();
-    handedOn('task-helper-1', HELPER, 'agent-third', 'thread-3', 'task-third');
+    const third = await handedOn();
     expect((await trackerRouter.request('/tasks/task-helper-1/decision', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ verdict: 'owner_done', reason: 'Good enough' }) })).status).toBe(200);
     await settled();
-    expect([endedBy('task-helper-1')?.state, endedBy(pieceOf('thread-3'))?.state, endedBy('task-third')?.state]).toEqual(['done', 'abandoned', 'abandoned']);
+    expect([endedBy('task-helper-1')?.state, endedBy(pieceOf('thread-3'))?.state, endedBy(third)?.state]).toEqual(['done', 'abandoned', 'abandoned']);
     expect(stopped('agent-third')).toBe(true);
     expect(await lateReply('agent-third', 'thread-3', HELPER)).toBe(false);
   });

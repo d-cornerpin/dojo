@@ -27,10 +27,10 @@ describe('deleting a card calls off what the card was', () => {
 
   it("a middle helper's job, deleted: the job it handed on ends as his, its helper stops, and its late answer is refused", async () => {
     delegated();
-    handedOn('task-helper-1', HELPER, 'agent-third', 'thread-3', 'task-third');
+    const third = await handedOn();
     expect(await boardDelete('task-helper-1')).toBe(200);
     await settled();
-    expectEndedAsHis(ASK, pieceOf(), pieceOf('thread-3'), 'task-third');
+    expectEndedAsHis(ASK, pieceOf(), pieceOf('thread-3'), third);
     expect(stopped('agent-third')).toBe(true);
     expect(await lateReply('agent-third', 'thread-3', HELPER)).toBe(false);
   });

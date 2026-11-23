@@ -38,8 +38,10 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
         AND d.tool = 'send_to_agent' AND d.outcome = 'delivered'
         AND m.source_agent_id = @agentId AND m.a2a_thread_id IS NOT NULL
         AND m.a2a_intent IN ('QUESTION','ASSIGN','BLOCK')
+        -- A send to the job's maker or on the job's thread is the job talking back (a BLOCK, a QUESTION), not a hand-on.
+        AND NOT EXISTS (SELECT 1 FROM work j WHERE j.id = @underTask AND (j.requester_id = m.agent_id OR j.a2a_thread_id = m.a2a_thread_id))
       ORDER BY m.created_at ASC, m.rowid ASC`,
-  ).all({ agentId, turnNumber }) as Array<{ a2a_thread_id: string; agent_id: string; a2a_intent: string | null }>;
+  ).all({ agentId, turnNumber, underTask }) as Array<{ a2a_thread_id: string; agent_id: string; a2a_intent: string | null }>;
   // End the turn now, or the agent re-asks or fabricates the answer. Every send in this one response's batch
   // still goes out, so multi-delegation is not blocked.
   if (sentRows.length > 0) {
