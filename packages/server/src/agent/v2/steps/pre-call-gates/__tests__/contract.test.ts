@@ -330,7 +330,7 @@ describe('the numbers this tranche must not move (bounds copied verbatim)', () =
       checkAndCompactSpy.mockClear();
       const later = await runPreCallGates(stateInStep({ turnStartMs: Date.now() - (16 * 60 * 1000) }), makeCtx());
       expect(later).toMatchObject({ directive: 'exit', reason: 'turn-time-budget' satisfies PreCallGatesExitReason });
-      expect(checkAndCompactSpy).toHaveBeenCalledTimes(1);
+      expect(checkAndCompactSpy).not.toHaveBeenCalled();
       expect(parkJobSpy).toHaveBeenCalledWith(AGENT, 'turn-budget-continuation', expect.any(Number));
       parkJobSpy.mockClear();
     }

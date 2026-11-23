@@ -50,9 +50,11 @@ describe('an empty required reply', () => {
     silentTurn(1, true);
     insertMessage({ id: 'm-2', agentId: AGENT, role: 'user', content: 'Hello?',
       conversationId: 'conv-owner', channel: 'dashboard', senderId: 'owner', lane: 'owner' } as never);
-    liftStandDowns(AGENT, askIdForMessage('m-2'), 2);
-    expect(state()).toBe('claimed');
-    silentTurn(2, true);
+    liftStandDowns(AGENT, askIdForMessage('m-2'));
+    expect(state(), 'reopened for its own turn, not taken up by the new message\'s').toBe('open');
+    claimAsk(ASK, AGENT);
+    stampClaimingTurn(ASK, 3);
+    silentTurn(3, true);
     expect(state()).toBe('blocked');
     expect(cards()).toBe(1);
   });

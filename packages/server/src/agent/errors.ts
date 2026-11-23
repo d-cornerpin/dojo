@@ -8,7 +8,7 @@ import {
   recordErrorInWindow, noteErrorLoopPause, clearErrorLoop, ERROR_LOOP_WINDOW_MS,
 } from './error-loop-state.js';
 import { pausedWords, closePausedCards, endNotice } from './agent-owner-cards.js';
-import { ownerConditionsOnHealthyWork, tellOwner } from '../healer/owner-notices.js';
+import { tellOwner } from '../healer/owner-notices.js';
 export { pausedWords };
 
 const logger = createLogger('agent-errors');
@@ -82,7 +82,6 @@ export function clearErrors(agentId: string): void {
   clearErrorLoop(agentId);
   closePausedCards(agentId); // a clean turn: the agent works again, so the owner's card for the trip ends
   endNotice(agentId, 'broken_notice'); // and a BROKEN incident is over: the next one is told again
-  ownerConditionsOnHealthyWork(agentId); // and if it is the Healer, "Healer broken" ends
 }
 
 function pauseAgent(agentId: string): void {

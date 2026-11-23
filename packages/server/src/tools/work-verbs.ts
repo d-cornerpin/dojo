@@ -175,28 +175,14 @@ export const CLOSING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_update:hand_in',
 ]);
 
-/** Forward progress on open work: what the compile gate lets through besides the reply. Closing a project
- *  is not in it: that is not working the task itself. */
-export const PROGRESS_WORK_OPS: ReadonlySet<string> = new Set([
-  'work_update:status',
-  'work_update:hand_in',
-  'work_note',
-]);
-
-// Operations that disarm the multi-step floor (the worker is opening or advancing its own work). A status
-// change disarms only if its status ARGUMENT advances the task, a second test at the gate.
+// Operations that write the worker's own work (opening or advancing it). A status change counts only if its
+// status ARGUMENT advances the task, a second test at the gate.
 export const DISARMING_WORK_OPS: ReadonlySet<string> = new Set([
   'work_open:project',
   'work_open:task',
   'work_note',
   'work_update:edit',
   'work_update:hand_in',
-]);
-
-// Ops after which a work row exists this turn (the floor's narrow question); a subset of DISARMING_WORK_OPS.
-export const OPENING_WORK_OPS: ReadonlySet<string> = new Set([
-  'work_open:project',
-  'work_open:task',
 ]);
 
 /** The close operations that carry a task_id, to tell a user-requested close from bookkeeping. */

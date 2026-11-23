@@ -11,7 +11,7 @@ import { getPMAgentId, isPrimaryAgent } from '../../config/platform.js';
 import { ownerAskedInThisTurn } from '../row-authority.js';
 import { recordDecisionReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
 import { transition, appendWorkEvent, isTerminal, askIdForMessage, jobOfPieceSql, type Actor, type WorkOutcome, type WorkState } from '../store.js';
-import { taskScope, projectScope } from '../tracker-view.js';
+import { taskScope, projectScope, heldByOwnerSql, ENGINE_SCAFFOLD_ROOT_KIND } from '../tracker-view.js';
 import { tellUnfinishedTasks } from './project-state.js';
 import { latestHandIn, workerOf, workersOf, unitOrRollback, recordAdjudication, OWNER_ID, ENGINE_ID } from './record.js';
 import { openedEveryItem } from './open-proof.js';
@@ -23,8 +23,9 @@ import { whoDecides } from './who-decides.js';
 import { onDecided } from './effects.js';
 import { endStallCard } from '../../healer/owner-notices.js';
 import { resultForEndedRequest } from '../../agent/v2/counterparty.js';
-import { requestEnded } from '../ask-settlement.js';
-import { onPieceEnded } from '../task-ended.js';
+import { cardOfSql } from '../ask-settlement.js';
+import { standing } from '../../agent/v2/work-lineage.js';
+import { onPieceEnded, onRequestAnswered } from '../task-ended.js';
 
 export type Verdict = 'approve' | 'send_back' | 'cancel' | 'owner_done';
 export interface DecideInput {
@@ -35,7 +36,7 @@ export interface DecideInput {
   reason: string;
   /** The owner's own words, when an agent relays his decision. */
   ownerQuote?: string;
-  /** The engine's ground: absent, a run it counted at 0; `delivered`, a delivered message the model confirmed. */
+  /** The engine's ground: absent, a run it counted at 0; `delivered`, a delivered message. */
   engineBasis?: 'delivered';
 }
 /** `unclosed`: a project's open tasks that did not close with it. */
@@ -121,20 +122,20 @@ function settleOn(workId: string, decider: string): string | null {
   return delivered ?? deliveryIdOf(recordDecisionReceipt(workId, decider === OWNER_ID ? 'The owner' : `Agent ${decider}`, 'a decision on its hand-in'));
 }
 
-interface Applied { verdict: Verdict; reason: string; deciderId: string; by: Actor; outcome: 'finished' | 'cant_be_done'; run: boolean; relay?: { relayedBy: string; quote: string } }
+interface Applied { verdict: Verdict; reason: string; deciderId: string; by: Actor; outcome: 'finished' | 'cant_be_done'; run: boolean; relay?: { relayedBy: string; quote: string }; delivery?: string }
 
 /** One row moved by a decision, as one unit, then the decision's effects. */
 function applyDecision(id: string, from: WorkState, to: WorkState, p: Applied): WorkOutcome {
   let decisionId = 0;
   const moved = unitOrRollback(() => {
-    const resultDeliveryId = to === 'done' ? settleOn(id, p.deciderId) : null;
+    const resultDeliveryId = to === 'done' ? p.delivery ?? settleOn(id, p.deciderId) : null;
     const rejected = p.verdict === 'send_back';
     recordAdjudication(id, rejected || p.run ? (p.outcome === 'finished' ? 'done' : 'failed') : to, p.deciderId, resultDeliveryId, p.reason, rejected ? 'rejected' : 'upheld');
     decisionId = appendWorkEvent(id, 'decided', p.deciderId, { verdict: p.verdict, reason: p.reason, to, ...p.relay });
     return transition(id, {
       to, by: p.by, actorId: p.deciderId, reason: `${p.verdict}: ${p.reason}`, expectedState: from,
       claim: to === 'sent_back' ? undefined : 'decided', resultDeliveryId,
-      evidenceRef: p.by === 'engine' ? inFlightOccurrence(id, { anyState: true })?.id : undefined,
+      evidenceRef: p.by === 'engine' ? p.delivery ?? inFlightOccurrence(id, { anyState: true })?.id : undefined,
     });
   });
   if (moved.kind === 'applied') { onDecided(id, decisionId); endStallCard(id); }
@@ -152,6 +153,24 @@ function endJobsOfPiece(pieceId: string, byOwner: boolean): void {
 }
 onPieceEnded(endJobsOfPiece);
 
+/** A request's end ends its cards: called off, every open card (any holder) is cancelled by its decider; answered, the
+ *  engine's own cards close done on its delivery. */
+export function endCardsOf(askId: string, to: 'done' | 'abandoned', deciderAgentId: string | null, reason: string): void {
+  if (to === 'abandoned') {
+    const cards = getDb().prepare(`SELECT c.id FROM work a JOIN work c ON ${cardOfSql('c', 'a')} AND c.state NOT IN ('done', 'failed', 'abandoned') WHERE a.id = ?`)
+      .all(askId) as Array<{ id: string }>;
+    for (const c of cards) decide({ workId: c.id, deciderAgentId, verdict: 'cancel', reason });
+    return;
+  }
+  // From the agent's open tasks (`ix_work_queue`); never a scheduled card or one the owner holds.
+  const cards = getDb().prepare(`SELECT t.id, t.state, a.result_delivery_id AS delivery FROM work a JOIN work t ON t.agent_id = a.agent_id
+      AND t.kind = 'task' AND t.state IN ('open', 'claimed', 'blocked', 'sent_back', 'handed_in') AND t.source_message_id = a.root_id
+      AND t.schedule_json IS NULL AND t.next_run_at IS NULL AND NOT ${heldByOwnerSql('t')} AND t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}'
+    WHERE a.id = ? AND a.state = 'done'`).all(askId) as Array<{ id: string; state: WorkState; delivery: string }>;
+  for (const t of cards) applyDecision(t.id, t.state, 'done', { verdict: 'approve', reason, deciderId: ENGINE_ID, by: 'engine', outcome: 'finished', run: false, delivery: t.delivery });
+}
+onRequestAnswered((askId) => endCardsOf(askId, 'done', null, 'the request it was opened for was answered'));
+
 /** THE DECISION (header). */
 export function decide(input: DecideInput): DecideResult {
   if (!VERDICTS.includes(input.verdict)) return refused(`"${String(input.verdict)}" is not a verdict. Use approve or send_back.`);
@@ -167,7 +186,7 @@ export function decide(input: DecideInput): DecideResult {
 
   if (input.verdict === 'cancel' || input.verdict === 'owner_done') {
     const ended = input.verdict === 'cancel' && (row.thread ? resultForEndedRequest(row.worker, row.thread)   // its piece was called off
-      : requestEnded(askIdForMessage(row.request ?? '')) === 'called_off');
+      : ['called_off', 'ended'].includes(standing(askIdForMessage(row.request ?? '')) ?? ''));
     if (!who.owner && !ended) return refused(`only the owner cancels or closes ${name} directly. Nothing changed.`);
     if (isTerminal(row.state)) return refused(`${name} is already closed (${row.state}).`);
   } else {

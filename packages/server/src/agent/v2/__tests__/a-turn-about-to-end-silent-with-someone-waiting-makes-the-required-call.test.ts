@@ -75,6 +75,12 @@ describe('the required reply is armed when the turn would end silent with someon
     expect(await due()).toBe(false);
   });
 
+  it('a line the person already heard this turn, known only to the store, arms nothing', async () => {
+    testDb().prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, created_at, updated_at)
+      VALUES ('d-said', ?, ?, 'imessage_send', 'dashboard', 'conv-owner', 'delivered', datetime('now'), datetime('now'))`).run(AGENT, TURN);
+    expect(await due()).toBe(false);
+  });
+
   it('words already said, a voice or phone turn, or a cut turn arm nothing', async () => {
     turnCtx.state = turnState({ lastAssistantTextForIM: 'The second one.' });
     expect(await due()).toBe(false);

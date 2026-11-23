@@ -5,8 +5,4 @@ export async function forgetSessionScratch(agentId: string): Promise<void> {
     const { clearSessionLoadedTools } = await import('../tools/tool-docs.js');
     clearSessionLoadedTools(agentId);
   } catch { /* best-effort, never the reason a reset fails */ }
-  try {
-    const { clearServedConversations } = await import('./turn-state.js');
-    clearServedConversations(agentId);
-  } catch { /* best-effort, never the reason a reset fails */ }
 }

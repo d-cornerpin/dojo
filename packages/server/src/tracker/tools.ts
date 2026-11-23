@@ -2,7 +2,7 @@
 // never a bare role='system' row, which the model-context builder strips. Bare system rows here may carry
 // only dashboard/owner-only notes, never an imperative the model is expected to act on.
 import { getDb } from '../db/connection.js';
-import { taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns, type TrackerStatus, stampColumns, engineScaffoldScope } from '../work/tracker-view.js';
+import { taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns, type TrackerStatus, stampColumns } from '../work/tracker-view.js';
 import { workSettled, noteUnsettled, ownerHoldStands, OWNER_HOLD_REFUSAL } from '../work/store.js';
 import { patchWork, setTrackerStatus } from '../work/tracker-store.js';
 import { setNextRun } from '../work/next-run.js';
@@ -182,53 +182,6 @@ export function groupMember(groupId: string): { ok: true; id: string } | { ok: f
 
 // ── trackerCreateProject ──
 
-interface DuplicateMatch {
-  id: string;
-  title: string;
-  /** First in_progress / on_deck task on the existing project, if any, the natural target for work_update(action="edit"). */
-  firstOpenTask: { id: string; title: string } | null;
-}
-
-/**
- * The engine scaffold row opened for the same ask (same source message, else created in the last 5 minutes),
- * which the agent should edit rather than parallel.
- */
-function findRecentNearDuplicateProject(creatorId: string): DuplicateMatch | null {
-  const db = getDb();
-
-  // (a) An engine scaffold born from the same ask as the creating agent's current turn is the duplicate by
-  //     identity (source_message_id); the 5-minute window below is only the fallback for rootless rows.
-  const turnRoot = turnContext(creatorId)?.root ?? null;
-  const rootMatch = turnRoot?.sourceMessageId ? db.prepare(`
-    SELECT w.id AS id, w.title AS title FROM work w
-    WHERE ${projectScope('w')} AND w.requester_id = ?
-      AND w.state = 'open'
-      AND w.origin_kind = 'engine_scaffold'
-      AND w.source_message_id = ?
-    ORDER BY w.opened_at DESC
-    LIMIT 1
-  `).get(creatorId, turnRoot.sourceMessageId) as { id: string; title: string } | undefined : undefined;
-  // The fallback reads the row's own root_kind and covers parentless tasks too: the engine floor opens a
-  // task, and a project opened right after it is the parallel work this prong steers away from.
-  const engineAuto = rootMatch ?? db.prepare(`
-    SELECT w.id AS id, w.title AS title FROM work w
-    WHERE ${engineScaffoldScope('w')} AND w.requester_id = ?
-      AND ${workingExpr('w', true)}
-      AND w.opened_at >= ?
-    ORDER BY w.opened_at DESC
-    LIMIT 1
-  `).get(creatorId, Date.now() - 5 * 60_000) as { id: string; title: string } | undefined;
-
-  if (!engineAuto) return null;
-  const firstOpen = db.prepare(`
-    SELECT w.id AS id, w.title AS title FROM work w
-    WHERE ${taskScope('w')} AND w.parent_id = ? AND ${workingExpr('w', true)}
-    ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
-    LIMIT 1
-  `).get(engineAuto.id) as { id: string; title: string } | undefined;
-  return { id: engineAuto.id, title: engineAuto.title, firstOpenTask: firstOpen ?? null };
-}
-
 export function trackerCreateProject(agentId: string, args: Record<string, unknown>, opts: { taskMeasures?: Array<MeasureReading | undefined>; scaleFacts?: string } = {}): string {
   try {
     const title = args.title as string;
@@ -264,27 +217,6 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
         const r = resolveAgentName(ref);
         if (!r.ok) return r.error;
         t.assignedTo = r.id;
-      }
-    }
-
-    // Duplicate guard for an agent that lost its project to compaction and creates a near-identical one.
-    // allow_duplicate=true overrides it (genuinely independent re-runs).
-    const allowDuplicate = args.allow_duplicate === true;
-    if (!allowDuplicate) {
-      const dup = findRecentNearDuplicateProject(agentId);
-      if (dup) {
-        const shortPid = dup.id.slice(0, 8);
-        const firstTaskHint = dup.firstOpenTask
-          ? ` First open task: "${dup.firstOpenTask.title}" (id=${dup.firstOpenTask.id.slice(0, 8)}).`
-          : '';
-        // The engine auto-opened this project for the current user turn, so the agent's own create duplicates it:
-        // an OK-shaped no-op names it and its first task, so the agent continues in it instead of being refused.
-        return (
-          `[OK] Already tracked, no new project created. The engine auto-opened project "${dup.title}" (id=${shortPid}) for this request, so you don't need to create one, keep going in it.${firstTaskHint} ` +
-          `Continue inside it: work_update(action="edit", task_id=<id>, title=..., description=...) to refine the first task, ` +
-          `work_open(kind="task", project_id="${shortPid}", title=..., step_number=..., assigned_to=...) to add more steps. ` +
-          `(If you genuinely need a separate, unrelated project, retry with allow_duplicate=true.)`
-        );
       }
     }
 

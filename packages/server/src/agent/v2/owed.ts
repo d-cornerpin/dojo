@@ -57,6 +57,7 @@ function wakeBudgetClearsAt(agentId: string): number | null {
 export interface AgentRequest {
   messageId: string; rowid: number; threadId: string; threadShort: string; intent: string; fromId: string; fromName: string;
   createdAt: number; attempts: number; dueAt: number; kept: number;
+  shownAt: number;   // a reply answers it from here: never while no turn of this agent has picked up since it arrived
 }
 
 /** Requests from other agents with no final reply (on `thread` when given), oldest first, with when each may be served. */
@@ -64,6 +65,7 @@ export function agentRequests(agentId: string, now = Date.now(), thread: string 
   const rows = getDb().prepare(`
     SELECT m.seq AS rowid, m.id AS messageId, m.a2a_thread_id AS threadId, m.a2a_intent AS intent,
            m.source_agent_id AS fromId, COALESCE(s.name, m.source_agent_id) AS fromName, m.created_at AS createdAt,
+           CASE WHEN (SELECT MAX(t.pickup_seq) FROM turns t WHERE t.agent_id = m.agent_id) < m.seq THEN ${Number.MAX_SAFE_INTEGER} ELSE m.created_at END AS shownAt,
            m.delivery_attempts AS attempts, COALESCE(m.next_attempt_at, 0) AS dueAt, ${openPieceOnSql('m.a2a_thread_id')} AS kept
       FROM messages m JOIN agents a ON a.id = m.agent_id LEFT JOIN agents s ON s.id = m.source_agent_id
      WHERE m.agent_id = @agentId AND m.role = 'user' AND m.lane <> 'events'
@@ -82,7 +84,7 @@ export function agentRequests(agentId: string, now = Date.now(), thread: string 
                          AND ${workingExpr('t')}
                          AND (t.next_attempt_at IS NOT NULL OR t.hold_kind IS NOT NULL OR m.served_by_turn IS NOT NULL))
      ORDER BY m.seq ASC LIMIT 20`).all({ agentId, now, thread, servedWindow: TERMINAL_WAKE_WINDOW_MS }) as Array<Omit<AgentRequest, 'threadShort'>>;
-  return rows.filter((r) => !repliedOnThread(agentId, r.fromId, r.threadId, r.createdAt, FINAL_REPLY_INTENTS))
+  return rows.filter((r) => !repliedOnThread(agentId, r.fromId, r.threadId, r.shownAt, FINAL_REPLY_INTENTS))
     .map((r) => ({ ...r, threadShort: r.threadId.slice(0, A2A_THREAD_SHORT_LENGTH) }));
 }
 

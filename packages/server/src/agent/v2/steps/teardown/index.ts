@@ -5,6 +5,7 @@ import type { getDb } from '../../../../db/connection.js';
 import { abortInFlight } from '../../../shared-state.js';
 import { endAgentCommands } from '../../../effects/proc-tree.js';
 import { setAgentStatus } from '../../../agent-status.js';
+import { ownerConditionsOnHealthyWork } from '../../../../healer/owner-notices.js';
 import type { TurnContext } from '../../../turn-context.js';
 import { advance, type AgentTurnState, type ChannelInboundContext, type TurnPhase } from '../../state.js';
 import { classifyThrownCut, latchEngineCut } from '../../engine-exit.js';
@@ -97,6 +98,7 @@ function settleStatus(ctx: TeardownContext): void {
       | { status?: string } | undefined;
     if (row?.status !== 'working') return;
     setAgentStatus(ctx.agentId, 'idle');
+    ownerConditionsOnHealthyWork(ctx.agentId);   // a turn that ended healthy: if it is the Healer, "Healer broken" ends
   } catch (err) {
     logger.warn('v2: turn-end status settle failed; the row may still read working', {
       agentId: ctx.agentId, error: err instanceof Error ? err.message : String(err),

@@ -12,7 +12,7 @@ export const ENGINE_ID = 'engine';
 /** `run`: one run of a live schedule, which goes on; `schedule`: the scheduled work as a whole. */
 export type HandInScope = 'run' | 'schedule';
 
-export interface HandInRecord { outcome: HandInOutcome; items: ResolvedItem[]; note: string; filedBy: string; scope?: HandInScope }
+export interface HandInRecord { outcome: HandInOutcome; items: ResolvedItem[]; note: string; filedBy: string; scope?: HandInScope; waits?: number }
 
 /** The worker of a task: its assignee, else the agent holding it. Empty when there is no such row. */
 export function workerOf(workId: string): string {

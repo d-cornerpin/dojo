@@ -8,7 +8,7 @@ import { getDb } from '../db/connection.js';
 import { patchAssignments } from '../db/patch.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
-import { currentTurnNumber } from '../agent/v2/turn-record.js';
+import { turnContext } from '../agent/turn-context.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { noSuchWorkDetail, type WorkPatchOutcome } from './outcome.js';
 import { transition, appendWorkEvent, isTerminal, type Actor, type WorkOutcome, type WorkState } from './store.js';
@@ -60,7 +60,7 @@ export interface OpenTrackerTaskInput {
   dependsOn?: string[];
   taskKind?: string | null;
   a2aThreadId?: string | null;
-  /** Defaults to `TRACKER_ROOT_KIND`; the engine's own floor passes `engine_scaffold`. */
+  /** Defaults to `TRACKER_ROOT_KIND`; the engine passes `engine_scaffold`. */
   rootKind?: string;
   origin: TrackerOrigin;
 }
@@ -161,7 +161,7 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
  *  two. Only fills a gap: a caller-stated origin wins. */
 function askSourceMessageForCreatingTurn(agentId: string): string | null {
   try {
-    const turn = currentTurnNumber(agentId);
+    const turn = turnContext(agentId)?.turnNumber;
     const asks = turn ? requestsTakenUpBy(agentId, turn) : [];
     return asks.length === 1 ? asks[0]!.slice('ask:'.length) : null;
   } catch (err) {
@@ -181,7 +181,7 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
   const db = getDb();
   const id = p.id ?? uuidv4();
   const at = now();
-  const sourceMessageId = p.origin.sourceMessageId
+  const sourceMessageId = p.origin.kind === 'user_direct' ? p.origin.sourceMessageId : p.origin.sourceMessageId
     ?? askSourceMessageForCreatingTurn(p.assignedTo ?? p.createdBy);
   // `agent_id` is NOT NULL, so an unassigned task belongs to its creator until someone claims it.
   const taskAgents: readonly (string | null | undefined)[] = [p.assignedTo, p.createdBy];

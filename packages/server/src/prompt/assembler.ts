@@ -545,7 +545,7 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
   const hasTracker = agentTools.some(t => isWorkVerb(t.name));
   if (hasTracker) {
     lines.push(`## Tracker`);
-    lines.push(`Use the tracker for multi-step work. A project opens with your plan in it; follow the step on your board. The DOJO auto-creates tasks when it sees you're about to make 2+ non-trivial tool calls without one, you can also create tasks explicitly with \`work_open(kind="task")\`.`);
+    lines.push(`Use the tracker for multi-step work. A project opens with your plan in it; follow the step on your board. You can create tasks with \`work_open(kind="task")\`.`);
     lines.push('');
   }
 

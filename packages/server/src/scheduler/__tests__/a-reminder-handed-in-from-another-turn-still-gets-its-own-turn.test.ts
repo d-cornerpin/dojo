@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {}, stampPersistedRow: (e: unknown) => e }));
 vi.mock('../../agent/v2/loop.js', () => ({ runV2Turn: async () => {} }));
 const box = await import('./helpers/reminders-box.js');
-const { at, call, db, turn, line, reminder, openRun, runState, handIn, checkScheduledTasks, closeRunsThatDelivered, ghosts, freeCheckSays, decidedBy, MAIN } = box;
+const { at, call, db, turn, line, reminder, openRun, runState, handIn, checkScheduledTasks, closeRunsThatDelivered, ghosts, decidedBy, MAIN } = box;
 const { getPendingEngineEvent } = await import('../../agent/v2/counterparty.js');
 const { engineEventRoot } = await import('../../agent/v2/work-lineage.js');
 
@@ -36,7 +36,6 @@ const sent = (channel: string): number => (db().prepare('SELECT COUNT(*) AS n FR
 
 describe('a reminder handed in from another turn still gets its own turn', () => {
   it('the next engine event served is the run\'s own prompt, rooted on the run, and its text closes the run', async () => {
-    freeCheckSays(true);
     const lines = sent('dashboard');
     const shop = await handedInFromAnotherTurn('2026-03-02');
     const texts = sent('imessage');
@@ -50,7 +49,6 @@ describe('a reminder handed in from another turn still gets its own turn', () =>
     expect(runState(shop)).toEqual({ state: 'done', result_delivery_id: text });
     await new Promise((r) => setTimeout(r, 50));
     expect([sent('imessage') - texts, sent('dashboard') - lines, ghosts(), decidedBy(shop)]).toEqual([1, 1, 0, 'engine']);
-    freeCheckSays(null);
   });
 
   it('a paused schedule still retires the run\'s prompt', async () => {

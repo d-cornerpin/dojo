@@ -1,6 +1,6 @@
 // Engine-side judgment of whether a person's message is work, and the start-ack steer the verdict arms.
 // Returns state (it enqueues on the steer queue). staleTaskWindowMinutes is an INPUT, never an
-// import: a guard pins the constant's declaration to `loop.ts` by path and the `execute` span reads it too.
+// import: a guard pins the constant's declaration to `loop.ts` by path.
 
 import { getDb } from '../../../../db/connection.js';
 import { isDreamerAgent, isHealerAgent, isPMAgent } from '../../../../config/platform.js';
@@ -71,7 +71,7 @@ export async function detectMultistepAndScaffold(stateIn: AgentTurnState, input:
         const work = !explicit && verdict === true;
         turnCtx.inboundClassifiedAsWork = verdict;
         logger.info('v2 inbound judged', { agentId, work, explicit }, agentId);
-        // Nothing is created on a prediction: the >=6 engine floor opens the row only on OBSERVED work.
+        // Nothing is created on a prediction.
         if (work && !existingTask && thisOpenerMayArm()) state = arm(state);
       }
     } catch (err) {

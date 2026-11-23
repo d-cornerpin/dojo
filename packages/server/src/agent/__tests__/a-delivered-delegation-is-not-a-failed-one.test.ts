@@ -54,7 +54,8 @@ const piece = (state: string, content: string | null = null, who = 'peer'): Join
 
 beforeEach(() => {
   const db = new Database(':memory:');
-  db.exec(`CREATE TABLE work (id TEXT PRIMARY KEY, parent_id TEXT, opened_at INTEGER)`);
+  db.exec(`CREATE TABLE work (id TEXT PRIMARY KEY, parent_id TEXT, opened_at INTEGER, state TEXT);
+    CREATE TABLE work_events (id INTEGER PRIMARY KEY, work_id TEXT, kind TEXT, payload TEXT)`);
   mockDb.current = db;
 });
 

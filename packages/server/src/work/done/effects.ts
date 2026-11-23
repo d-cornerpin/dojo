@@ -14,11 +14,8 @@ import { workerOfRecord, rehome } from '../row-authority.js';
 import { isTerminal, noteUnsettled, ownerHoldStands, type WorkState } from '../store.js';
 import { latestHandIn, workerOf, OWNER_ID, ENGINE_ID, type HandInRecord } from './record.js';
 import { decide } from './decide.js';
-import { inFlightOccurrence, owedRunDelivery, runServedByOpenTurn } from '../occurrences.js';
+import { inFlightOccurrence, runServedByOpenTurn } from '../occurrences.js';
 import { occurrenceOwesDeliverable } from '../deliverable-declaration.js';
-import { occurrenceRunStatus } from '../occurrence-runs.js';
-import type { Question } from '../../agent/decide.js';
-import { judgment } from '../../agent/decision-hooks.js';
 import { remeasureTask } from '../../agent/tools/cat/measure-door.js';
 import { settleProject } from './project-state.js';
 import { FINAL_REPLY_SQL } from '@dojo/shared';
@@ -42,38 +39,15 @@ export function onHandedIn(workId: string, handInEventId?: number, wordsFollow?:
   if (!atTurnEnd) void advanced.then(() => decideOrReview(workId, h));
 }
 
-const OWES_IT: Question = { type: 'noul',
-  instructions: 'Does `message` itself give the person what `task` owes them: the reminder, report or notice, with its actual content? Answer no if `message` is empty or only punctuation, a status or delivery confirmation ("done", "sent"), an error, a question back, a promise to do it later, only part of what is owed with the rest to follow, or about something other than `task`. A short "nothing new today" answer counts when that is the answer `task` asks for. If in doubt, answer no.',
-  criteria: { true: 'Task: remind me to take my vitamins at 8. Message: Time to take your vitamins. / Task: tell me each morning if any bills are due. Message: No bills due this week.',
-              false: 'Task: send me the weather each morning. Message: Done, all set! / Sent. / I could not reach the weather service / Which city? / Part 1: sunny, more soon / (empty)' } };
-
-/** Does the small local model read the message this run, recorded complete, delivered as what its task owes? */
-async function deliveredWhatItOwes(workId: string): Promise<boolean> {
-  const run = inFlightOccurrence(workId, { anyState: true });
-  if (!run || occurrenceRunStatus(run.id) !== 'complete') return false;
-  const t = getDb().prepare(
-    `SELECT w.title, w.goal, w.task_kind AS kind, COALESCE(m.content, r.sent_text) AS message FROM work w
-       JOIN deliveries d ON d.id = ? LEFT JOIN messages m ON m.id = d.message_id LEFT JOIN tool_receipts r ON r.id = d.receipt_id
-      WHERE w.id = ?`,
-  ).get(owedRunDelivery(run.id), workId) as { title: string | null; goal: string | null; kind: string; message: string | null } | undefined;
-  if (!t) return false;
-  const said = await judgment('work_done/delivered_what_it_owes', {
-    agentId: workerOf(workId), state: { task: { title: t.title, goal: t.goal, kind: t.kind }, message: t.message ?? '' }, questions: { asked: OWES_IT },
-  });
-  return said?.asked === true;
-}
-
-/** A finished run is decided by the engine on its own fresh count, or on a delivered message the small local model
- *  confirms, after its schedule advanced; anything the engine does not decide goes to its decider's review. */
+/** A finished run is decided by the engine on its own fresh count, or on the message its task owes that its turn
+ *  delivered (8.6.15), after its schedule advanced; anything the engine does not decide goes to its decider's review. */
 async function decideOrReview(workId: string, h: HandInRecord): Promise<void> {
   try {
     if (h.scope && h.outcome === 'finished') {   // a run's hand-in: a live schedule's, or the final run's
       await remeasureTask(ENGINE_ID, workId);
       if (decide({ workId, deciderAgentId: ENGINE_ID, verdict: 'approve', reason: 'its own count reads 0 for this run' }).kind === 'decided') return;
-      if (await deliveredWhatItOwes(workId) && decide({
-        workId, deciderAgentId: ENGINE_ID, verdict: 'approve', engineBasis: 'delivered',
-        reason: 'the small local model read the delivered message as what this task owes',
-      }).kind === 'decided') return;
+      if (decide({ workId, deciderAgentId: ENGINE_ID, verdict: 'approve', engineBasis: 'delivered',
+        reason: 'its run delivered the message its task owes' }).kind === 'decided') return;
     }
   } catch (err) {
     logger.warn('hand-in: the engine could not decide the run', { workId, error: String(err) });

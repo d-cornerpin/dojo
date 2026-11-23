@@ -26,7 +26,7 @@ import {
 } from '../turn-context.js';
 
 import {
-  turnBoundary, untrackedWorkAcrossTurns,
+  turnBoundary,
 } from '../turn-state.js';
 import {
   activeRuns, pendingWakeups, stoppedAgents, activeAbortControllers, preemptedAgents,
@@ -214,13 +214,12 @@ describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
 });
 
 describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () => {
-  it('the thirteen CROSS-TURN carriers survive endTurnContext', () => {
+  it('the twelve CROSS-TURN carriers survive endTurnContext', () => {
     const A = FXID.n4;
     openTurnContext(A);
 
-    // Two that live in `turn-state.ts` on purpose.
+    // One that lives in `turn-state.ts` on purpose.
     turnBoundary.set(A, '2026-08-04 00:00:00');
-    untrackedWorkAcrossTurns.set(A, { convKey: 'ck', count: 3 });
 
     // Eleven that live in `shared-state.ts`, shared with the v1 runtime.
     activeRuns.add(A);
@@ -237,13 +236,12 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
 
     endTurnContext(A);
 
-    // THE CLAUSE: the turn's bag is gone and every one of the thirteen is still there.
+    // THE CLAUSE: the turn's bag is gone and every one of the twelve is still there.
     // A collapse that swept these in would reset a counter whose whole purpose is to cross turns, and drop an
     // abort controller mid-flight.
     expect(turnContext(A)).toBeUndefined();
     const survivors = {
       turnBoundary: turnBoundary.has(A),
-      untrackedWorkAcrossTurns: untrackedWorkAcrossTurns.has(A),
       activeRuns: activeRuns.has(A),
       pendingWakeups: pendingWakeups.has(A),
       stoppedAgents: stoppedAgents.has(A),
@@ -257,9 +255,9 @@ describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () =
       recoveryRunStreak: recoveryRunStreak.has(A),
     };
     expect(Object.entries(survivors).filter(([, v]) => !v).map(([k]) => k)).toEqual([]);
-    expect(Object.keys(survivors)).toHaveLength(13);
+    expect(Object.keys(survivors)).toHaveLength(12);
 
-    for (const m of [turnBoundary, untrackedWorkAcrossTurns,
+    for (const m of [turnBoundary,
       activeAbortControllers, lastCompactionDividerAt, lastA2APreemptAt, agentStartTimes,
       statusHeartbeats, recoveryRunStreak]) m.delete(A);
     for (const s of [activeRuns, pendingWakeups, stoppedAgents,

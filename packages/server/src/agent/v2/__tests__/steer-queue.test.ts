@@ -20,8 +20,8 @@ import { persistEngineSteer } from '../engine-steer.js';
 import { initState, type AgentTurnState } from '../state.js';
 import {
   clearSteerQueueFor, emptySteerQueue, enqueueSteer, markSteerAttempted, markSteerDelivered,
-  nextSteer, steerFired, steerFiredAny, steerFiredAtLoop,
-  MAX_STEER_DELIVERY_ATTEMPTS, STEER_PRECEDENCE, TRACKER_STEER_FLOORS,
+  nextSteer, steerFired, steerFiredAtLoop,
+  MAX_STEER_DELIVERY_ATTEMPTS, STEER_PRECEDENCE,
   type SteerQueue,
 } from '../steer-queue.js';
 
@@ -177,7 +177,8 @@ describe('the declared precedence table', () => {
     // `spinning` and `no-results`.
     // `forced-reply` is the required reply's steer.
     // `start-ack-reminder` left: an ignored start-line steer is followed by one held pass, a refusal, not a steer.
-    expect(STEER_PRECEDENCE.length).toBe(22);
+    // `tracker-stop-directive` and `tracker-scaffold` went with the engine's own "Multi-step task" card (owner, 23 November).
+    expect(STEER_PRECEDENCE.length).toBe(20);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'forced-reply').length).toBe(1);
     for (const id of ['redundant-closeout', 'near-duplicate-reply']) {
       expect(STEER_PRECEDENCE.filter((f) => f.id === id).length).toBe(1);
@@ -235,18 +236,6 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
     q = enqueueSteer(q, { floor: 'a2a-missed-reply', content: 'n3', key: '', atLoop: 1 });
     const blocked = enqueueSteer(q, { floor: 'a2a-missed-reply', content: 'n4', key: '', atLoop: 2 });
     expect(blocked).toBe(q);
-  });
-
-  it('TWO FLOORS NEVER SHARE A LATCH — the tracker pair, whose one flag disarmed either', () => {
-    let q = enqueueSteer(emptySteerQueue(), { floor: 'tracker-scaffold', content: 'scaffolded', atLoop: 1 });
-    // The OLD defect: this set `nudgedForTrackerThisTurn`, so the STOP directive below
-    // could never fire in the same turn even though it is a different fact.
-    expect(steerFired(q, 'tracker-stop-directive')).toBe(false);
-    q = enqueueSteer(q, { floor: 'tracker-stop-directive', content: 'stop', atLoop: 2 });
-    expect(q.pending.length).toBe(2);
-    // …while the SUBSYSTEM-level gate the shared flag was ALSO carrying still holds: one
-    // of them having spoken is enough to skip the block.
-    expect(steerFiredAny(q, TRACKER_STEER_FLOORS)).toBe(true);
   });
 
   it('records the loop the floor fired at (the start-ack hold reads it off the entry)', () => {

@@ -14,13 +14,13 @@ export function readRelayReceipt(agentId: string, messageId: string): { channel:
   } catch { return null; }
 }
 
-/** This agent opened `threadId` by delegating a person's ask (a join child under an ask row), in any state. */
-export function readDelegatedForAsk(agentId: string, threadId: string): boolean {
+/** The newest piece this agent opened on `threadId` by delegating a person's request, in any state, or null. */
+export function delegatedPiece(agentId: string, threadId: string): string | null {
   try {
-    return !!getDb().prepare(`SELECT 1 FROM work c JOIN work p ON p.id = c.parent_id
-                               WHERE c.agent_id = ? AND c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.root_id = ?
-                                 AND p.kind = 'ask' LIMIT 1`).get(agentId, threadId);
-  } catch { return false; }
+    return (getDb().prepare(`SELECT c.id FROM work c JOIN work p ON p.id = c.parent_id AND p.kind = 'ask'
+        WHERE c.agent_id = ? AND c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.root_id = ? ORDER BY c.opened_at DESC LIMIT 1`)
+      .get(agentId, threadId) as { id: string } | undefined)?.id ?? null;
+  } catch { return null; }
 }
 
 /** Who the conversation's person is (the owner by his configured name), raw: the caller neutralises it. */

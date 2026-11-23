@@ -5,11 +5,11 @@
 import type { Message } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { getOwnerName } from '../config/platform.js';
-import { requestEnded } from '../work/ask-settlement.js';
+import { standing, type Standing } from '../agent/v2/work-lineage.js';
 import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { renderInstant, renderMessageTimeStamp } from './message-stamp.js';
 import { subjectKindsBySeq, type SubjectKind } from './message-store.js';
-import { readRelayReceipt, readDelegatedForAsk, readCounterparty } from './relay-facts.js';
+import { readRelayReceipt, delegatedPiece, readCounterparty } from './relay-facts.js';
 
 export type LabelledMessage = Message & { subjectKind?: SubjectKind | null };
 
@@ -45,6 +45,9 @@ function emailSubjectOf(inboundMeta: string | null | undefined): string | null {
 export const THREAD_PEER_SQL = `SELECT a.name FROM messages m JOIN agents a ON a.id = m.source_agent_id
   WHERE m.a2a_thread_id = ? AND +m.agent_id = ? AND m.source_agent_id <> m.agent_id ORDER BY m.seq ASC LIMIT 1`;
 
+/** The mark on a person's message whose request was ended: by the owner, or by anyone else. */
+const REQUEST_MARK: Partial<Record<Standing, string>> = { called_off: ' · called off by the owner: do not do this', ended: ' · ended: do not do this' };
+
 /** Per-assembly lookups, cached: one keyed read per conversation / thread / turn / request.
  *  Every one reads the STORE, never the tail in hand, so a label is a function of the row. */
 export class LabelFacts {
@@ -53,7 +56,7 @@ export class LabelFacts {
   private readonly wakes = new Map<number, string | null>();
   private readonly peers = new Map<string, string>();
   private readonly receipts = new Map<string, { channel: string; at: string } | null>();
-  private readonly ended = new Map<string, boolean>();
+  private readonly marks = new Map<string, string>();
   private served: string | null | undefined;
   constructor(private readonly agentId: string) {}
 
@@ -106,7 +109,7 @@ export class LabelFacts {
     if (own !== null && (own === '' || own === threadId)) return base;
     // Concatenated, not interpolated: the label census test counts template interpolations.
     // A thread the agent opened by delegating a person's request is that person's work, not "not for you".
-    if (readDelegatedForAsk(this.agentId, threadId)) return base + ' — work you delegated to ' + (this.peers.get(threadId) ?? 'another agent') + ' for the request of the person you are talking with';
+    if (delegatedPiece(this.agentId, threadId)) return base + ' — work you delegated to ' + (this.peers.get(threadId) ?? 'another agent') + ' for the request of the person you are talking with';
     return base + ' — work for ' + (this.peers.get(threadId) ?? 'another agent')
       + ' in its own conversation, not for the person you are talking with; do not report it to them as theirs';
   }
@@ -164,10 +167,12 @@ export class LabelFacts {
     return this.receipts.get(messageId) ?? null;
   }
 
-  /** The person's message whose request was called off (its ask abandoned): a stored, one-way fact. */
-  calledOff(messageId: string): boolean {
-    if (!this.ended.has(messageId)) this.ended.set(messageId, requestEnded('ask:' + messageId) === 'called_off');
-    return this.ended.get(messageId) === true;
+  /** The mark of a person's message whose request ended, or of a run's trigger row whose run delivered (`standing`). */
+  mark(m: LabelledMessage): string {
+    if (m.role !== 'user') return '';
+    const run = this.marks.has(m.id) ? null : (getDb().prepare('SELECT run_id AS r FROM messages WHERE id = ?').get(m.id) as { r: string | null } | undefined)?.r;
+    if (!this.marks.has(m.id)) this.marks.set(m.id, run ? (standing(run) === 'answered' ? ' · delivered: do not send it again' : '') : REQUEST_MARK[standing('ask:' + m.id) ?? 'live'] ?? '');
+    return this.marks.get(m.id) ?? '';
   }
 
   /** The request a delivered result answers, by instant + first words (two in a minute differ). */
@@ -248,8 +253,8 @@ export function labelRows(agentId: string, rows: Message[]): Map<string, string>
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     const subject = rowSubject(m, facts);
     const isToolCall = m.role === 'assistant' && typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
-    // A person's message whose request was called off says so on every view, so no later turn takes it as work.
-    const mark = (label: string): string => (m.role === 'user' && facts.calledOff(m.id) ? label.slice(0, -1) + ' · ended: do not do this]' : label);
+    // A person's message whose request ended says so on every view, so no later turn takes it as work.
+    const mark = (label: string): string => { const w = facts.mark(m); return w ? label.slice(0, -1) + w + ']' : label; };
     if (subject !== current) {
       out.set(m.id, mark(renderRowLabel(m, facts)));
       current = subject;

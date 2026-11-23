@@ -5,7 +5,7 @@ import { executeTool, toolResultOf } from '../../tools/index.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { inboundIMessageText } from '../../../tools/inbound-fences.js';
 import { clearPlatformConfigCache } from '../../../config/platform.js';
-import { claimAsk, openDelegationJoin } from '../../../work/store.js';
+import { claimAsk } from '../../../work/store.js';
 import { trackerRouter } from '../../../gateway/routes/tracker.js';
 import { deliverA2AMessage } from '../../a2a-transport.js';
 import { endTurnContext } from '../../turn-context.js';
@@ -14,6 +14,7 @@ import { liveTurn } from '../../v2/__tests__/helpers/live-turn.js';
 import { computeTurnAddress } from '../../v2/turn-address.js';
 import { testDb, AGENT, PERSON } from '../../v2/__tests__/helpers/reply-sender.js';
 import { delegatedTextRequest, helperTask, ASK, CONV, HELPER, THREAD } from './text-relay.js';
+import { respond } from './hand-on-world.js';
 
 export const SECOND = 'agent-second';
 export const T2 = 'thread-second-0002';   // its short token differs from THREAD's
@@ -63,13 +64,14 @@ export function helperBusy(agent: string, thread = agent === SECOND ? T2 : THREA
 }
 export const stopped = (agent: string): boolean => isStopFenced(agent);
 
-/** The helper `under`'s job is handed on to `to` on `thread`: a piece under the job task, and `to`'s own job task. */
-export function handedOn(underTask: string, from: string, to: string, thread: string, toTask: string): void {
+/** The helper `from`, in its turn on its job, hands the job on to `to` on `thread` by its real send through the real
+ *  execute step, and `to` is then in a turn on it. Returns `to`'s job task, which the transport opened. */
+export async function handedOn(from = HELPER, to = 'agent-third', thread = 'thread-3'): Promise<string> {
   testDb().prepare("INSERT OR IGNORE INTO agents (id, name, status, classification) VALUES (?, ?, 'idle', 'standard')").run(to, to);
-  openDelegationJoin({ parentWorkId: underTask, agentId: from, replyConversationId: null, ttlAt: now() + 3_600_000,
-    threads: [{ threadId: thread, assigneeAgent: to, intent: 'ASSIGN', hopCount: 0 }] });
-  task(toTask, { holder: to, thread, card: false });
+  const out = await respond(from, [['send_to_agent', { agent: to, intent: 'ASSIGN', thread_id: thread, payload: 'Check the hall too.' }]]);
+  expect(out).toMatchObject({ reason: 'a2a-reply-sent' });
   helperBusy(to, thread);
+  return (testDb().prepare("SELECT id FROM work WHERE kind = 'task' AND agent_id = ? AND a2a_thread_id = ?").get(to, thread) as { id: string }).id;
 }
 
 /** A message `id` from the person (the owner unless `relation` says a contact) by text, or the owner's on the dashboard,

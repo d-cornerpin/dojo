@@ -20,7 +20,7 @@
 //
 //   §3  DOES EVERY WRITER GO THROUGH A DOOR? Every production file that writes `work` with
 //       raw SQL is held to a reviewed allow-list with a VERDICT per writer. A new raw writer
-//       that binds prose — the next `tracker-floors.ts` — fails here. (Direction two.)
+//       that binds prose fails here. (Direction two.)
 //
 // FIXTURE DISCIPLINE (G1): fictional credential-shaped strings, invented in this file.
 // ════════════════════════════════════════════════════════════════════════════════════════

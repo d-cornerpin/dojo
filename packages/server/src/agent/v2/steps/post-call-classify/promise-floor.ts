@@ -9,7 +9,8 @@ import { type AgentTurnState } from '../../state.js';
 import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFired } from '../../steer-queue.js';
 import { replyClaim } from '../../reply-claims.js';
-import { linkedTaskOf, joinOutstanding, requestEnded } from '../../../../work/ask-settlement.js';
+import { linkedTaskOf, joinOutstanding } from '../../../../work/ask-settlement.js';
+import { standing } from '../../work-lineage.js';
 import { servedBy } from '../../../../work/task-turns.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
@@ -65,7 +66,7 @@ export function runPromiseFloor(
     // A promise to start is not pushed on a request the turn served that waits on helpers, has ended, or whose task the
     // owner holds.
     const requests = forwardPromise ? servedBy(agentId, turnNumber).filter((s) => s.id.startsWith('ask:') && ['root', 'claimed', 'forwarded'].includes(s.how)) : [];
-    const notThisTurns = requests.some((s) => joinOutstanding(s.id) || requestEnded(s.id) !== null);
+    const notThisTurns = requests.some((s) => joinOutstanding(s.id) || !['live', 'answered', null].includes(standing(s.id)));
     const ownerHoldsItsTask = requests.some((s) => !!linkedTaskOf(agentId, s.id.slice(4)) && !linkedTaskOf(agentId, s.id.slice(4), { ownerHeldEnds: true }));
     // A promise backed by a row this turn opened with a future fire is the scheduler's to keep;
     // `origin_turn` is stamped on every tracker open, and a failed open leaves no row.

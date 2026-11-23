@@ -133,7 +133,6 @@ import { runV2Turn } from '../../agent/v2/loop.js';
 import { runMigrations } from '../../db/migrations.js';
 import { submitUserMessage } from '../../gateway/routes/chat.js';
 import { mediaHandlers } from '../../agent/tools/cat/media.js';
-import { untrackedWorkAcrossTurns } from '../../agent/turn-state.js';
 import { createTask } from '../../tracker/schema.js';
 import { handIn } from '../../work/done/hand-in.js';
 import { decide } from '../../work/done/decide.js';
@@ -204,7 +203,6 @@ async function turn(...steps: typeof script): Promise<Wire[][]> {
 }
 
 beforeEach(() => {
-  untrackedWorkAcrossTurns.clear();
   const db = freshDb();
   mockDb.current = db;
   db.prepare(`INSERT INTO providers (id, name, type, auth_type) VALUES ('p', 'P', 'anthropic', 'api_key')`).run();

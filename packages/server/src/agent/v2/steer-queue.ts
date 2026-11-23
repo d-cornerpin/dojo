@@ -10,7 +10,7 @@ export type SteerFloorId =
   | 'start-ack' | 'owed-interrupt' | 'promise-floor'
   | 'a2a-missed-reply' | 'going-idle-in-progress'
   | 'output-grind' | 'empty-response' | 'dead-end' | 'add-notes-stop'
-  | 'tracker-stop-directive' | 'tracker-scaffold' | 'hoarding-advisory'
+  | 'hoarding-advisory'
   | 'redundant-closeout' | 'near-duplicate-reply';
 
 export interface SteerFloorSpec {
@@ -49,8 +49,6 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   // Priority 60 (compaction-recap, retired) is never reused.
   { id: 'add-notes-stop',        priority: 61, why: 'went quiet after a note with the task still open' },
 
-  { id: 'tracker-stop-directive', priority: 70, why: 'multi-step work with no tracker entry' },
-  { id: 'tracker-scaffold',      priority: 71, why: 'the engine opened the work row itself' },
   // These two hold the reply once and state the fact; written again, the reply goes out.
   { id: 'redundant-closeout',    priority: 73, why: 'a short final line after this turn already delivered its answer' },
   { id: 'near-duplicate-reply',  priority: 74, why: 'a final reply matching one already sent' },
@@ -63,9 +61,6 @@ const BY_ID = new Map<SteerFloorId, SteerFloorSpec>(STEER_PRECEDENCE.map((f) => 
 export function steerPriority(floor: SteerFloorId): number {
   return BY_ID.get(floor)!.priority;
 }
-
-/** Floors that nudge about the same subsystem (the tracker), so one of them speaking is enough. */
-export const TRACKER_STEER_FLOORS: readonly SteerFloorId[] = ['tracker-scaffold', 'tracker-stop-directive'];
 
 /** Unconfirmed pushes before an entry is abandoned, so one un-injectable steer cannot block the queue. */
 export const MAX_STEER_DELIVERY_ATTEMPTS = 3;
@@ -105,10 +100,6 @@ export function emptySteerQueue(): SteerQueue {
 /** Has this floor already produced a steer this turn? A steer still WAITING counts. */
 export function steerFired(q: SteerQueue, floor: SteerFloorId, key = ''): boolean {
   return q.fired.some((e) => e.floor === floor && e.key === key);
-}
-
-export function steerFiredAny(q: SteerQueue, floors: readonly SteerFloorId[]): boolean {
-  return q.fired.some((e) => floors.includes(e.floor));
 }
 
 export function steerFiredAtLoop(q: SteerQueue, floor: SteerFloorId): number | null {

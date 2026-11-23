@@ -2,12 +2,21 @@ import { createLogger } from '../logger.js';
 import { isStopFenced } from '../agent/shared-state.js';
 import { turnContext } from '../agent/turn-context.js';
 import { serveLater } from '../agent/v2/serve-later.js';
-import { openEngineScaffoldTask } from '../agent/v2/steps/execute/tracker-floors.js';
 import { linkedTaskOf } from './ask-settlement.js';
 import { requestsTakenUpBy, tasksServedBy } from './task-turns.js';
-import { PARKED_JOB_TITLE } from './tracker-view.js';
+import { ENGINE_SCAFFOLD_ROOT_KIND, PARKED_JOB_TITLE } from './tracker-view.js';
+import { openTrackerTask } from './tracker-store.js';
 
 const logger = createLogger('job-continuation');
+
+/** The park's own task: one working task, linked to the request it serves (and its thread, for another agent's request). */
+export function openEngineScaffoldTask(agentId: string, title: string, turn: number, request: { messageId: string; convKey: string | null; threadId?: string | null }): string {
+  return openTrackerTask({
+    title, assignedTo: agentId, createdBy: agentId, status: 'in_progress', rootKind: ENGINE_SCAFFOLD_ROOT_KIND,
+    a2aThreadId: request.threadId ?? null,
+    origin: { kind: 'engine_scaffold', sourceMessageId: request.messageId, turn, convKey: request.convKey },
+  });
+}
 
 /** ONE task carries the turn's work: the one the turn was started from, else the one linked to its request, else the
  *  first the turn served. */

@@ -11,6 +11,7 @@ import { AUDIT_KIND } from '../audit-trail.js';
 import { taskScope } from '../tracker-view.js';
 import { workingExpr } from '../terminal-states.js';
 import { latestHandIn, workerOf, workersOf } from './record.js';
+import { inFlightOccurrence } from '../occurrences.js';
 
 export type Decider = { kind: 'agent'; agentId: string } | { kind: 'owner' };
 
@@ -90,9 +91,9 @@ export function delegatedTaskOf(requesterId: string, messageId: string | null): 
     WHERE ${taskScope('w')} AND w.requester_id = ? AND w.agent_id <> w.requester_id AND ${workingExpr('w', true)}`).all(requesterId) as Array<{ id: string; holder: string }> : [];
   return held.find((t) => requestOf(t.id)?.root === messageId) ?? null;
 }
-/** Until when this hand-in is held (0 when nothing holds it): the PM's questions, or for good while its request is owed. */
+/** Until when this hand-in is held (0 when nothing holds it): the PM's questions; for good while its request is owed or its open run `waits`. */
 export function questionsHoldUntil(workId: string): number {
-  if (requestOf(workId)?.owed) return Infinity;
+  if (requestOf(workId)?.owed || (latestHandIn(workId)?.waits === 1 && inFlightOccurrence(workId))) return Infinity;
   return Math.max(0, ...holdingQuestions(workId).map((q) => q.until));
 }
 

@@ -19,7 +19,7 @@ import { isPrimaryAgent } from '../config/platform.js';
 import type { WorkEventKind } from './event-kinds.js';
 import { noSuchWorkDetail } from './outcome.js';
 import { retireObligationMemory } from './obligation-memory.js';
-import { notifyPieceEnded, notifyTaskEnded } from './task-ended.js';
+import { notifyPieceEnded, notifyRequestAnswered, notifyTaskEnded } from './task-ended.js';
 import { TERMINAL_STATES, isTerminal } from './terminal-states.js';
 import type { TransitionApplied, WorkOutcome } from './outcome.js';
 import { heldByOwnerSql } from './tracker-view.js';
@@ -288,6 +288,8 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     }, at);
     // A piece called off takes its helper's job with it, in this unit (`work/done/decide.ts`).
     if (calledOff && row.root_kind === 'a2a_thread') notifyPieceEnded(workId, input.by === 'owner');
+    // A request answered ends the engine's own records made for it, in this unit (`work/done/decide.ts`).
+    if (input.to === 'done' && row.kind === 'ask') notifyRequestAnswered(workId);
 
     // EFFECT: a child settling decrements its parent's countdown in the same transaction as its own state
     // change, guarded at zero so a double-settle cannot drive it negative.

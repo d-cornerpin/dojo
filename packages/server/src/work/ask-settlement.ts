@@ -13,7 +13,7 @@ import { TERMINAL_JOB_STATUS_SQL } from '../services/media-job-status.js';
 import { turnContext } from '../agent/turn-context.js';
 import { onTaskEnded } from './task-ended.js';
 import { requestsTakenUpBy, servedBy } from './task-turns.js';
-import { ENGINE_SCAFFOLD_ROOT_KIND, PARKED_JOB_TITLE, handedInExpr, heldByOwnerSql } from './tracker-view.js';
+import { handedInExpr, heldByOwnerSql } from './tracker-view.js';
 import { delegatedRelayEvidence, turnEndedInModelSilence } from './delegated-relay-evidence.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
 // Imported from the leaf: `NOT_A_START_ACK` reads it at module scope, and `message-store` reaches this
@@ -24,7 +24,7 @@ import { broadcast } from '../gateway/ws.js';
 import { announceAgentLiveWork, serveLater } from '../agent/v2/serve-later.js';
 import { recordFloorGhost } from '../agent/v2/floor-ghost.js';
 import {
-  abandonedBySql, appendWorkEvent, jobOfPieceSql, askIdForMessage, claimAsk, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState, stampClaimingTurn,
+  abandonedBySql, appendWorkEvent, jobOfPieceSql, askIdForMessage, claimingTurnOf, failJoinClosed, firstServedAt, isTerminal, joinState,
   transition,
   type WorkState,
 } from './store.js';
@@ -413,16 +413,15 @@ export function handBackAsk(workId: string, p: { agentId: string; turnNumber: nu
 }
 
 /** The person wrote again (`triggerWorkId`, never served before): each request of that conversation stood down
- *  with nothing outstanding is claimed by this turn, so the turn's end settles it with the new message. An
+ *  with nothing outstanding is reopened for its own turn, never taken up by the new message's. An
  *  inherited ask stays parked; it closes only through its own door. */
-export function liftStandDowns(agentId: string, triggerWorkId: string, turnNumber: number): void {
+export function liftStandDowns(agentId: string, triggerWorkId: string): void {
   const held = getDb().prepare(`SELECT h.id AS id FROM work h JOIN work t ON t.id = ? AND t.conversation_id = h.conversation_id
     WHERE h.agent_id = ? AND h.kind = 'ask' AND h.state = 'blocked'`).all(triggerWorkId, agentId) as Array<{ id: string }>;
   for (const { id } of held) {
     const ask = readAsk(id);
     if (!ask || joinOutstanding(ask) || replyInFlight(id) || mediaJobs(ask.root_id).out > 0 || stillOwed(ask, null) || inheritedParkedAt(id)) continue;
-    if (transition(id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'the person wrote again' }).kind !== 'applied') continue;
-    if (claimAsk(id, agentId).kind === 'applied') stampClaimingTurn(id, turnNumber);
+    if (transition(id, { to: 'open', by: 'agent', actorId: 'engine', expectedState: 'blocked', reason: 'the person wrote again' }).kind === 'applied') serveLater({ kind: 'ask', id }, Date.now(), 'the person wrote again');
   }
 }
 
@@ -445,12 +444,6 @@ function undeliveredReply(ask: AskRow, turnNumber: number | null, atVerdict: boo
 export function joinOutstanding(ask: AskRow | string): boolean {
   const a = typeof ask === 'string' ? readAsk(ask) : ask;
   return !!a && ((a.remaining_children ?? 0) > 0 || a.compile_pending === 1);
-}
-
-/** How the request ended, when it was called off or failed; null while it stands or once it was answered. */
-export function requestEnded(ask: AskRow | string): 'called_off' | 'failed' | null {
-  const a = typeof ask === 'string' ? readAsk(ask) : ask;
-  return a?.state === 'abandoned' ? 'called_off' : a?.state === 'failed' ? 'failed' : null;
 }
 
 /** SQL: task `c` is one of request `a`'s cards (a task its agent opened for the request's message, any holder). */
@@ -636,7 +629,6 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     if (ctx.rowid != null && ctx.turnNumber != null) {
       recordServingTurnByRowid({ agentId: ask.agent_id, rowid: ctx.rowid, servedByTurn: ctx.turnNumber });
     }
-    handInCardsOf(ask, evidence.id, false);
     return out('closed', `delivered via ${evidence.tool}`, evidence.id);
   }
 
@@ -818,7 +810,6 @@ function settleOnJoin(
   appendWorkEvent(ask.id, 'compile_resolved', actorId, {
     reason, basis, delivery_id: evidence.id, tool: evidence.tool, boundary_at: boundaryMs,
   });
-  handInCardsOf(ask, evidence.id, ENGINE_SENT_TOOLS.has(evidence.tool));
   logger.info('join settled: the compiled answer reached the owner', {
     agentId: ask.agent_id, workId: ask.id, deliveryId: evidence.id, tool: evidence.tool,
   }, ask.agent_id);
@@ -861,25 +852,6 @@ function jobHold(ask: AskRow, ctx: SettlementContext, actorId: string, out: (v: 
   if (ask.state === 'blocked') return out('held', 'already held on its job');
   const r = transition(ask.id, { to: 'blocked', by: 'agent', actorId, expectedState: ask.state, reason: JOB_HOLD_REASON, evidenceRef: task });
   return r.kind === 'applied' ? out('held', 'held on its job') : out('unchanged', `job hold refused: ${r.kind}`);
-}
-
-/** After commit the engine hands in the tasks `tasks` names, finished on delivery `deliveryId`; a refusal is logged. */
-function handInOnDelivery(agentId: string, tasks: () => Promise<string[]>, because: string, deliveryId: string): void {
-  afterCommit(() => void Promise.all([tasks(), import('./done/hand-in.js')]).then(([ids, { engineHandIn }]) => {
-    for (const id of ids) {
-      const r = engineHandIn(id, because, { outcome: 'finished', items: [{ kind: 'delivery', ref: deliveryId }] });
-      if (r.kind === 'refused') logger.warn('the engine could not hand in a task', { task: id, why: r.text.slice(0, 200) }, agentId);
-    }
-  }).catch((err: unknown) => logger.warn('a delivered job\'s tasks were not handed in', { deliveryId, error: String(err) }, agentId)));
-}
-
-/** On any answer the card a park opened for the request is handed in; on the Dojo's own delivery of a delegated answer
- *  the agent's own open cards for it too, since the agent will not finish them. */
-function handInCardsOf(ask: AskRow, deliveryId: string, agentsCards: boolean): void {
-  const ids = (getDb().prepare(`SELECT t.id AS id FROM (SELECT ? AS agent_id, ? AS root_id) a JOIN work t ON ${LINKED_OPEN_TASK('a')}
-      AND ((t.origin_kind = 'model' AND ? = 1) OR (t.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}' AND t.title = '${PARKED_JOB_TITLE}'))`)
-    .all(ask.agent_id, ask.root_id, agentsCards ? 1 : 0) as Array<{ id: string }>).map((r) => r.id);
-  if (ids.length > 0) handInOnDelivery(ask.agent_id, async () => ids, 'the request this task was opened for was answered', deliveryId);
 }
 
 /** A tracker task `t` linked to the request of ask `a` by its message, not ended and not handed in. */

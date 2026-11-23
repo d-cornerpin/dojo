@@ -405,7 +405,7 @@ export async function sendToAgent(agentId: string, input: {
         content = 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
         break;
       case 'REQUEST_ENDED':
-        content = 'Not delivered: the request this answered was called off, so nothing was passed on. Send nothing more about it.';
+        content = 'Not delivered: the work this answered has ended, so nothing was passed on. Send nothing more about it.';
         break;
       case 'AGENT_NOT_FOUND':
         content = `No agent found with ID or name "${agentRef}"; live agents: ${liveAgentNamesNear(String(agentRef)).join(', ') || '(none)'}.`;

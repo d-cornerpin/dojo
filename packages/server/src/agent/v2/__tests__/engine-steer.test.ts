@@ -61,7 +61,7 @@ describe('persistEngineSteer: does both writes', () => {
     const before = freshState();
     const content = '[System: STOP and call tracker_create_project.]';
     const after = persistEngineSteer(
-      before, { agentId: 'a1', content, turnNumber: 7, floor: 'tracker-stop-directive', atLoop: 1 }, deps,
+      before, { agentId: 'a1', content, turnNumber: 7, floor: 'add-notes-stop', atLoop: 1 }, deps,
     );
 
     // Dashboard row: a role='system' message carrying the content, for this turn.
@@ -98,10 +98,10 @@ describe('persistEngineSteer: does both writes', () => {
     } as unknown as Parameters<typeof persistEngineSteer>[2];
     const after = persistEngineSteer(
       freshState(),
-      { agentId: 'a1', content: 'x', turnNumber: 1, floor: 'tracker-stop-directive', atLoop: 1 },
+      { agentId: 'a1', content: 'x', turnNumber: 1, floor: 'add-notes-stop', atLoop: 1 },
       deps,
     );
-    expect(steerFired(after.steerQueue, 'tracker-stop-directive')).toBe(true);
+    expect(steerFired(after.steerQueue, 'add-notes-stop')).toBe(true);
     // t196 (A4): the queue tags a bare steer as an engine line on the way in.
     expect(nextSteer(after.steerQueue)?.content).toBe('[System: x]');
   });

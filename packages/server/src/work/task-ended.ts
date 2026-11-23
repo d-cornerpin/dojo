@@ -10,3 +10,6 @@ let helperHook: PieceEnded | null = null;
 export function onHelperEnded(fn: PieceEnded): void { helperHook = fn; }
 export function notifyHelperEnded(agentId: string, byOwner: boolean): void { helperHook?.(agentId, byOwner); }
 export function notifyPieceEnded(pieceId: string, byOwner: boolean): void { pieceHook?.(pieceId, byOwner); }
+let answeredHook: ((askId: string) => void) | null = null;
+export function onRequestAnswered(fn: (askId: string) => void): void { answeredHook = fn; }
+export function notifyRequestAnswered(askId: string): void { answeredHook?.(askId); }

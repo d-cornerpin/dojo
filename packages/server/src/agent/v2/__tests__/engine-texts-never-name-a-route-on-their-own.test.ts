@@ -31,7 +31,7 @@ describe('a contact\'s turn never gets owner-route text, on any outbound path th
       'turn block (header, tag, hints)': block,
       'header alone': renderCounterpartyHeader(contact, { address: addr }),
       'start-ack steer': startAckSteerText({ address: addr } as never),
-      'compile steer (asker = this contact)': compileSteerText({ kind: 'late', asker: { name: contact.name, channel: 'iMessage' }, helper: 'Helper', request: 'x', files: [], pieces: ['x'] }),
+      'compile steer (asker = this contact)': compileSteerText({ kind: 'late', asker: { name: contact.name, channel: 'iMessage' }, helper: 'Helper', request: 'x', files: [], pieces: ['x'], back: 1, calledOff: [] }),
       'no-recipient refusal': refuseSendWithNoRecipient('primary', 'imessage_send', { message: 'x' }, 'c')!.content,
       'send note (someone else)': recipientNoteFor('primary', 'sms_send', { to: '+15550123', body: 'x' }),
       'failure words': routedReplyWords('primary')?.where ?? '',

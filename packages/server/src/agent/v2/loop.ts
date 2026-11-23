@@ -197,7 +197,6 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           startAckArmed, startAckArmedAtMs, fireStartAckIfOwed,
           result, messageId, persistedContent, interAgentTurn, hasXmlFallbackTools,
           effectiveModelIdForPersist,
-          staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
           engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
         });
         turnCtx.state = executed.state;

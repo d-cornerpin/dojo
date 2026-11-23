@@ -332,13 +332,15 @@ describe('(iv) an A2A turn answers its own thread', () => {
 
 describe('(v) an answered request carries no label', () => {
   it('after the reply lands in the peer\'s store, none of the history tools label the row', async () => {
-    await openOwnerTurn();
     requestId = peerAsks(THREAD, PEER, REQUEST_FP);
+    endTurnContext(AGENT);
+    expect((await runPreflight(openTurnContext(AGENT), ctx())).directive).toBe('proceed');   // its own turn picks it up
     insertMessage({
       agentId: PEER, role: 'user', lane: 'a2a', sourceAgentId: AGENT, a2aThreadId: THREAD, a2aIntent: 'ANSWER',
       content: `[A2A:ANSWER thread:${THREAD.slice(0, 8)} from:Primary] the figures`,
     });
     expect(awaiting()).toBeNull();
+    await openOwnerTurn();
     const r = await recall({ scope: 'all' });
     expect(r.content).toContain(REQUEST_FP);
     expect(r.content).not.toMatch(/this request belongs to/);

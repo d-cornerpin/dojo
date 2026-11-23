@@ -1,7 +1,6 @@
 // The owner asks how his long job is going while it runs: his question's turn carries the job (one turn chain, so a
 // second question ends its stretch at the next step), the question is answered and closed on its own delivery, and
-// the job goes on in its own turn from its row. Worked six calls deep, that turn opens no second task: the six-call
-// floor finds the job's task carrying it. A job the question's turn hands in keeps no due time, so its send-back
+// the job goes on in its own turn from its row. A job the question's turn hands in keeps no due time, so its send-back
 // starts no extra job turn.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -15,27 +14,12 @@ import { advance, initState } from '../v2/state.js';
 import { turnWindow } from '../v2/steps/post-call-classify/job-turn-end.js';
 import { turnContext } from '../turn-context.js';
 import { countTrackerWorkThisIteration } from '../v2/steps/execute/tracker-counting.js';
-import { runTrackerFloors } from '../v2/steps/execute/tracker-floors.js';
 import type { ExecuteContext } from '../v2/steps/execute/index.js';
 import { engineHandIn } from '../../work/done/hand-in.js';
-import { decide } from '../../work/done/decide.js';
 import { freshAgentsDb, testDb, HELPER } from './helpers/agent-requests.js';
 import { ownerAsks, stretch, rowOf, tasksOf } from './helpers/long-job.js';
 
 beforeEach(() => { freshAgentsDb(runMigrations); });
-
-/** Six untracked work calls in the live turn, through the tracker floors. */
-async function sixWorkCalls(): Promise<void> {
-  const bag = turnContext(HELPER)!;
-  const result = { toolCalls: Array.from({ length: 6 }, (_, i) => ({ id: `tc-${i}`, name: 'write_file', arguments: { path: `/tmp/clue${i}.txt`, content: 'x' } })) };
-  const state = initState({ agentId: HELPER, contextWindow: 100_000, turnNumber: bag.turnNumber, lastUserMessageContent: 'how is it going?', lastUserMessageId: bag.root?.id ?? null } as unknown as Parameters<typeof initState>[0]);
-  const ectx = {
-    agentId: HELPER, turnCtx: bag, turnNumber: bag.turnNumber, db: testDb(), agent: { name: 'Helper' }, result,
-    counterparty: { kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard', senderId: 'owner', threadId: null, senderIsAgent: false },
-    counterpartyIsAgentSender: false, chosenConvKey: bag.convKey, engineStartAckDeliveredThisTurn: false, staleTaskWindowMinutes: 45,
-  } as unknown as ExecuteContext;
-  await runTrackerFloors(countTrackerWorkThisIteration(state, ectx), ectx);
-}
 
 const oneStepIn = () => advance(initState({ agentId: HELPER, turnNumber: 2, lastUserMessageContent: null } as unknown as Parameters<typeof initState>[0]), { loopCount: 1 });
 
@@ -68,24 +52,14 @@ describe('how is it going gets an answer and the job goes on', () => {
     expect(window).toBe('checkpoint');
   });
 
-  it('the question\'s turn works the job six calls deep and the board still holds the one task', async () => {
-    await ownerAsks('m-1');
-    await stretch('parks');
-    const tasks = (): number => (testDb().prepare("SELECT COUNT(*) AS n FROM work WHERE kind = 'task' AND agent_id = ?").get(HELPER) as { n: number }).n;
-    expect(tasks()).toBe(1);
-    await ownerAsks('m-2', 'how is it going?');
-    await stretch('parks', sixWorkCalls);
-    expect(tasks()).toBe(1);
-  });
-
-  it('the question\'s turn hands the job in: no due is left, so its send-back starts no job turn', async () => {
-    await ownerAsks('m-1');
+  it('the question\'s turn hands the job in and its answer closes it: no due is left and no job turn starts', async () => {
+    const job = await ownerAsks('m-1');
     await stretch('parks');
     const [task] = tasksOf('m-1');
     await ownerAsks('m-2', 'how is it going?');
     await stretch('answers', () => expect(engineHandIn(task, 'the hunt is finished', { outcome: 'cant_be_done' }).kind).toBe('handed_in'));
     expect(rowOf(task).due).toBeNull();
-    expect(decide({ workId: task, deciderAgentId: null, verdict: 'send_back', reason: 'Two clues are still missing' }).kind).toBe('decided');
+    expect([rowOf(job).state, rowOf(task).state], 'the answer closes the request and the task the park opened for it').toEqual(['done', 'done']);
     expect(nextOwed(HELPER).filter((i) => i.kind === 'job')).toEqual([]);
   });
 });

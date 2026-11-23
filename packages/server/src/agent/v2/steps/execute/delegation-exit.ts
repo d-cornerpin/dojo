@@ -1,5 +1,5 @@
-// The delegation turn-end: on a non-A2A turn a wake-intent send (QUESTION / ASSIGN / BLOCK) that went out, by
-// send_to_agent or a spawn's job, is answered on a later turn, so the turn ends here and the question is delegated.
+// The delegation turn-end: a wake-intent send (QUESTION / ASSIGN / BLOCK) that went out, by send_to_agent or a spawn's job,
+// is answered on a later turn, so a person's turn ends here delegated; a helper's turn opens it as a piece under its job.
 
 import {
   JOIN_TTL_MINUTES, findJoinChildByThread, openDelegationJoin, threadHopCount, type DelegationThread,
@@ -10,6 +10,7 @@ import { persistEngineSteer } from '../../engine-steer.js';
 import { steerFired } from '../../steer-queue.js';
 import { userWords, replyChannelWords } from '../../turn-address.js';
 import { createLogger } from '../../../../logger.js';
+import { getPrimaryAgentId } from '../../../../config/platform.js';
 import { continueLoop, proceed, requestExit, type StepOutcome } from '../step-outcome.js';
 import type { ExecuteContext } from './index.js';
 import { turnWindow } from '../post-call-classify/job-turn-end.js';
@@ -38,8 +39,10 @@ export function runDelegationTurnEnd(state: AgentTurnState, ctx: ExecuteContext)
         AND d.tool = 'send_to_agent' AND d.outcome = 'delivered'
         AND m.source_agent_id = @agentId AND m.a2a_thread_id IS NOT NULL
         AND m.a2a_intent IN ('QUESTION','ASSIGN','BLOCK')
+        -- A send to the job's maker or on the job's thread is the job talking back (a BLOCK, a QUESTION), not a hand-on.
+        AND NOT EXISTS (SELECT 1 FROM work j WHERE j.id = @underTask AND (j.requester_id = m.agent_id OR m.agent_id = @primary OR j.a2a_thread_id = m.a2a_thread_id))
       ORDER BY m.created_at ASC, m.rowid ASC`,
-  ).all({ agentId, turnNumber }) as Array<{ a2a_thread_id: string; agent_id: string; a2a_intent: string | null }>;
+  ).all({ agentId, turnNumber, underTask, primary: getPrimaryAgentId() }) as Array<{ a2a_thread_id: string; agent_id: string; a2a_intent: string | null }>;
   // End the turn now, or the agent re-asks or fabricates the answer. Every send in this one response's batch
   // still goes out, so multi-delegation is not blocked.
   if (sentRows.length > 0) {

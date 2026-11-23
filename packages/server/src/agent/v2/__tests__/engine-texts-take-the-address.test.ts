@@ -22,7 +22,7 @@ describe('the header\'s close-the-loop line says HOW to reach the owner', () => 
 });
 
 describe('the compile steer names the person who asked', () => {
-  const base = { kind: 'compile' as const, asker: null, helper: 'Helper', request: 'plan the trip', files: [], pieces: ['Piece 1: "x"', 'Piece 2: "y"'] };
+  const base = { kind: 'compile' as const, asker: null, helper: 'Helper', request: 'plan the trip', files: [], pieces: ['Piece 1: "x"', 'Piece 2: "y"'], back: 2, calledOff: [] as string[] };
   it('for the owner it names the owner\'s request and quotes it whole', () => {
     const t = compileSteerText(base);
     expect(t).toContain("All 2 delegated pieces for the owner's request are back.");

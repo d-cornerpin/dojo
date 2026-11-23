@@ -1,5 +1,5 @@
 // The `execute` step: run each batch of the model's tool calls through `run-one.ts` (gates, once-guard,
-// repeat rule, executor, recording), then the tracker floors and the turn-ending checks.
+// repeat rule, executor, recording), then the tracker accounting and the turn-ending checks.
 // The driver advances into this phase itself, so `validate()` runs on the transition.
 
 import type { ToolCall } from '@dojo/shared';
@@ -20,7 +20,6 @@ import { CANCELLED_BY_STOP } from './stop-race.js';
 import { persistXmlFallbackCollapse } from './xml-fallback.js';
 import { admitBatchToRoom } from './batch-admission.js';
 import { countTrackerWorkThisIteration } from './tracker-counting.js';
-import { runTrackerFloors } from './tracker-floors.js';
 import { endAfterGenerator } from './media-words-step.js';
 import { runDelegationTurnEnd } from './delegation-exit.js';
 import { proceed, requestExit } from '../step-outcome.js';
@@ -76,7 +75,6 @@ export interface ExecuteContext {
   readonly hasXmlFallbackTools: boolean;
   readonly effectiveModelIdForPersist: string;
   /** Passed in, not copied: declared at `loop.ts` module level and read outside this step too. */
-  readonly staleTaskWindowMinutes: number;
   readonly engineStartAckAfterMs: number;
 }
 
@@ -188,7 +186,9 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   }
 
   state = countTrackerWorkThisIteration(state, ctx, turnToolResults, effectsFor);
-  state = await runTrackerFloors(state, ctx);
+  const delegation = runDelegationTurnEnd(state, ctx);
+  state = delegation.state;
+  if (delegation.directive !== 'proceed') return delegation as ExecuteOutcome;
 
   // complete_task and fire-and-forget generator exits.
   if (calledCompleteTask) {
@@ -203,10 +203,6 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     logger.info('v2: A2A reply sent, exiting loop (send_to_agent is the response)', { agentId }, agentId);
     return requestExit(state, 'a2a-reply-sent') as ExecuteOutcome;
   }
-
-  const delegation = runDelegationTurnEnd(state, ctx);
-  state = delegation.state;
-  if (delegation.directive !== 'proceed') return delegation as ExecuteOutcome;
 
   return { ...proceed(state), turnToolResults } as ExecuteOutcome;
 }

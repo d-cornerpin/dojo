@@ -13,10 +13,10 @@ export function engineRelayPreface(total: number): string {
     + `not combined, so here they are in full:`;
 }
 
-/** The order: an opening by kind, the person's request whole, the files, and every piece whole. The engine counts
- *  structure and never judges the pieces; the agent writes the answer. */
+/** The order: an opening by kind counting only what came back, what the owner called off, the person's request
+ *  whole, the files, and every piece whole. The engine counts structure and never judges the pieces. */
 export function compileSteerText(p: {
-  kind: PutBackKind; asker: CompileAsker | null; helper: string; request: string; files: string[]; pieces: string[];
+  kind: PutBackKind; asker: CompileAsker | null; helper: string; request: string; files: string[]; pieces: string[]; back: number; calledOff: string[];
 }): string {
   const whose = p.asker ? `${p.asker.name}'s` : "the owner's";
   const who = p.asker ? `${p.asker.name}${p.asker.channel ? ` (by ${p.asker.channel})` : ''}` : 'the owner';
@@ -24,11 +24,12 @@ export function compileSteerText(p: {
     ? `${p.helper} answered your earlier delegation after all; ${who} was told there was no answer yet, so start your reply with "Update:".`
     : p.kind === 'update'
       ? `${p.helper} corrected its work after review; ${who} already had the earlier answer, so start your reply with "Update:" and say what changed.`
-      : p.pieces.length === 1
-        ? `The delegated piece for ${whose} request is back.`
-        : `All ${p.pieces.length} delegated pieces for ${whose} request are back.`;
+      : p.back < p.pieces.length
+        ? `${p.back} of ${p.pieces.length} delegated pieces for ${whose} request came back.`
+        : p.pieces.length === 1 ? `The delegated piece for ${whose} request is back.` : `All ${p.pieces.length} delegated pieces for ${whose} request are back.`;
+  const off = p.calledOff.length > 0 ? `\nThe owner called off: ${p.calledOff.join(', ')}; leave them out of the answer.` : '';
   const files = p.files.length > 0
     ? `\nFiles the helpers sent back: ${p.files.join(', ')}. To pass on a long answer, attach its file with share_file instead of retyping it.`
     : '';
-  return `${opening}\nThey asked: "${p.request}"${files}\n\n${p.pieces.join('\n')}`;
+  return `${opening}${off}\nThey asked: "${p.request}"${files}\n\n${p.pieces.join('\n')}`;
 }

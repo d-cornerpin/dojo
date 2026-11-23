@@ -26,6 +26,7 @@ export interface TurnStartParams {
   convKey: string | null;
   /** Spoken-stream lane: 'voice' in person, 'phone' on a live call, null for text lanes. */
   lane?: 'voice' | 'phone' | null;
+  pickupSeq?: number | null;   // the last message row that existed when the turn picked up its work
 }
 
 /** Allocate the next turn number from `turns` (never `messages`, which restarts on a history clear) and
@@ -34,15 +35,15 @@ export function startTurn(params: TurnStartParams): number {
   const row = getDb().prepare(`
     INSERT INTO turns (
       agent_id, turn_number, kind, subject_kind, subject_id, root_kind, root_id,
-      source_message_id, conv_key, lane, answered, effectful_calls, started_at
+      source_message_id, conv_key, lane, answered, effectful_calls, started_at, pickup_seq
     )
-    SELECT ?, COALESCE(MAX(turn_number), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now')
+    SELECT ?, COALESCE(MAX(turn_number), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, datetime('now'), ?
       FROM turns WHERE agent_id = ?
     RETURNING turn_number
   `).get(
     params.agentId, params.kind, params.subjectKind, params.subjectId,
     params.rootKind, params.rootId, params.sourceMessageId, params.convKey,
-    params.lane ?? null, params.agentId,
+    params.lane ?? null, params.pickupSeq ?? null, params.agentId,
   ) as { turn_number: number } | undefined;
 
   if (!row) throw new Error(`turn allocation returned no row for agent ${params.agentId}`);

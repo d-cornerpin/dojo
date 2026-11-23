@@ -377,7 +377,6 @@ import { turnContext } from '../../turn-context.js';
 // The cross-turn untracked-work debt: turns that park on the turn-time budget never
 // answer, so their debt survives the turn. It is module state, and every clause below
 // starts from a clean DB — so it starts from a clean debt map too, like the maps beside it.
-import { untrackedWorkAcrossTurns } from '../../turn-state.js';
 import { currentTurnNumber } from '../turn-record.js';
 // T82d (ANSWER-ANYWAY) — the recovery cascade under test directly, for the ONE case
 // (engine/A2A/scheduled turns) this file has no existing fixture to drive end-to-end: nothing
@@ -544,7 +543,6 @@ beforeEach(() => {
   doomedPrefillCompactionSpent.clear();
   declaredPatienceHonestFailTurn.clear();
   pendingWakeups.clear();
-  untrackedWorkAcrossTurns.clear();
   enqueueSteerSpy.mockClear();
   stampTasksSpy.mockClear();
   terminalDeliveryForTurnSpy.mockClear();
@@ -856,8 +854,8 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // The engine opened the work's task in the first window, which is movement; the second has none.
-    expect(modelCallCount).toBe(150);
+    // No step moves the job, so the first window's end is the checkpoint.
+    expect(modelCallCount).toBe(75);
     // The park is invisible housekeeping: no system row for the owner.
     const sysMsgs = mockDb.current!
       .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system'")
@@ -3152,23 +3150,9 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
     expect(pendingWakeups.has('primary')).toBe(false);
   });
 
-  it('crossing the budget ASKS the token math about a compaction, and parks for a continuation', async () => {
+  it('crossing the budget parks for a continuation at once, with no compaction', async () => {
     await runAcrossTheBudget();
-
-    // ⚠ T84 (ANSWER-ANYWAY) — THE ONE CHANGE TO THIS CLAUSE, AND IT IS THE FIX'S SUBJECT.
-    // This used to read `expect.objectContaining({ force: true })`. `force` bypasses
-    // `runCheckAndCompact`'s ENTIRE trigger and all three of its yield guards, which made
-    // elapsed wall-clock — on its own — the reason to rebuild a history. On 2026-09-21 that
-    // rebuilt a 13,649-token assembly against a 51,300 threshold (27% fill,
-    // `needsCompactionByTokens: false` in the engine's own log) and severed a live agent from
-    // the half of a two-part ask it still owed. The checkpoint now ASKS instead of telling,
-    // and the exact-arity call below is what pins it: a fourth argument of ANY shape fails
-    // here. The token path itself is driven end-to-end, against a real database and the real
-    // `checkAndCompact`, in
-    // `steps/pre-call-gates/__tests__/the-clock-does-not-overrule-the-token-math.test.ts`.
-    expect(checkAndCompactSpy).toHaveBeenCalledWith(
-      'primary', expect.any(String), expect.any(Number),
-    );
+    expect(checkAndCompactSpy).not.toHaveBeenCalled();
 
     // The turn parks rather than dying: a wakeup is queued so the work resumes on a fresh
     // turn. t137 (OR-LONG-JOBS): the park is housekeeping — it no longer tells the owner, so
@@ -3184,11 +3168,8 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
   // HL4 STEP 2 (2d) — THE THREE CLAUSES THAT PINNED THE RETIRED RECAP'S WORDING, AND
   // WHERE EACH ONE'S REQUIREMENT WENT. Nothing here was dropped silently.
   //
-  //   1. "the recap's tool-call number is read LIVE off the turn state" — a CROSSING
-  //      test: two arms that differ only in live turn state make a stale snapshot
-  //      visible. The property is about the STEP, not about the recap, so it is
-  //      re-homed below onto `elapsedMin`, the one live-state number left in this
-  //      branch. A step handed a snapshot taken at turn start reports 0 on both arms.
+  //   1. "the recap's tool-call number is read LIVE off the turn state": gone with the
+  //      checkpoint's elapsed-time log line (the checkpoint parks at once, R4 L).
   //   2. "THE UNIT: a MULTI-BATCH turn counts the TURN, not the last batch" (T13, CUT
   //      3's H1) — the number came off `state.toolResults`, the turn's own ledger, and
   //      NOT off `state.toolCalls`, the last response's batch. The number survives the
@@ -3202,39 +3183,6 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
   //      `engineStartAckDeliveredThisTurn` were removed from `PreCallGatesContext` in
   //      the same commit, because this step was their only reader here.
   // ══════════════════════════════════════════════════════════════════════════════
-  // t137: `elapsedMin` used to surface in the owner's park row; that row is retired, and the
-  // number's one carrier now is the operator's log line — so the crossing is read there.
-  const parkLogElapsed = (): number[] => loggerWarnSpy.mock.calls
-    .filter((c) => c[0] === 'v2 checkpoint window ended, auto-continuing')
-    .map((c) => (c[1] as { elapsedMin: number }).elapsedMin);
-
-  it('THE CROSSING TEST: the checkpoint reads LIVE turn state, not a snapshot taken at turn start', async () => {
-    await runAcrossTheBudget();
-    expect(parkLogElapsed()).toEqual([16]);
-    loggerWarnSpy.mockClear();
-
-    enqueueSteerSpy.mockClear();
-    checkAndCompactSpy.mockClear();
-    pendingWakeups.clear();
-    mockDb.current = setupTestDb();
-
-    await runAcrossTheBudget({ extraMs: 19 * 60 * 1000 });
-    // A snapshot of `turnStartMs` taken before the loop would make both arms identical.
-    expect(parkLogElapsed()).toEqual([35]);
-  });
-
-  it('a forced compaction that THROWS produces no recap — the receipts describe a rebuild that happened', async () => {
-    checkAndCompactSpy.mockRejectedValueOnce(new Error('summarizer down'));
-
-    await runAcrossTheBudget();
-
-    expect(checkAndCompactSpy).toHaveBeenCalled();
-    expect(recaps()).toEqual([]);
-    // The turn still parks — the branch is best-effort about the rebuild, never about
-    // the continuation.
-    expect(jobParked()).toBe(true);
-  });
-
   // ══════════════════════════════════════════════════════════════════════════════
   // HL4 STEP 2 (2d) — THE DRIVEN CHECK THE CENSUS ASKED FOR, AND ITS ANSWER.
   //
@@ -3291,13 +3239,9 @@ describe('PHASE-6 CUT 3: the turn-time budget auto-continues (compacting only wh
   it('DRIVEN: the mid-turn recap reaches NO model request, on any call of the turn it is filed in', async () => {
     const seen = await runAcrossTheBudgetRecording();
 
-    // The turn really crossed the budget and really reached the compaction check — without
-    // this the clause would pass on a turn where the branch never ran, which proves nothing.
-    // (T84: the check is no longer FORCED — same three arguments, no options object. See the
-    // branch's own clause above for why.)
-    expect(checkAndCompactSpy).toHaveBeenCalledWith(
-      'primary', expect.any(String), expect.any(Number),
-    );
+    // The turn really crossed the budget and parked: without this the clause would pass on a
+    // turn where the branch never ran, which proves nothing.
+    expect(jobParked()).toBe(true);
     expect(seen.length).toBeGreaterThanOrEqual(1);
 
     // Every message of every request, across the whole turn.
@@ -4082,9 +4026,8 @@ describe('a provider limit after a paid call is counted, through the real turn',
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// A STOOD-DOWN REQUEST COMES BACK WHEN THE PERSON WRITES AGAIN, through the real pickup and finalize: the new message's
-// turn claims it and settles it; a failed turn stands it down again at once, the owner is not told twice, and a serve of
-// another request of the same person lifts nothing.
+// A STOOD-DOWN REQUEST COMES BACK WHEN THE PERSON WRITES AGAIN, through the real pickup and finalize: it is reopened for its
+// own turn, never taken up by the new message's; a failed turn stands it down again, the owner is not told twice.
 // ════════════════════════════════════════════════════════════════════════════════
 describe('a stood-down request comes back when the person writes again, through the real turn', () => {
   const state = (id: string): string => (mockDb.current!.prepare('SELECT state FROM work WHERE id = ?').get(`ask:${id}`) as { state: string }).state;
@@ -4093,7 +4036,7 @@ describe('a stood-down request comes back when the person writes again, through 
   const writesAgain = (id: string): void => { insertMessage({ id, agentId: 'primary', role: 'user', content: 'any news?', channel: 'dashboard',
     senderId: 'owner', conversationId: 'conv-primary', inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }) }); };
 
-  it('the new message serves it with one model call; a failure holds it again; another serve lifts nothing', async () => {
+  it('the new message reopens it for its own turn; a failure there holds it again, told once', async () => {
     callModelSpy.mockRejectedValue(new Error('500 internal server error'));
     for (let turn = 1; turn <= 6; turn++) { backoffPasses(); await runV2Turn('primary'); }
     expect(state('msg-user-1')).toBe('blocked');
@@ -4102,14 +4045,13 @@ describe('a stood-down request comes back when the person writes again, through 
     writesAgain('msg-user-2');
     callModelSpy.mockClear();
     await runV2Turn('primary');
-    expect(callModelSpy, 'one turn serves both').toHaveBeenCalledTimes(1);
-    expect(state('msg-user-1'), 'the failed turn stands it down again at once').toBe('blocked');
-    expect(told(), 'told once per request').toBe(1);
+    expect(callModelSpy, 'the new message has its own turn').toHaveBeenCalledTimes(1);
+    expect(state('msg-user-1'), 'reopened, not taken up by that turn').toBe('open');
 
     backoffPasses();
     await runV2Turn('primary');
-    expect(state('msg-user-2'), 'the backoff serve of the newer request ran').not.toBe('claimed');
-    expect(state('msg-user-1'), 'a serve of another request lifts nothing').toBe('blocked');
+    expect(state('msg-user-1'), 'its own failed turn stands it down again').toBe('blocked');
+    expect(told(), 'told once per request').toBe(1);
   });
 });
 

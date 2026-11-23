@@ -113,7 +113,6 @@ export function isHealerAgent(agentId: string): boolean {
   return agentId === getHealerAgentId();
 }
 
-
 export function getDreamerAgentId(): string {
   return get('dreamer_agent_id', 'dreamer');
 }
