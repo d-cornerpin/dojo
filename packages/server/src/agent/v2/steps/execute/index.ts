@@ -188,6 +188,9 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
   }
 
   state = countTrackerWorkThisIteration(state, ctx, turnToolResults, effectsFor);
+  const delegation = runDelegationTurnEnd(state, ctx);
+  state = delegation.state;
+  if (delegation.directive !== 'proceed') return delegation as ExecuteOutcome;
   state = await runTrackerFloors(state, ctx);
 
   // complete_task and fire-and-forget generator exits.
@@ -203,10 +206,6 @@ export async function runExecute(state: AgentTurnState, ctx: ExecuteContext): Pr
     logger.info('v2: A2A reply sent, exiting loop (send_to_agent is the response)', { agentId }, agentId);
     return requestExit(state, 'a2a-reply-sent') as ExecuteOutcome;
   }
-
-  const delegation = runDelegationTurnEnd(state, ctx);
-  state = delegation.state;
-  if (delegation.directive !== 'proceed') return delegation as ExecuteOutcome;
 
   return { ...proceed(state), turnToolResults } as ExecuteOutcome;
 }

@@ -12,6 +12,7 @@ import { createLogger } from '../../../../logger.js';
 import { getDb } from '../../../../db/connection.js';
 import { recordedInstant } from '../../../../memory/message-stamp.js';
 import { jobOfTurn } from '../../../../work/job-continuation.js';
+import { askIdForMessage, joinState } from '../../../../work/store.js';
 import { openTrackerTask } from '../../../../work/tracker-store.js';
 
 const logger = createLogger('v2-loop');
@@ -79,7 +80,8 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
     ((!state.trackerWriteThisTurn && !steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS) && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
       (!state.workRowOpenedThisTurn && effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT))
   ) {
-    // A recently moved in_progress task suppresses the nudge; the first stale one is named by it.
+    // A recently moved in_progress task suppresses the nudge; the task carrying this turn is named by it when stale.
+    const job = jobOfTurn(agentId, state.lastUserMessageId);
     let hasRecentlyTendedTask = false;
     let staleOpenTask: { id: string; title: string } | null = null;
     try {
@@ -93,7 +95,7 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
         const tendedMs = taskLastMovedAt(t.id, new Date(normalizeDbTimestamp(t.updatedAt)).getTime());   // real movement (ledger included); a park touches nothing
         if (tendedMs >= cutoffMs) {
           hasRecentlyTendedTask = true;
-        } else if (!staleOpenTask) {
+        } else if (t.id === job) {
           staleOpenTask = { id: t.id, title: t.title };
         }
       }
@@ -104,7 +106,7 @@ export async function runTrackerFloors(state: AgentTurnState, ctx: ExecuteContex
     }
     if (
       // Open a task only when no task carries this turn's work, whatever other tasks the agent holds.
-      !jobOfTurn(agentId, state.lastUserMessageId) &&
+      !job && !(state.lastUserMessageId && (joinState(askIdForMessage(state.lastUserMessageId))?.landed ?? 0) > 0) &&
       effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT &&
       // The floor opens a row only for a turn serving a request it can link to; it never invents one.
       state.lastUserMessageId &&
