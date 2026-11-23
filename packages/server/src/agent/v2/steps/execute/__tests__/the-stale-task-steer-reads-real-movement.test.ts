@@ -41,6 +41,7 @@ const HOUR = 3_600_000;
 function ctxFor(): ExecuteContext {
   const turnCtx = openTurnContext(AGENT);
   turnCtx.convKey = null;
+  turnCtx.servedJob = TASK;   // the turn continues the measured job
   return {
     agentId: AGENT, turnCtx, turnNumber: 9, db: db(), agent: { name: 'Worker' },
     counterparty: { kind: 'user', name: 'Owner', relation: 'owner', channel: 'dashboard', senderId: 'owner', threadId: null, senderIsAgent: false },
