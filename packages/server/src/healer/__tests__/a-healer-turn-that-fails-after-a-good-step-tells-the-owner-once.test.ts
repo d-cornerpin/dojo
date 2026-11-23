@@ -48,7 +48,7 @@ let n = 0;
 /** One Healer turn woken by an injury question: a good tool batch, then the next call fails (or answers). */
 async function healerTurn(fails: boolean): Promise<void> {
   mockDb.current!.prepare("UPDATE agents SET status = 'idle' WHERE id = ?").run(HEALER);
-  insertMessage({ id: `q-${++n}`, agentId: HEALER, role: 'user', content: 'BehaviorBot is injured: look into it.', turnNumber: n });
+  insertMessage({ id: `q-${++n}`, agentId: HEALER, role: 'user', content: 'Tally is injured: look into it.', turnNumber: n });
   let pass = 0;
   callModelSpy.mockImplementation(async () => {
     if (++pass === 1) return { content: 'Looking.', toolCalls: [{ id: `c-${n}`, name: 'file_read', arguments: { path: '/tmp/x' } }], inputTokens: 1, outputTokens: 1, stopReason: 'tool_use' };

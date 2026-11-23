@@ -19,7 +19,7 @@ export const BOT = 'agent-bot';
 export const THIRD = 'agent-third';
 export const CONV = 'conv-owner-text';
 export const ASK = 'ask:m-owner';
-const NAMES: Record<string, string> = { [AGENT]: 'Kevin', [CORA]: 'Cora', [BOT]: 'BehaviorBot', [THIRD]: 'Packer' };
+const NAMES: Record<string, string> = { [AGENT]: 'Orin', [CORA]: 'Cora', [BOT]: 'Tally', [THIRD]: 'Packer' };
 
 export function world(): void {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
@@ -69,7 +69,7 @@ export async function respond(agent: string, calls: Array<[string, Record<string
     agentId: agent, turnCtx, turnNumber, db: testDb(), agent: { name: NAMES[agent] },
     counterparty: main
       ? { kind: 'user', name: 'Owner', relation: 'owner', channel: 'imessage', senderId: OWNER, threadId: null, senderIsAgent: false }
-      : { kind: 'agent', name: 'Kevin', relation: 'agent', channel: 'a2a', senderId: 'Kevin', threadId: thread, senderIsAgent: false },
+      : { kind: 'agent', name: 'Orin', relation: 'agent', channel: 'a2a', senderId: 'Orin', threadId: thread, senderIsAgent: false },
     counterpartyIsAgentSender: false, chosenConvKey: turnCtx.convKey ?? null, hasUnansweredUser: main,
     triggerRow, triggerWorkId: main ? ASK : null, triggerConversationId: main ? CONV : null,
     turnStartedAt: new Date().toISOString(), persistRoutingMarker: () => undefined,

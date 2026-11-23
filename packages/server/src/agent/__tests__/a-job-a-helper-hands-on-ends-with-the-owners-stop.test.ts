@@ -30,7 +30,7 @@ const woken = (): string[] => wake.mock.calls.map((c) => c[0] as string);
 const hinted = (task: string): number => (testDb().prepare("SELECT COUNT(*) AS n FROM work_events WHERE work_id = ? AND json_extract(payload, '$.entry_kind') = ?")
   .get(task, LADDER_ENTRY.hint) as { n: number }).n;
 
-/** The owner's request, the main agent's hand-over to Cora, and Cora's hand-on to BehaviorBot; returns the hand-on thread. */
+/** The owner's request, the main agent's hand-over to Cora, and Cora's hand-on to Tally; returns the hand-on thread. */
 async function handedOnTwice(): Promise<string> {
   ownerAsks('Get a helper to plan a lake picnic menu, and have it get its own helper to price the food.');
   expect(await respond(AGENT, [assign(CORA, 'Plan a lake picnic menu; get your own helper to price the food.')], { reply: 'Cora is on it.' }))
