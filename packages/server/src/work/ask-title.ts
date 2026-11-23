@@ -5,6 +5,7 @@
 // Never add a value-shape ("looks like a key") test: the declared-value scrub is the one secrecy check.
 // Tested in `memory/__tests__/ask-title-at-ingest.test.ts`.
 
+import { stripInboundChannelMarker } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
 import { withUnit } from '../db/unit.js';
@@ -86,7 +87,7 @@ export function priorOwnerContext(agentId: string, conversationId: string | null
         ORDER BY seq DESC LIMIT ?`,
     ).all(agentId, conversationId, ...session.params, messageId, ASK_TITLE_CONTEXT_MESSAGES) as Array<{ content: string | null }>;
     const texts = rows
-      .map((r) => (r.content ?? '').replace(/\s+/g, ' ').trim())
+      .map((r) => stripInboundChannelMarker(r.content ?? '').replace(/\s+/g, ' ').trim())
       .filter((s) => s.length > 0)
       .map((s) => s.slice(0, ASK_TITLE_CONTEXT_PER_MESSAGE))
       .reverse();
@@ -104,15 +105,13 @@ export function priorOwnerContext(agentId: string, conversationId: string | null
 }
 
 export function buildTitlePrompt(content: string, priorContext: readonly string[] = []): string {
-  if (priorContext.length === 0) {
-    return `${TITLE_INSTRUCTION}\n\n${content.slice(0, ASK_TITLE_INPUT_CHARS)}`;
-  }
+  if (priorContext.length === 0) return stripInboundChannelMarker(content).slice(0, ASK_TITLE_INPUT_CHARS);
   const block =
     'Earlier in this conversation, for context only — do NOT title these:\n'
     + priorContext.map((s) => `- ${s}`).join('\n')
     + '\n\nThe request to title:\n';
   const room = Math.max(0, ASK_TITLE_INPUT_CHARS - block.length);
-  return `${TITLE_INSTRUCTION}\n\n${block}${content.slice(0, room)}`;
+  return `${block}${stripInboundChannelMarker(content).slice(0, room)}`;
 }
 
 /** Title for this ask, or `null` to keep its id. Never throws. Imports are dynamic to avoid a cycle. */
@@ -141,7 +140,7 @@ export async function resolveAskTitle(
     const r = await callModel({
       agentId,
       modelId: systemModel,
-      systemPrompt: '',
+      systemPrompt: TITLE_INSTRUCTION,
       messages: [{ role: 'user', content: buildTitlePrompt(content, priorContext) }],
       tools: false,
       // `utility-dial.ts` keys its thinking-off and output cap off this word alone.

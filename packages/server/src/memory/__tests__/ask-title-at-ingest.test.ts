@@ -530,7 +530,7 @@ describe('the model is shown the conversation it is naming', () => {
       expect(sent).toMatch(/context only/i);
       expect(sent).toContain(FOLLOW_UP);
       // The whole input still fits the budget the call has always had.
-      expect(sent.length).toBeLessThanOrEqual(ASK_TITLE_INPUT_CHARS + TITLE_INSTRUCTION.length + 200);
+      expect(sent.length).toBeLessThanOrEqual(ASK_TITLE_INPUT_CHARS + 200);
     }, SLOW);
 
   it('CONTROL: the FIRST message in a conversation is asked exactly as it always was', async () => {
@@ -540,7 +540,7 @@ describe('the model is shown the conversation it is naming', () => {
     await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(1), WAIT);
 
     const sent = String((callModel.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content);
-    expect(sent).toBe(`${TITLE_INSTRUCTION}\n\n${FIRST}`);
+    expect(sent).toBe(FIRST);
   }, SLOW);
 
   it('CONTROL: context is scoped to this conversation and to the owner lane', async () => {
@@ -558,8 +558,28 @@ describe('the model is shown the conversation it is naming', () => {
     await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(2), WAIT);
     const sent = String((callModel.mock.calls[1][0] as { messages: Array<{ content: string }> }).messages[0].content);
     expect(sent).not.toContain('beekeeping');
-    expect(sent).toBe(`${TITLE_INSTRUCTION}\n\n${FOLLOW_UP}`);
+    expect(sent).toBe(FOLLOW_UP);
   }, SLOW);
+});
+
+describe('a texted request is titled from what the person wrote', () => {
+  // Round four: the title call sent instruction and stored row as one user message; for a text the row is the
+  // bridge's long [SOURCE: ...] wrapper, so the small model titled the wrapper or echoed the instruction.
+  const texted = (words: string): string => `[SOURCE: IMESSAGE FROM Alex - this person texted YOUR OWN iMessage account. SHARING POLICY: Open Book. Share personal details freely. To reply, call imessage_send with recipient="Alex".] ${words}`;
+
+  it('the title model is given the instruction as its system prompt and the person\'s words alone, context rows too', async () => {
+    seedSystemTier();
+    mockDb.current!.prepare("INSERT INTO conversations (id, agent_id, channel, counterparty_id) VALUES ('conv-text', ?, 'imessage', 'owner')").run(AGENT);
+    callModel.mockImplementation(async (a: { messages: Array<{ content: string }> }) => answered(a.messages[0].content.split('\n')[0]));
+    insertInboundMessageIfAbsent(ownerInbound({ id: 'm-30', conversationId: 'conv-text', channel: 'imessage', content: texted('Pack the car for the lake trip') }) as never);
+    await vi.waitFor(() => expect(workFor('m-30')?.title).toBe('Pack the car for the lake trip'), { timeout: 15_000, interval: 10 });
+    insertInboundMessageIfAbsent(ownerInbound({ id: 'm-31', conversationId: 'conv-text', channel: 'imessage', content: texted('How far along are you?') }) as never);
+    await vi.waitFor(() => expect(callModel).toHaveBeenCalledTimes(2), { timeout: 15_000, interval: 10 });
+    const second = callModel.mock.calls[1][0] as { systemPrompt: string; messages: Array<{ content: string }> };
+    expect(second.systemPrompt).toBe(TITLE_INSTRUCTION);
+    expect(second.messages[0].content).toMatch(/- Pack the car for the lake trip\n[\s\S]*How far along are you\?$/);
+    expect(second.messages[0].content).not.toMatch(/SOURCE|SHARING POLICY|Write a short title/);
+  }, 30_000);
 });
 
 describe('a title that violates the instruction\'s own format is refused', () => {
